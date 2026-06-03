@@ -1,0 +1,133 @@
+{
+  "deployment": {
+    "last_deployed_at": null,
+    "location_deployment_status": "ready",
+    "ssh_host_configured": true,
+    "ssh_known_hosts_configured": true,
+    "ssh_private_key_configured": true,
+    "ssh_username_configured": true
+  },
+  "emergency_status": {
+    "blocked": false,
+    "error_codes": [],
+    "required": true,
+    "warning_codes": []
+  },
+  "files": [
+    {
+      "content_type": "application/x-yaml",
+      "path": "docker-compose.yml",
+      "sha256": "f97961f480717cc86a034323e350e87bbefe367f04523f395955fa8349118605",
+      "size": 1948
+    },
+    {
+      "content_type": "text/plain",
+      "path": ".env.example",
+      "sha256": "7c80a2b145348b5592a65a1c6ed27b4ad0eb3fb4c88223cc86edc1f1ba1d213a",
+      "size": 551
+    },
+    {
+      "content_type": "text/plain",
+      "path": "asterisk/pjsip.conf",
+      "sha256": "87984a1acb4a7eb217e21d0c2184637a8678f5ffee181fc5dbefe261939aafad",
+      "size": 1183
+    },
+    {
+      "content_type": "text/plain",
+      "path": "asterisk/iax.conf",
+      "sha256": "e344768f164e6e59bfe28337a014f21c0de6803cc6dd35a4ae7024c5a6da4465",
+      "size": 208
+    },
+    {
+      "content_type": "text/plain",
+      "path": "asterisk/extensions.conf",
+      "sha256": "bb3e7d3239027ccf81a78fd3d652871d2216cde3923a36322d583a6c4a4057f0",
+      "size": 938
+    },
+    {
+      "content_type": "text/plain",
+      "path": "asterisk/voicemail.conf",
+      "sha256": "d6c23121ada229abd773e5ae2e3952df5c0674ac6e248ce90330b7039d943524",
+      "size": 198
+    },
+    {
+      "content_type": "text/plain",
+      "path": "asterisk/queues.conf",
+      "sha256": "962bd9ddda88e92cd9525e7a8b32426526827041736db3833220142a0ecd3bcf",
+      "size": 102
+    },
+    {
+      "content_type": "text/plain",
+      "path": "asterisk/manager.conf",
+      "sha256": "4a61286a2d790fc9bf8d653749ae81ea9c5ed22e9c57163bd4213a46e02f6c5b",
+      "size": 361
+    },
+    {
+      "content_type": "text/plain",
+      "path": "asterisk/features.conf",
+      "sha256": "07a52a4203172510dbc9a700bf91be7cd69826019bb0d125dcdd4d8529a4fab1",
+      "size": 188
+    },
+    {
+      "content_type": "text/plain",
+      "path": "asterisk/musiconhold.conf",
+      "sha256": "b3e357e06541ec3e26cdc5622a89e16dc513c0f4e44d949472bfd17c03b3d840",
+      "size": 125
+    },
+    {
+      "content_type": "text/plain",
+      "path": "asterisk/cdr.conf",
+      "sha256": "3cb52015577b0531d3509eb965e985824906760b9f3dac9f25a3b9f02a0807f0",
+      "size": 121
+    },
+    {
+      "content_type": "text/plain",
+      "path": "asterisk/cel.conf",
+      "sha256": "6b0cb2ac929cd9901744a38af0ff758df533cfc98360dd17cf1e786a6e2d068f",
+      "size": 208
+    },
+    {
+      "content_type": "text/plain",
+      "path": "asterisk/recording.conf",
+      "sha256": "509b9353e1c9590dc96899cb191f56d9ce6e4ed686dce17ce22e9ed970d62a55",
+      "size": 212
+    },
+    {
+      "content_type": "text/plain",
+      "path": "asterisk/retention.conf",
+      "sha256": "d056ae4794b42fe36a73e5e8f2bdb3bfc237d97597240487b3b1475394226164",
+      "size": 185
+    },
+    {
+      "content_type": "application/xml",
+      "path": "tftp/company-directory.xml",
+      "sha256": "33e55963aeb254274f9837dd44f9cf12bd94931a864c49d7ebb95bd2707eab1c",
+      "size": 319
+    },
+    {
+      "content_type": "text/plain",
+      "path": "tftp/firmware/CISCO-FIRMWARE-CHECKLIST.txt",
+      "sha256": "d1efb265fde499cc61796597546371b03906575ba8afdd40ab24976073c9a2b5",
+      "size": 447
+    },
+    {
+      "content_type": "text/plain",
+      "path": "tftp/firmware/README-no-firmware-bundled.txt",
+      "sha256": "011de78ace2753d1eae16e5785e588a1ac64f972a783018f74860bfe5d00674b",
+      "size": 157
+    }
+  ],
+  "format": "pbx-config-export/v1",
+  "location": {
+    "id": 101,
+    "name": "Golden HQ",
+    "slug": "golden-hq",
+    "timezone": "America/Los_Angeles"
+  },
+  "version": {
+    "exported_at": "2026-01-02T03:04:05+00:00",
+    "exported_by": "exporter",
+    "number": 1
+  },
+  "warnings": []
+}
