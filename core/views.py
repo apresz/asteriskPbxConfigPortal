@@ -15,6 +15,7 @@ from .access import (
     user_has_permission,
 )
 from .audit import record_audit
+from .audio_prompts import AudioPromptConversionError, create_audio_prompt_from_upload
 from .extension_csv import (
     ExtensionCSVError,
     export_extensions_csv,
@@ -25,17 +26,21 @@ from .extension_management import clear_extension_relationships, is_911_disable_
 from .forms import (
     CallQueueForm,
     DIDForm,
+    ExtensionForm,
     FeatureCodeForm,
     InboundDestinationForm,
     IVRForm,
     IVRMenuOptionFormSet,
     LocationForm,
+    PhoneForm,
+    PhoneLineAppearanceFormSet,
+    PhoneSpeedDialFormSet,
     PagingGroupForm,
     RingGroupForm,
     OutboundRouteForm,
     OutboundRouteTrunkFormSet,
     ProviderForm,
-    TrunkForm
+    TrunkForm,
 )
 from .models import (
     APIKey,
@@ -1061,7 +1066,7 @@ def ivr_list(request):
 @permission_required(PortalPermission.EDIT_CONFIG)
 def ivr_create(request):
     ivr = IVR()
-    form = IVRForm(request.POST or None, instance=ivr)
+    form = IVRForm(request.POST or None, request.FILES or None, instance=ivr)
     formset = IVRMenuOptionFormSet(
         request.POST or None,
         instance=ivr,
@@ -1069,11 +1074,14 @@ def ivr_create(request):
         form_kwargs={"location": _ivr_formset_location(request, ivr)},
     )
     if request.method == "POST" and form.is_valid() and formset.is_valid():
-        with transaction.atomic():
-            ivr = form.save()
-            formset.instance = ivr
-            formset.save()
-        return redirect("ivrs")
+        try:
+            with transaction.atomic():
+                ivr = _save_ivr_with_prompt(form)
+                formset.instance = ivr
+                formset.save()
+            return redirect("ivrs")
+        except AudioPromptConversionError as exc:
+            form.add_error("prompt_upload", str(exc))
     return _routing_form_response(
         request,
         form=form,
@@ -1091,7 +1099,7 @@ def ivr_create(request):
 @permission_required(PortalPermission.EDIT_CONFIG)
 def ivr_update(request, ivr_id: int):
     ivr = get_object_or_404(IVR, pk=ivr_id)
-    form = IVRForm(request.POST or None, instance=ivr)
+    form = IVRForm(request.POST or None, request.FILES or None, instance=ivr)
     formset = IVRMenuOptionFormSet(
         request.POST or None,
         instance=ivr,
@@ -1099,11 +1107,14 @@ def ivr_update(request, ivr_id: int):
         form_kwargs={"location": _ivr_formset_location(request, ivr)},
     )
     if request.method == "POST" and form.is_valid() and formset.is_valid():
-        with transaction.atomic():
-            ivr = form.save()
-            formset.instance = ivr
-            formset.save()
-        return redirect("ivrs")
+        try:
+            with transaction.atomic():
+                ivr = _save_ivr_with_prompt(form)
+                formset.instance = ivr
+                formset.save()
+            return redirect("ivrs")
+        except AudioPromptConversionError as exc:
+            form.add_error("prompt_upload", str(exc))
     return _routing_form_response(
         request,
         form=form,
@@ -1491,6 +1502,19 @@ def _ivr_formset_location(request, ivr):
     if ivr and ivr.pk:
         return ivr.location
     return None
+
+
+def _save_ivr_with_prompt(form):
+    ivr = form.save(commit=False)
+    upload = form.cleaned_data.get("prompt_upload")
+    if upload:
+        prompt = create_audio_prompt_from_upload(location=ivr.location, uploaded_file=upload)
+        ivr.prompt = prompt
+        ivr.prompt_name = prompt.playback_name
+    elif ivr.prompt_id:
+        ivr.prompt_name = ivr.prompt.playback_name
+    ivr.save()
+    return ivr
 
 
 def _template(request, full_template: str, partial_template: str) -> str:

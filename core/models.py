@@ -719,6 +719,49 @@ class PhoneSpeedDial(TimestampedModel):
         return f"{self.phone} speed dial {self.position}: {self.label}"
 
 
+class AudioPrompt(TimestampedModel):
+    class SourceFormat(models.TextChoices):
+        WAV = "wav", "WAV"
+        MP3 = "mp3", "MP3"
+        M4A = "m4a", "M4A"
+
+    location = models.ForeignKey(
+        Location,
+        on_delete=models.CASCADE,
+        related_name="audio_prompts",
+    )
+    name = models.CharField(max_length=120)
+    original_file = models.FileField(upload_to="audio_prompts/original/", max_length=255)
+    converted_file = models.FileField(upload_to="audio_prompts/converted/", max_length=255)
+    original_filename = models.CharField(max_length=255)
+    source_format = models.CharField(max_length=8, choices=SourceFormat.choices)
+    content_type = models.CharField(max_length=120, blank=True)
+    size_bytes = models.PositiveBigIntegerField(default=0)
+    converted_format = models.CharField(max_length=8, default="wav")
+    sample_rate_hz = models.PositiveIntegerField(default=8000)
+    channels = models.PositiveSmallIntegerField(default=1)
+    asterisk_path = models.CharField(max_length=255)
+
+    class Meta:
+        ordering = ["location", "name"]
+        constraints = [
+            models.UniqueConstraint(fields=["location", "name"], name="unique_audio_prompt_name_per_location"),
+        ]
+
+    def __str__(self):
+        return f"{self.location}: {self.name}"
+
+    @property
+    def playback_name(self) -> str:
+        sounds_root = getattr(settings, "ASTERISK_SOUNDS_ROOT", "/var/lib/asterisk/sounds").rstrip("/")
+        playback = self.asterisk_path
+        if playback.startswith(f"{sounds_root}/"):
+            playback = playback[len(sounds_root) + 1 :]
+        if playback.endswith(".wav"):
+            playback = playback[:-4]
+        return playback
+
+
 class IVR(TimestampedModel):
     location = models.ForeignKey(
         Location,
@@ -727,6 +770,13 @@ class IVR(TimestampedModel):
     )
     name = models.CharField(max_length=120)
     prompt_name = models.CharField(max_length=160, blank=True)
+    prompt = models.ForeignKey(
+        AudioPrompt,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="ivrs",
+    )
     timeout_seconds = models.PositiveSmallIntegerField(default=10, validators=[MinValueValidator(1)])
     business_hours_destination = models.ForeignKey(
         "InboundDestination",

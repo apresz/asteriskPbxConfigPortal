@@ -91,6 +91,12 @@ USE_TZ = True
 STATIC_URL = "static/"
 STATICFILES_DIRS = [BASE_DIR / "static"]
 STATIC_ROOT = BASE_DIR / "staticfiles"
+MEDIA_URL = "media/"
+MEDIA_ROOT = BASE_DIR / "media"
+
+AUDIO_CONVERSION_FFMPEG = os.environ.get("AUDIO_CONVERSION_FFMPEG", "ffmpeg")
+ASTERISK_SOUNDS_ROOT = os.environ.get("ASTERISK_SOUNDS_ROOT", "/var/lib/asterisk/sounds")
+ASTERISK_PROMPT_DIRECTORY = os.environ.get("ASTERISK_PROMPT_DIRECTORY", "custom/ivr")
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 

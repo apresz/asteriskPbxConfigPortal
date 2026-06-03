@@ -3,6 +3,7 @@ from django.contrib import admin
 from .models import (
     AuditLog,
     APIKey,
+    AudioPrompt,
     DID,
     IVR,
     IVRMenuOption,
@@ -172,6 +173,7 @@ class OutboundRouteAdmin(admin.ModelAdmin):
 
 admin.site.register(OutboundRouteTrunk)
 admin.site.register(InboundDestination)
+admin.site.register(AudioPrompt)
 admin.site.register(IVR)
 admin.site.register(IVRMenuOption)
 admin.site.register(FeatureCode)
