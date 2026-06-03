@@ -25,17 +25,17 @@ from .extension_management import clear_extension_relationships, is_911_disable_
 from .forms import (
     CallQueueForm,
     DIDForm,
-    ExtensionForm,
     FeatureCodeForm,
     InboundDestinationForm,
     IVRForm,
     IVRMenuOptionFormSet,
     LocationForm,
     PagingGroupForm,
-    PhoneForm,
-    PhoneLineAppearanceFormSet,
-    PhoneSpeedDialFormSet,
     RingGroupForm,
+    OutboundRouteForm,
+    OutboundRouteTrunkFormSet,
+    ProviderForm,
+    TrunkForm
 )
 from .models import (
     APIKey,
@@ -49,12 +49,15 @@ from .models import (
     IVR,
     Location,
     PagingGroup,
+    OutboundRoute,
     Phone,
     PhoneSpeedDial,
     PortalPermission,
     PortalRole,
     RingGroup,
+    Provider,
     ServiceIdentity,
+    Trunk,
 )
 from .navigation import PORTAL_AREAS, visible_portal_areas
 from .phone_csv import (
@@ -89,6 +92,242 @@ def portal_area(request, slug: str):
 
     context = {"area": area, "slug": slug, "areas": visible_portal_areas(request.user)}
     return render(request, _template(request, "core/area.html", "core/partials/area_content.html"), context)
+
+
+@permission_required(PortalPermission.VIEW)
+def trunk_list(request):
+    providers = Provider.objects.prefetch_related("trunks").order_by("name")
+    trunks = Trunk.objects.select_related("location", "provider").order_by("location__name", "name")
+    context = _trunk_context(request, {"providers": providers, "trunks": trunks})
+    return render(request, _template(request, "core/trunks/list.html", "core/partials/trunks/list_content.html"), context)
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def provider_create(request):
+    if request.method == "POST":
+        form = ProviderForm(request.POST)
+        if form.is_valid():
+            form.save()
+            return redirect("trunks")
+    else:
+        form = ProviderForm()
+
+    context = _trunk_context(
+        request,
+        {
+            "form": form,
+            "form_title": "New Provider",
+            "form_action": "Create",
+            "provider": None,
+        },
+    )
+    return render(request, _template(request, "core/trunks/provider_form.html", "core/partials/trunks/provider_form_content.html"), context)
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def provider_update(request, slug: str):
+    provider = get_object_or_404(Provider, slug=slug)
+    if request.method == "POST":
+        form = ProviderForm(request.POST, instance=provider)
+        if form.is_valid():
+            form.save()
+            return redirect("trunks")
+    else:
+        form = ProviderForm(instance=provider)
+
+    context = _trunk_context(
+        request,
+        {
+            "form": form,
+            "form_title": f"Edit {provider.name}",
+            "form_action": "Save",
+            "provider": provider,
+        },
+    )
+    return render(request, _template(request, "core/trunks/provider_form.html", "core/partials/trunks/provider_form_content.html"), context)
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def provider_delete(request, slug: str):
+    provider = get_object_or_404(Provider, slug=slug)
+    if request.method == "POST":
+        provider.delete()
+        return redirect("trunks")
+
+    context = _trunk_context(request, {"provider": provider})
+    return render(
+        request,
+        _template(request, "core/trunks/provider_confirm_delete.html", "core/partials/trunks/provider_confirm_delete_content.html"),
+        context,
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def trunk_create(request):
+    if request.method == "POST":
+        form = TrunkForm(request.POST)
+        if form.is_valid():
+            form.save()
+            return redirect("trunks")
+    else:
+        form = TrunkForm()
+
+    context = _trunk_context(
+        request,
+        {
+            "form": form,
+            "form_title": "New Provider Trunk",
+            "form_action": "Create",
+            "trunk": None,
+        },
+    )
+    return render(request, _template(request, "core/trunks/trunk_form.html", "core/partials/trunks/trunk_form_content.html"), context)
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def trunk_update(request, trunk_id: int):
+    trunk = get_object_or_404(Trunk.objects.select_related("location", "provider"), pk=trunk_id)
+    if request.method == "POST":
+        form = TrunkForm(request.POST, instance=trunk)
+        if form.is_valid():
+            form.save()
+            return redirect("trunks")
+    else:
+        form = TrunkForm(instance=trunk)
+
+    context = _trunk_context(
+        request,
+        {
+            "form": form,
+            "form_title": f"Edit {trunk.name}",
+            "form_action": "Save",
+            "trunk": trunk,
+        },
+    )
+    return render(request, _template(request, "core/trunks/trunk_form.html", "core/partials/trunks/trunk_form_content.html"), context)
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def trunk_delete(request, trunk_id: int):
+    trunk = get_object_or_404(Trunk.objects.select_related("location", "provider"), pk=trunk_id)
+    if request.method == "POST":
+        trunk.delete()
+        return redirect("trunks")
+
+    context = _trunk_context(request, {"trunk": trunk})
+    return render(
+        request,
+        _template(request, "core/trunks/trunk_confirm_delete.html", "core/partials/trunks/trunk_confirm_delete_content.html"),
+        context,
+    )
+
+
+@permission_required(PortalPermission.VIEW)
+def outbound_route_list(request):
+    routes = OutboundRoute.objects.select_related("location").prefetch_related(
+        "route_trunks__trunk__provider",
+    ).order_by("location__name", "priority", "name")
+    context = _dial_plan_context(request, {"routes": routes})
+    return render(request, _template(request, "core/dial_plan/list.html", "core/partials/dial_plan/list_content.html"), context)
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def outbound_route_create(request):
+    route = OutboundRoute()
+    if request.method == "POST":
+        form = OutboundRouteForm(request.POST, instance=route)
+        location = _outbound_route_formset_location(request, route)
+        form_is_valid = form.is_valid()
+        formset = OutboundRouteTrunkFormSet(
+            request.POST,
+            instance=route,
+            prefix="route_trunks",
+            form_kwargs={"location": location},
+        )
+        if form_is_valid:
+            route = form.save(commit=False)
+            formset.instance = route
+            if formset.is_valid():
+                with transaction.atomic():
+                    route.save()
+                    formset.save()
+                return redirect("dial-plan")
+    else:
+        form = OutboundRouteForm(instance=route)
+        formset = OutboundRouteTrunkFormSet(
+            instance=route,
+            prefix="route_trunks",
+            form_kwargs={"location": None},
+        )
+
+    context = _dial_plan_context(
+        request,
+        {
+            "form": form,
+            "route_trunk_formset": formset,
+            "form_title": "New Outbound Route",
+            "form_action": "Create",
+            "route": None,
+        },
+    )
+    return render(request, _template(request, "core/dial_plan/outbound_form.html", "core/partials/dial_plan/outbound_form_content.html"), context)
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def outbound_route_update(request, route_id: int):
+    route = get_object_or_404(OutboundRoute.objects.select_related("location"), pk=route_id)
+    if request.method == "POST":
+        form = OutboundRouteForm(request.POST, instance=route)
+        location = _outbound_route_formset_location(request, route)
+        form_is_valid = form.is_valid()
+        formset = OutboundRouteTrunkFormSet(
+            request.POST,
+            instance=route,
+            prefix="route_trunks",
+            form_kwargs={"location": location},
+        )
+        if form_is_valid:
+            route = form.save(commit=False)
+            formset.instance = route
+            if formset.is_valid():
+                with transaction.atomic():
+                    route.save()
+                    formset.save()
+                return redirect("dial-plan")
+    else:
+        form = OutboundRouteForm(instance=route)
+        formset = OutboundRouteTrunkFormSet(
+            instance=route,
+            prefix="route_trunks",
+            form_kwargs={"location": route.location},
+        )
+
+    context = _dial_plan_context(
+        request,
+        {
+            "form": form,
+            "route_trunk_formset": formset,
+            "form_title": f"Edit {route.name}",
+            "form_action": "Save",
+            "route": route,
+        },
+    )
+    return render(request, _template(request, "core/dial_plan/outbound_form.html", "core/partials/dial_plan/outbound_form_content.html"), context)
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def outbound_route_delete(request, route_id: int):
+    route = get_object_or_404(OutboundRoute.objects.select_related("location"), pk=route_id)
+    if request.method == "POST":
+        route.delete()
+        return redirect("dial-plan")
+
+    context = _dial_plan_context(request, {"route": route})
+    return render(
+        request,
+        _template(request, "core/dial_plan/outbound_confirm_delete.html", "core/partials/dial_plan/outbound_confirm_delete_content.html"),
+        context,
+    )
 
 
 @permission_required(PortalPermission.ADMINISTER)
@@ -1427,6 +1666,26 @@ def _phone_context(request, context):
     return context
 
 
+def _trunk_context(request, context):
+    context.update(
+        {
+            "areas": visible_portal_areas(request.user),
+            "can_edit_trunks": user_has_permission(request.user, PortalPermission.EDIT_CONFIG),
+        }
+    )
+    return context
+
+
+def _dial_plan_context(request, context):
+    context.update(
+        {
+            "areas": visible_portal_areas(request.user),
+            "can_edit_dial_plan": user_has_permission(request.user, PortalPermission.EDIT_CONFIG),
+        }
+    )
+    return context
+
+
 def _phone_formset_location(request, phone):
     if request.method == "POST":
         location_id = request.POST.get("location")
@@ -1438,6 +1697,20 @@ def _phone_formset_location(request, phone):
         return None
     if phone and phone.pk:
         return phone.location
+    return None
+
+
+def _outbound_route_formset_location(request, route):
+    if request.method == "POST":
+        location_id = request.POST.get("location")
+        if location_id:
+            try:
+                return Location.objects.get(pk=location_id)
+            except (Location.DoesNotExist, ValueError):
+                return None
+        return None
+    if route and route.pk:
+        return route.location
     return None
 
 

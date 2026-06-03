@@ -1,0 +1,75 @@
+<section class="record-header" data-area="dial-plan">
+  <span>
+    <p class="eyebrow">Outbound Route</p>
+    <h1>{{ form_title }}</h1>
+    {% if route %}
+      <p>{{ route.location.name }} - {{ route.dial_pattern }}</p>
+    {% endif %}
+  </span>
+  <a class="button button--secondary" href="{% url 'dial-plan' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Cancel</a>
+</section>
+
+<form class="dial-plan-form" method="post" novalidate>
+  {% csrf_token %}
+  {{ form.non_field_errors }}
+
+  {% for fieldset in form.fieldsets %}
+    <fieldset class="form-section">
+      <legend>{{ fieldset.legend }}</legend>
+      <div class="form-grid">
+        {% for field in fieldset.fields %}
+          {% if field.field.widget.input_type == "checkbox" %}
+            <label class="form-check" for="{{ field.id_for_label }}">
+              {{ field }}
+              <span>{{ field.label }}</span>
+            </label>
+            {{ field.errors }}
+          {% else %}
+            <label class="form-field" for="{{ field.id_for_label }}">
+              <span>{{ field.label }}{% if field.field.required %} <strong aria-hidden="true">*</strong>{% endif %}</span>
+              {{ field }}
+              {{ field.errors }}
+            </label>
+          {% endif %}
+        {% endfor %}
+      </div>
+    </fieldset>
+  {% endfor %}
+
+  <fieldset class="form-section">
+    <legend>Provider Fallback</legend>
+    {{ route_trunk_formset.management_form }}
+    {{ route_trunk_formset.non_form_errors }}
+    <div class="inline-formset">
+      {% for route_trunk_form in route_trunk_formset.forms %}
+        <div class="inline-formset__row">
+          {% for hidden in route_trunk_form.hidden_fields %}{{ hidden }}{% endfor %}
+          {{ route_trunk_form.non_field_errors }}
+          <label class="form-field" for="{{ route_trunk_form.priority.id_for_label }}">
+            <span>Priority</span>
+            {{ route_trunk_form.priority }}
+            {{ route_trunk_form.priority.errors }}
+          </label>
+          <label class="form-field" for="{{ route_trunk_form.trunk.id_for_label }}">
+            <span>Trunk</span>
+            {{ route_trunk_form.trunk }}
+            {{ route_trunk_form.trunk.errors }}
+          </label>
+          {% if route_trunk_form.DELETE %}
+            <label class="form-check inline-formset__delete" for="{{ route_trunk_form.DELETE.id_for_label }}">
+              {{ route_trunk_form.DELETE }}
+              <span>Delete</span>
+            </label>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  </fieldset>
+
+  <div class="form-actions">
+    <button class="button" type="submit">{{ form_action }}</button>
+    {% if route %}
+      <a class="button button--danger" href="{% url 'outbound-route-delete' route.id %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Delete</a>
+    {% endif %}
+  </div>
+</form>

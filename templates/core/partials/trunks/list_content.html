@@ -1,0 +1,107 @@
+<section class="page-heading page-heading--actions" data-area="trunks">
+  <span>
+    <p class="eyebrow">Trunks</p>
+    <h1>Provider Trunks</h1>
+    <p>Provider records, SIP and IAX2 trunk credentials, and emergency-capable upstreams.</p>
+  </span>
+  {% if can_edit_trunks %}
+    <span class="button-row">
+      <a class="button button--secondary" href="{% url 'provider-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Provider</a>
+      <a class="button" href="{% url 'trunk-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Trunk</a>
+    </span>
+  {% endif %}
+</section>
+
+<section class="table-panel" aria-label="Providers">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th scope="col">Provider</th>
+        <th scope="col">Type</th>
+        <th scope="col">Trunks</th>
+        <th scope="col">Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for provider in providers %}
+        <tr>
+          <td>
+            {% if can_edit_trunks %}
+              <a class="table-link" href="{% url 'provider-edit' provider.slug %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">{{ provider.name }}</a>
+            {% else %}
+              <span class="table-link">{{ provider.name }}</span>
+            {% endif %}
+            <span class="table-meta">{{ provider.slug }}</span>
+          </td>
+          <td>{{ provider.get_provider_type_display }}</td>
+          <td>{{ provider.trunks.count }}</td>
+          <td>
+            <span class="status-badge{% if not provider.is_active %} status-badge--muted{% endif %}">
+              {{ provider.is_active|yesno:"Active,Inactive" }}
+            </span>
+          </td>
+        </tr>
+      {% empty %}
+        <tr>
+          <td colspan="4">No providers configured.</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+{% if trunks %}
+  <section class="table-panel" aria-label="Provider trunks">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th scope="col">Trunk</th>
+          <th scope="col">Location</th>
+          <th scope="col">Provider</th>
+          <th scope="col">Endpoint</th>
+          <th scope="col">Credentials</th>
+          <th scope="col">Emergency</th>
+          <th scope="col">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for trunk in trunks %}
+          <tr>
+            <td>
+              {% if can_edit_trunks %}
+                <a class="table-link" href="{% url 'trunk-edit' trunk.id %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">{{ trunk.name }}</a>
+              {% else %}
+                <span class="table-link">{{ trunk.name }}</span>
+              {% endif %}
+              <span class="table-meta">{{ trunk.get_trunk_type_display }}</span>
+            </td>
+            <td>{{ trunk.location.name }}</td>
+            <td>{{ trunk.provider.name }}</td>
+            <td>{{ trunk.host|default:"Missing host" }}</td>
+            <td>
+              <span class="stacked-value">{{ trunk.username|default:"Missing username" }}</span>
+              <span class="table-meta">{{ trunk.password|yesno:"Password configured,Missing password" }}</span>
+            </td>
+            <td>
+              <span class="status-badge{% if not trunk.is_emergency_capable %} status-badge--muted{% endif %}">
+                {{ trunk.is_emergency_capable|yesno:"Capable,Not capable" }}
+              </span>
+            </td>
+            <td>
+              <span class="status-badge{% if not trunk.is_active %} status-badge--muted{% endif %}">
+                {{ trunk.is_active|yesno:"Active,Inactive" }}
+              </span>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% else %}
+  <section class="empty-state">
+    <h2>No provider trunks configured</h2>
+    {% if can_edit_trunks %}
+      <a class="button" href="{% url 'trunk-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Trunk</a>
+    {% endif %}
+  </section>
+{% endif %}

@@ -150,14 +150,23 @@ class DIDAdmin(admin.ModelAdmin):
 class TrunkAdmin(admin.ModelAdmin):
     list_display = ("name", "location", "provider", "trunk_type", "is_emergency_capable", "is_active")
     list_filter = ("location", "provider", "trunk_type", "is_emergency_capable", "is_active")
-    search_fields = ("name", "host", "username")
+    search_fields = ("name", "host", "username", "password")
 
 
 admin.site.register(Provider)
 @admin.register(OutboundRoute)
 class OutboundRouteAdmin(admin.ModelAdmin):
-    list_display = ("name", "location", "dial_pattern", "priority", "recording_policy", "is_emergency_route", "is_active")
-    list_filter = ("location", "recording_policy", "is_emergency_route", "is_active")
+    list_display = (
+        "name",
+        "location",
+        "dial_pattern",
+        "priority",
+        "caller_id_source",
+        "recording_policy",
+        "is_emergency_route",
+        "is_active",
+    )
+    list_filter = ("location", "caller_id_source", "recording_policy", "is_emergency_route", "is_active")
     search_fields = ("name", "dial_pattern", "caller_id_number")
 
 

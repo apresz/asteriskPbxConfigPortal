@@ -12,6 +12,8 @@ from .models import (
     IVR,
     IVRMenuOption,
     Location,
+    OutboundRoute,
+    OutboundRouteTrunk,
     PagingGroup,
     PagingGroupMember,
     Phone,
@@ -34,7 +36,8 @@ def _configure_standard_widgets(fields):
             field.widget.attrs.setdefault("class", "form-control")
         if field_name.endswith("_seconds") or field_name in {"timeout_seconds", "retry_seconds", "penalty", "priority"}:
             field.widget.attrs.setdefault("min", "1")
-
+        if field_name in {"priority", "deployment_ssh_port", "sip_port", "rtp_port_start", "rtp_port_end", "iax_port"}:
+            field.widget.attrs.setdefault("min", "1")
 
 def _selected_location_from_form(form):
     if form.is_bound:
@@ -277,6 +280,161 @@ class LocationForm(forms.ModelForm):
             instance.save()
             self.save_m2m()
         return instance
+
+
+class ProviderForm(forms.ModelForm):
+    FIELDSETS = (
+        ("Identity", ("name", "slug", "provider_type", "is_active")),
+        ("Notes", ("notes",)),
+    )
+
+    class Meta:
+        model = Provider
+        fields = ("name", "slug", "provider_type", "notes", "is_active")
+        widgets = {
+            "notes": forms.Textarea(attrs={"rows": 3}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["provider_type"].choices = [
+            choice
+            for choice in Provider.ProviderType.choices
+            if choice[0] in {Provider.ProviderType.SIP, Provider.ProviderType.IAX2}
+        ]
+        _configure_standard_widgets(self.fields)
+
+    @property
+    def fieldsets(self):
+        return [
+            {
+                "legend": legend,
+                "fields": [self[field_name] for field_name in field_names if field_name in self.fields],
+            }
+            for legend, field_names in self.FIELDSETS
+        ]
+
+
+class TrunkForm(forms.ModelForm):
+    FIELDSETS = (
+        ("Identity", ("location", "provider", "name", "trunk_type", "is_active")),
+        ("Credentials", ("host", "username", "password")),
+        ("Emergency", ("is_emergency_capable",)),
+    )
+
+    class Meta:
+        model = Trunk
+        fields = (
+            "location",
+            "provider",
+            "name",
+            "trunk_type",
+            "host",
+            "username",
+            "password",
+            "is_emergency_capable",
+            "is_active",
+        )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["provider"].queryset = Provider.objects.filter(
+            provider_type__in=[Provider.ProviderType.SIP, Provider.ProviderType.IAX2]
+        ).order_by("name")
+        _configure_standard_widgets(self.fields)
+
+    @property
+    def fieldsets(self):
+        return [
+            {
+                "legend": legend,
+                "fields": [self[field_name] for field_name in field_names if field_name in self.fields],
+            }
+            for legend, field_names in self.FIELDSETS
+        ]
+
+
+class OutboundRouteForm(forms.ModelForm):
+    FIELDSETS = (
+        ("Pattern", ("location", "name", "dial_pattern", "priority", "is_active")),
+        ("Caller ID", ("caller_id_source", "caller_id_number", "is_emergency_route")),
+        ("Recording", ("recording_policy",)),
+    )
+
+    class Meta:
+        model = OutboundRoute
+        fields = (
+            "location",
+            "name",
+            "dial_pattern",
+            "priority",
+            "caller_id_source",
+            "caller_id_number",
+            "is_emergency_route",
+            "recording_policy",
+            "is_active",
+        )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["dial_pattern"].widget.attrs.setdefault("placeholder", "NXXNXXXXXX")
+        self.fields["caller_id_number"].label = "Custom caller ID"
+        _configure_standard_widgets(self.fields)
+
+    @property
+    def fieldsets(self):
+        return [
+            {
+                "legend": legend,
+                "fields": [self[field_name] for field_name in field_names if field_name in self.fields],
+            }
+            for legend, field_names in self.FIELDSETS
+        ]
+
+
+class OutboundRouteTrunkForm(forms.ModelForm):
+    class Meta:
+        model = OutboundRouteTrunk
+        fields = ("priority", "trunk")
+
+    def __init__(self, *args, location=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        if location is not None:
+            self.fields["trunk"].queryset = Trunk.objects.filter(location=location, is_active=True).order_by("name")
+        else:
+            self.fields["trunk"].queryset = Trunk.objects.select_related("location").filter(is_active=True).order_by(
+                "location__name",
+                "name",
+            )
+        _configure_standard_widgets(self.fields)
+
+
+class BaseOutboundRouteTrunkFormSet(BaseInlineFormSet):
+    def clean(self):
+        super().clean()
+        if any(self.errors):
+            return
+        self._validate_unique_values("priority", "Trunk priorities must be unique per route.")
+        self._validate_unique_values("trunk", "Trunks can only appear once per route.")
+        if self.instance and self.instance.is_emergency_route:
+            for form in self.forms:
+                if not getattr(form, "cleaned_data", None) or form.cleaned_data.get("DELETE"):
+                    continue
+                trunk = form.cleaned_data.get("trunk")
+                if trunk and not trunk.is_emergency_capable:
+                    form.add_error("trunk", "Emergency routes can only use emergency-capable trunks.")
+
+    def _validate_unique_values(self, field_name, message):
+        values = set()
+        for form in self.forms:
+            if not getattr(form, "cleaned_data", None) or form.cleaned_data.get("DELETE"):
+                continue
+            value = form.cleaned_data.get(field_name)
+            if value in {None, ""}:
+                continue
+            if value in values:
+                raise forms.ValidationError(message)
+            values.add(value)
 
 
 class ExtensionForm(forms.ModelForm):
@@ -1055,6 +1213,16 @@ PhoneSpeedDialFormSet = forms.inlineformset_factory(
     form=PhoneSpeedDialForm,
     formset=BasePhoneSpeedDialFormSet,
     fields=("position", "label", "destination"),
+    extra=3,
+    can_delete=True,
+)
+
+OutboundRouteTrunkFormSet = forms.inlineformset_factory(
+    OutboundRoute,
+    OutboundRouteTrunk,
+    form=OutboundRouteTrunkForm,
+    formset=BaseOutboundRouteTrunkFormSet,
+    fields=("priority", "trunk"),
     extra=3,
     can_delete=True,
 )
