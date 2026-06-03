@@ -20,6 +20,7 @@
           <th scope="col">Active</th>
           <th scope="col">Last Deployed</th>
           <th scope="col">Deployment Status</th>
+          <th scope="col">PBX Active Version</th>
         </tr>
       </thead>
       <tbody>
@@ -41,6 +42,14 @@
             </td>
             <td>{{ location.last_deployed_at|date:"Y-m-d H:i"|default:"Never" }}</td>
             <td>{{ location.get_deployment_status_display }}</td>
+            <td>
+              {% if location.active_config_version_number %}
+                <span class="stacked-value">v{{ location.active_config_version_number }}</span>
+                <span class="table-meta">{{ location.active_config_reported_at|date:"Y-m-d H:i"|default:"Not reported" }}</span>
+              {% else %}
+                Not reported
+              {% endif %}
+            </td>
           </tr>
         {% endfor %}
       </tbody>

@@ -11,10 +11,12 @@ from typing import Any
 import xml.etree.ElementTree as ET
 import zipfile
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Max
 from django.utils import timezone
 
+from .agent_client import portal_url_to_websocket_url
 from .models import (
     AudioPrompt,
     ConfigVersion,
@@ -427,6 +429,10 @@ def _env_example(location: Location) -> str:
             f"PBX_LOCATION_SLUG={location.slug}",
             f"PBX_LAN_IP={location.pbx_lan_ip}",
             f"PBX_WARP_IP={location.pbx_warp_ip}",
+            f"PBX_AGENT_WS_URL={portal_url_to_websocket_url(getattr(settings, 'PBX_AGENT_PORTAL_URL', ''))}",
+            f"PBX_AGENT_TOKEN={location.agent_token}",
+            f"PBX_AGENT_SECRET={location.agent_secret}",
+            f"PBX_ACTIVE_CONFIG_MARKER={getattr(settings, 'PBX_ACTIVE_CONFIG_MARKER', '/etc/asterisk/pbx-active-config.json')}",
             f"TZ={location.timezone}",
             "ASTERISK_UID=1000",
             "ASTERISK_GID=1000",
