@@ -1,5 +1,6 @@
 import csv
 from io import StringIO
+import json
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
@@ -19,6 +20,7 @@ from .extension_csv import ExtensionCSVError, export_extensions_csv, extension_t
 from .extension_management import sync_extension_relationships
 from .forms import ExtensionForm, LocationForm
 from .models import (
+    APIKey,
     AuditAction,
     AuditLog,
     AuditOutcome,
@@ -39,6 +41,7 @@ from .models import (
     QueueMember,
     RingGroup,
     RingGroupMember,
+    ServiceIdentity,
 )
 
 
@@ -716,6 +719,232 @@ class AuditLogTests(TestCase):
                 )
 
         self.assertEqual(AuditLog.objects.count(), len(representative_actions))
+
+
+class AdminManagementAPITests(TestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(username="admin-api", password="portal-pass")
+        self.viewer = User.objects.create_user(username="viewer-api", password="portal-pass")
+        assign_role(self.admin, PortalRole.ADMIN)
+        assign_role(self.viewer, PortalRole.VIEWER)
+
+    def test_roles_endpoint_requires_admin_and_lists_permissions(self):
+        self.client.force_login(self.viewer)
+
+        viewer_response = self.client.get(reverse("admin-roles"))
+
+        self.assertEqual(viewer_response.status_code, 403)
+
+        self.client.force_login(self.admin)
+
+        admin_response = self.client.get(reverse("admin-roles"))
+
+        self.assertEqual(admin_response.status_code, 200)
+        roles = {role["id"]: role for role in admin_response.json()["roles"]}
+        self.assertIn(PortalRole.ADMIN, roles)
+        self.assertIn(PortalPermission.ADMINISTER, roles[PortalRole.ADMIN]["permissions"])
+        self.assertNotIn(PortalPermission.ADMINISTER, roles[PortalRole.VIEWER]["permissions"])
+
+    def test_admin_can_create_and_update_users_with_roles(self):
+        self.client.force_login(self.admin)
+
+        create_response = self._post_json(
+            reverse("admin-users"),
+            {
+                "username": "managed-user",
+                "email": "managed@example.com",
+                "role": PortalRole.EDITOR,
+            },
+        )
+
+        self.assertEqual(create_response.status_code, 201)
+        user = User.objects.get(username="managed-user")
+        self.assertEqual(user.email, "managed@example.com")
+        self.assertEqual(get_user_role(user), PortalRole.EDITOR)
+
+        update_response = self._patch_json(
+            reverse("admin-user-detail", args=[user.id]),
+            {"role": PortalRole.OPERATOR, "is_active": False},
+        )
+
+        self.assertEqual(update_response.status_code, 200)
+        user.refresh_from_db()
+        user.portal_profile.refresh_from_db()
+        self.assertFalse(user.is_active)
+        self.assertEqual(user.portal_profile.role, PortalRole.OPERATOR)
+        self.assertIsNone(get_user_role(user))
+
+    def test_admin_can_create_and_update_service_identities(self):
+        self.client.force_login(self.admin)
+
+        create_response = self._post_json(
+            reverse("service-identity-list"),
+            {
+                "name": "Provisioner",
+                "slug": "provisioner",
+                "description": "Phone provisioning job",
+            },
+        )
+
+        self.assertEqual(create_response.status_code, 201)
+        identity = ServiceIdentity.objects.get(slug="provisioner")
+        self.assertEqual(identity.created_by, self.admin)
+        self.assertTrue(identity.is_active)
+
+        update_response = self._patch_json(
+            reverse("service-identity-detail", args=[identity.id]),
+            {"is_active": False, "description": "Disabled"},
+        )
+
+        self.assertEqual(update_response.status_code, 200)
+        identity.refresh_from_db()
+        self.assertFalse(identity.is_active)
+        self.assertEqual(identity.description, "Disabled")
+
+    def _post_json(self, url, payload):
+        return self.client.post(url, data=json.dumps(payload), content_type="application/json")
+
+    def _patch_json(self, url, payload):
+        return self.client.patch(url, data=json.dumps(payload), content_type="application/json")
+
+
+class APIKeyLifecycleAPITests(TestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(username="key-admin", password="portal-pass")
+        self.viewer = User.objects.create_user(username="key-viewer", password="portal-pass")
+        self.scoped_user = User.objects.create_user(username="scoped-user", password="portal-pass")
+        assign_role(self.admin, PortalRole.ADMIN)
+        assign_role(self.viewer, PortalRole.VIEWER)
+        assign_role(self.scoped_user, PortalRole.VIEWER)
+        self.service_identity = ServiceIdentity.objects.create(
+            name="Provisioning Service",
+            slug="provisioning-service",
+            created_by=self.admin,
+        )
+
+    def test_api_key_lifecycle_operations_require_admin(self):
+        api_key, _secret = APIKey.issue(name="existing", user=self.scoped_user, created_by=self.admin)
+        self.client.force_login(self.viewer)
+
+        create_response = self._post_json(
+            reverse("api-key-create"),
+            {"name": "viewer key", "user_id": self.scoped_user.id},
+        )
+        rotate_response = self.client.post(reverse("api-key-rotate", args=[api_key.id]))
+        revoke_response = self.client.post(reverse("api-key-revoke", args=[api_key.id]))
+
+        self.assertEqual(create_response.status_code, 403)
+        self.assertEqual(rotate_response.status_code, 403)
+        self.assertEqual(revoke_response.status_code, 403)
+        api_key.refresh_from_db()
+        self.assertTrue(api_key.is_active)
+        self.assertEqual(AuditLog.objects.count(), 0)
+
+    def test_admin_creates_user_scoped_api_key_and_audits_without_raw_secret(self):
+        self.client.force_login(self.admin)
+
+        response = self._post_json(
+            reverse("api-key-create"),
+            {"name": "User automation", "user_id": self.scoped_user.id},
+        )
+
+        self.assertEqual(response.status_code, 201)
+        body = response.json()
+        raw_secret = body["secret"]
+        api_key = APIKey.objects.get()
+        self.assertTrue(raw_secret.startswith("pbx_"))
+        self.assertEqual(api_key.user, self.scoped_user)
+        self.assertIsNone(api_key.service_identity)
+        self.assertNotEqual(api_key.key_hash, raw_secret)
+        self.assertEqual(APIKey.find_by_secret(raw_secret), api_key)
+
+        audit = AuditLog.objects.get(action=AuditAction.API_KEY_CREATE)
+        self.assertEqual(audit.actor, self.admin)
+        self.assertEqual(audit.target, f"api_keys/{api_key.id}")
+        self.assertEqual(audit.outcome, AuditOutcome.SUCCESS)
+        self.assertEqual(audit.details["scope_type"], "user")
+        self.assertEqual(audit.details["scope_id"], self.scoped_user.id)
+        self.assertNotIn(raw_secret, json.dumps(audit.details))
+
+    def test_api_key_scope_requires_exactly_one_user_or_service_identity(self):
+        self.client.force_login(self.admin)
+
+        missing_scope_response = self._post_json(reverse("api-key-create"), {"name": "missing"})
+        double_scope_response = self._post_json(
+            reverse("api-key-create"),
+            {
+                "name": "double",
+                "user_id": self.scoped_user.id,
+                "service_identity_id": self.service_identity.id,
+            },
+        )
+        service_scope_response = self._post_json(
+            reverse("api-key-create"),
+            {
+                "name": "service",
+                "service_identity_id": self.service_identity.id,
+            },
+        )
+
+        self.assertEqual(missing_scope_response.status_code, 400)
+        self.assertEqual(double_scope_response.status_code, 400)
+        self.assertEqual(service_scope_response.status_code, 201)
+        api_key = APIKey.objects.get()
+        self.assertIsNone(api_key.user)
+        self.assertEqual(api_key.service_identity, self.service_identity)
+
+    def test_rotation_invalidates_old_secret_and_audits_new_prefix(self):
+        self.client.force_login(self.admin)
+        create_response = self._post_json(
+            reverse("api-key-create"),
+            {"name": "Rotating key", "user_id": self.scoped_user.id},
+        )
+        api_key = APIKey.objects.get()
+        old_secret = create_response.json()["secret"]
+        old_prefix = api_key.prefix
+
+        rotate_response = self.client.post(reverse("api-key-rotate", args=[api_key.id]))
+
+        self.assertEqual(rotate_response.status_code, 200)
+        new_secret = rotate_response.json()["secret"]
+        self.assertNotEqual(new_secret, old_secret)
+        self.assertIsNone(APIKey.find_by_secret(old_secret))
+        self.assertEqual(APIKey.find_by_secret(new_secret), api_key)
+        api_key.refresh_from_db()
+        self.assertEqual(api_key.last_rotated_by, self.admin)
+        self.assertIsNotNone(api_key.last_rotated_at)
+        self.assertNotEqual(api_key.prefix, old_prefix)
+
+        audit = AuditLog.objects.get(action=AuditAction.API_KEY_ROTATE)
+        self.assertEqual(audit.details["old_prefix"], old_prefix)
+        self.assertEqual(audit.details["prefix"], api_key.prefix)
+        self.assertNotIn(new_secret, json.dumps(audit.details))
+
+    def test_revocation_disables_secret_and_blocks_future_rotation(self):
+        self.client.force_login(self.admin)
+        create_response = self._post_json(
+            reverse("api-key-create"),
+            {"name": "Revoked key", "user_id": self.scoped_user.id},
+        )
+        api_key = APIKey.objects.get()
+        raw_secret = create_response.json()["secret"]
+
+        revoke_response = self.client.post(reverse("api-key-revoke", args=[api_key.id]))
+
+        self.assertEqual(revoke_response.status_code, 200)
+        api_key.refresh_from_db()
+        self.assertFalse(api_key.is_active)
+        self.assertEqual(api_key.revoked_by, self.admin)
+        self.assertIsNotNone(api_key.revoked_at)
+        self.assertIsNone(APIKey.find_by_secret(raw_secret))
+
+        rotate_response = self.client.post(reverse("api-key-rotate", args=[api_key.id]))
+
+        self.assertEqual(rotate_response.status_code, 400)
+        self.assertEqual(AuditLog.objects.filter(action=AuditAction.API_KEY_REVOKE).count(), 1)
+
+    def _post_json(self, url, payload):
+        return self.client.post(url, data=json.dumps(payload), content_type="application/json")
 
 
 class LANWarpOnlyMiddlewareTests(SimpleTestCase):
