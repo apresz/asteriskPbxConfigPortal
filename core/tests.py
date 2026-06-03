@@ -28,6 +28,8 @@ from .config_export import (
     build_asterisk_config_files,
     build_location_config,
     build_route_generation_choices,
+    build_location_config,
+    mac_to_sep_filename,
     select_route_caller_id,
     validate_location_routing,
 )
@@ -1866,6 +1868,314 @@ class AudioPromptIVRIntegrationTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "unsupported codec")
         self.assertEqual(AudioPrompt.objects.count(), 0)
+
+
+class CiscoTFTPProvisioningTests(TestCase):
+    def test_mac_to_sep_filename_normalizes_supported_formats(self):
+        self.assertEqual(mac_to_sep_filename("sep00:11:22:aa:bb:cc"), "SEP001122AABBCC.cnf.xml")
+        self.assertEqual(mac_to_sep_filename("0011.2233.4455"), "SEP001122334455.cnf.xml")
+
+    def test_generates_golden_sep_files_for_each_supported_cisco_model(self):
+        location = self._create_location()
+        model_cases = [
+            (Phone.PhoneModel.CISCO_9971, "Cisco CP-9971", "001122334401", "sip9971.9-4-2", "5101"),
+            (Phone.PhoneModel.CISCO_9951, "Cisco CP-9951", "001122334402", "sip9951.9-4-2", "5102"),
+            (Phone.PhoneModel.CISCO_8961, "Cisco CP-8961", "001122334403", "sip8961.9-4-2", "5103"),
+        ]
+        for model, _product, mac_address, load_name, extension_number in model_cases:
+            extension = Extension.objects.create(
+                location=location,
+                number=extension_number,
+                display_name=f"Desk {extension_number}",
+                sip_username=f"sip{extension_number}",
+                sip_password=f"secret{extension_number}",
+            )
+            phone = Phone.objects.create(
+                location=location,
+                mac_address=mac_address,
+                model=model,
+                firmware_load_name=load_name,
+                label=f"{model} Phone",
+            )
+            PhoneLineAppearance.objects.create(phone=phone, extension=extension, line_index=1, label="Primary")
+
+        inactive_phone = Phone.objects.create(
+            location=location,
+            mac_address="001122334499",
+            model=Phone.PhoneModel.CISCO_9971,
+            firmware_load_name="sip9971.9-4-2",
+            label="Inactive",
+            is_active=False,
+        )
+        PhoneLineAppearance.objects.create(
+            phone=inactive_phone,
+            extension=Extension.objects.create(location=location, number="5199", display_name="Inactive Desk"),
+            line_index=1,
+        )
+
+        tftp = build_location_config(location)["tftp"]
+        files = self._file_map(tftp)
+
+        self.assertEqual(
+            [phone_file["filename"] for phone_file in tftp["phone_files"]],
+            [
+                "SEP001122334401.cnf.xml",
+                "SEP001122334402.cnf.xml",
+                "SEP001122334403.cnf.xml",
+            ],
+        )
+        for model, product, mac_address, load_name, extension_number in model_cases:
+            with self.subTest(model=model):
+                filename = mac_to_sep_filename(mac_address)
+                self.assertEqual(
+                    files[filename]["content"],
+                    self._expected_phone_xml(
+                        model=model,
+                        product=product,
+                        label=f"{model} Phone",
+                        load_name=load_name,
+                        lines=[
+                            {
+                                "button": "1",
+                                "label": "Primary",
+                                "number": extension_number,
+                                "display": f"Desk {extension_number}",
+                                "auth": f"sip{extension_number}",
+                                "password": f"secret{extension_number}",
+                            }
+                        ],
+                    ),
+                )
+
+    def test_multiline_and_speed_dial_golden_config(self):
+        location = self._create_location()
+        reception = Extension.objects.create(
+            location=location,
+            number="5100",
+            display_name="Reception",
+            sip_username="sip5100",
+            sip_password="secret5100",
+        )
+        sales = Extension.objects.create(
+            location=location,
+            number="5101",
+            display_name="Sales",
+            sip_password="secret5101",
+        )
+        phone = Phone.objects.create(
+            location=location,
+            mac_address="001122334455",
+            model=Phone.PhoneModel.CISCO_9971,
+            firmware_load_name="sip9971.9-4-2",
+            label="Reception Phone",
+        )
+        PhoneLineAppearance.objects.create(phone=phone, extension=reception, line_index=1, label="Primary")
+        PhoneLineAppearance.objects.create(phone=phone, extension=sales, line_index=2, label="Sales")
+        PhoneSpeedDial.objects.create(phone=phone, position=1, label="Support", destination="5101")
+
+        files = self._file_map(build_location_config(location)["tftp"])
+
+        self.assertEqual(
+            files["SEP001122334455.cnf.xml"]["content"],
+            self._expected_phone_xml(
+                model=Phone.PhoneModel.CISCO_9971,
+                product="Cisco CP-9971",
+                label="Reception Phone",
+                load_name="sip9971.9-4-2",
+                lines=[
+                    {
+                        "button": "1",
+                        "label": "Primary",
+                        "number": "5100",
+                        "display": "Reception",
+                        "auth": "sip5100",
+                        "password": "secret5100",
+                    },
+                    {
+                        "button": "2",
+                        "label": "Sales",
+                        "number": "5101",
+                        "display": "Sales",
+                        "auth": "5101",
+                        "password": "secret5101",
+                    },
+                ],
+                speed_dials=[
+                    {
+                        "button": "3",
+                        "label": "Support",
+                        "destination": "5101",
+                    }
+                ],
+            ),
+        )
+
+    def test_company_directory_golden_xml_groups_active_extensions_by_location(self):
+        hq = self._create_location(name="Provision HQ", slug="provision-hq", pbx_lan_ip="10.50.0.10")
+        warehouse = self._create_location(
+            name="Provision Warehouse",
+            slug="provision-warehouse",
+            pbx_lan_ip="10.51.0.10",
+            pbx_warp_ip="100.64.51.10",
+            lan_subnet="10.51.0.0/24",
+        )
+        Extension.objects.create(location=hq, number="5100", display_name="Reception")
+        Extension.objects.create(location=hq, number="5101", display_name="Sales")
+        Extension.objects.create(location=warehouse, number="6100", display_name="Warehouse Desk")
+        Extension.objects.create(location=warehouse, number="6101", display_name="Inactive Desk", is_active=False)
+
+        files = self._file_map(build_location_config(hq)["tftp"])
+
+        self.assertEqual(
+            files["company-directory.xml"]["content"],
+            """<?xml version='1.0' encoding='utf-8'?>
+<CiscoIPPhoneDirectory>
+  <Title>Company Directory</Title>
+  <Prompt>Extensions grouped by location</Prompt>
+  <DirectoryEntry>
+    <Name>Provision HQ - Reception</Name>
+    <Telephone>5100</Telephone>
+    <Location>Provision HQ</Location>
+  </DirectoryEntry>
+  <DirectoryEntry>
+    <Name>Provision HQ - Sales</Name>
+    <Telephone>5101</Telephone>
+    <Location>Provision HQ</Location>
+  </DirectoryEntry>
+  <DirectoryEntry>
+    <Name>Provision Warehouse - Warehouse Desk</Name>
+    <Telephone>6100</Telephone>
+    <Location>Provision Warehouse</Location>
+  </DirectoryEntry>
+</CiscoIPPhoneDirectory>""",
+        )
+
+    def test_firmware_placeholder_and_checklist_files_are_in_tftp_output(self):
+        location = self._create_location()
+        extension = Extension.objects.create(location=location, number="5100", display_name="Reception")
+        phone = Phone.objects.create(
+            location=location,
+            mac_address="001122334455",
+            model=Phone.PhoneModel.CISCO_9971,
+            firmware_load_name="sip9971.9-4-2",
+        )
+        PhoneLineAppearance.objects.create(phone=phone, extension=extension, line_index=1)
+
+        tftp = build_location_config(location)["tftp"]
+        files = self._file_map(tftp)
+
+        self.assertFalse(tftp["firmware"]["bundled"])
+        self.assertIn("firmware/CISCO-FIRMWARE-CHECKLIST.txt", files)
+        self.assertIn("firmware/README-no-firmware-bundled.txt", files)
+        self.assertIn("This export does not bundle Cisco firmware.", files["firmware/CISCO-FIRMWARE-CHECKLIST.txt"]["content"])
+        self.assertIn("SEP001122334455 (CP-9971): sip9971.9-4-2", files["firmware/CISCO-FIRMWARE-CHECKLIST.txt"]["content"])
+        self.assertIn("No firmware binaries are included", files["firmware/README-no-firmware-bundled.txt"]["content"])
+
+    def _create_location(self, **overrides):
+        data = location_model_data(
+            name="Provision HQ",
+            slug="provision-hq",
+            pbx_lan_ip="10.50.0.10",
+            pbx_warp_ip="100.64.50.10",
+            lan_subnet="10.50.0.0/24",
+            sip_bind_ip="10.50.0.10",
+            iax_bind_ip="10.50.0.10",
+            default_did="+15551205000",
+            emergency_caller_id="+15551205999",
+            emergency_trunk="Provision SIP",
+        )
+        data.update(overrides)
+        data.setdefault("sip_bind_ip", data["pbx_lan_ip"])
+        data.setdefault("iax_bind_ip", data["pbx_lan_ip"])
+        return Location.objects.create(**data)
+
+    def _file_map(self, tftp):
+        return {file["path"]: file for file in tftp["files"]}
+
+    def _expected_phone_xml(self, *, model, product, label, load_name, lines, speed_dials=None):
+        speed_dials = speed_dials or []
+        line_xml = "\n".join(
+            [
+                f"""      <line button="{line['button']}">
+        <featureID>9</featureID>
+        <featureLabel>{line['label']}</featureLabel>
+        <proxy>USECALLMANAGER</proxy>
+        <port>5060</port>
+        <name>{line['number']}</name>
+        <displayName>{line['display']}</displayName>
+        <authName>{line['auth']}</authName>
+        <authPassword>{line['password']}</authPassword>
+        <contact>{line['number']}</contact>
+        <messagesNumber>*97</messagesNumber>
+      </line>"""
+                for line in lines
+            ]
+            + [
+                f"""      <line button="{speed_dial['button']}">
+        <featureID>2</featureID>
+        <featureLabel>{speed_dial['label']}</featureLabel>
+        <speedDialNumber>{speed_dial['destination']}</speedDialNumber>
+      </line>"""
+                for speed_dial in speed_dials
+            ]
+        )
+        return f"""<?xml version='1.0' encoding='utf-8'?>
+<device>
+  <deviceProtocol>SIP</deviceProtocol>
+  <product>{product}</product>
+  <model>{model}</model>
+  <phoneLabel>{label}</phoneLabel>
+  <transportLayerProtocol>TCP</transportLayerProtocol>
+  <directoryURL>http://10.50.0.10/cisco/company-directory.xml</directoryURL>
+  <loadInformation>{load_name}</loadInformation>
+  <devicePool>
+    <dateTimeSetting>
+      <dateTemplate>M/D/Ya</dateTemplate>
+      <timeZone>America/Los_Angeles</timeZone>
+    </dateTimeSetting>
+    <callManagerGroup>
+      <members>
+        <member priority="0">
+          <callManager>
+            <ports>
+              <ethernetPhonePort>2000</ethernetPhonePort>
+              <sipPort>5060</sipPort>
+              <securedSipPort>5061</securedSipPort>
+            </ports>
+            <processNodeName>10.50.0.10</processNodeName>
+          </callManager>
+        </member>
+      </members>
+    </callManagerGroup>
+  </devicePool>
+  <sipProfile>
+    <sipProxies>
+      <backupProxy />
+      <backupProxyPort />
+      <emergencyProxy />
+      <emergencyProxyPort />
+      <outboundProxy />
+      <outboundProxyPort />
+      <registerWithProxy>true</registerWithProxy>
+    </sipProxies>
+    <sipPort>5060</sipPort>
+    <transportLayerProtocol>TCP</transportLayerProtocol>
+    <phoneLabel>{label}</phoneLabel>
+    <dialTemplate>dialplan.xml</dialTemplate>
+    <sipLines>
+{line_xml}
+    </sipLines>
+  </sipProfile>
+  <phoneServices>
+    <provisioning>0</provisioning>
+    <phoneService type="1" category="0">
+      <name>Company Directory</name>
+      <url>http://10.50.0.10/cisco/company-directory.xml</url>
+      <vendor>Local PBX</vendor>
+      <version>1</version>
+    </phoneService>
+  </phoneServices>
+</device>"""
 
 
 class PhoneMACValidationTests(TestCase):
