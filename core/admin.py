@@ -6,6 +6,7 @@ from .models import (
     APIKey,
     AudioPrompt,
     ConfigVersion,
+    DeploymentRecord,
     DID,
     IVR,
     IVRMenuOption,
@@ -109,6 +110,10 @@ class LocationAdmin(admin.ModelAdmin):
                     "deployment_ssh_username",
                     "deployment_ssh_private_key",
                     "deployment_ssh_known_hosts",
+                    "deployment_staging_path",
+                    "deployment_asterisk_path",
+                    "deployment_tftp_path",
+                    "deployment_reload_command",
                 )
             },
         ),
@@ -166,6 +171,45 @@ class ConfigVersionAdmin(admin.ModelAdmin):
         "archive",
         "archive_size_bytes",
         "rollback_of",
+        "created_at",
+        "updated_at",
+    )
+
+
+@admin.register(DeploymentRecord)
+class DeploymentRecordAdmin(admin.ModelAdmin):
+    list_display = (
+        "started_at",
+        "location",
+        "action",
+        "config_version",
+        "operator",
+        "target_host",
+        "status",
+        "reload_result",
+    )
+    list_filter = ("action", "status", "reload_result", "location", "started_at")
+    search_fields = ("location__name", "location__slug", "target_host", "operator__username")
+    readonly_fields = (
+        "location",
+        "config_version",
+        "rollback_source_version",
+        "operator",
+        "started_at",
+        "completed_at",
+        "target_host",
+        "target_port",
+        "target_username",
+        "staging_path",
+        "asterisk_path",
+        "tftp_path",
+        "reload_command",
+        "action",
+        "status",
+        "reload_result",
+        "reload_output",
+        "error_message",
+        "details",
         "created_at",
         "updated_at",
     )

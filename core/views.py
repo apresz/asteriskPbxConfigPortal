@@ -18,6 +18,7 @@ from .audit import record_audit
 from .audio_prompts import AudioPromptConversionError, create_audio_prompt_from_upload
 from .backups import create_admin_backup
 from .config_export import ConfigExportValidationError, create_config_version, validate_location_routing
+from .deployments import DeploymentError, deploy_config_version
 from .extension_csv import (
     ExtensionCSVError,
     export_extensions_csv,
@@ -735,7 +736,25 @@ def location_config_export_download(request, slug: str, version_number: int):
 @require_POST
 def location_config_export_deploy(request, slug: str, version_number: int):
     version = _config_version_or_404(slug, version_number)
-    _mark_config_version_deployed(version, request.user, rolled_back=False)
+    try:
+        deploy_config_version(
+            version,
+            operator=request.user,
+            reload_confirmed=_reload_confirmed(request),
+            rollback=False,
+        )
+    except DeploymentError as exc:
+        context = _location_detail_context(
+            request,
+            version.location,
+            {"deployment_errors": [str(exc)]},
+        )
+        return render(
+            request,
+            _template(request, "core/locations/detail.html", "core/partials/location_detail.html"),
+            context,
+            status=400,
+        )
     return redirect("location-detail", slug=version.location.slug)
 
 
@@ -743,7 +762,25 @@ def location_config_export_deploy(request, slug: str, version_number: int):
 @require_POST
 def location_config_export_rollback(request, slug: str, version_number: int):
     version = _config_version_or_404(slug, version_number)
-    _mark_config_version_deployed(version, request.user, rolled_back=True)
+    try:
+        deploy_config_version(
+            version,
+            operator=request.user,
+            reload_confirmed=_reload_confirmed(request),
+            rollback=True,
+        )
+    except DeploymentError as exc:
+        context = _location_detail_context(
+            request,
+            version.location,
+            {"deployment_errors": [str(exc)]},
+        )
+        return render(
+            request,
+            _template(request, "core/locations/detail.html", "core/partials/location_detail.html"),
+            context,
+            status=400,
+        )
     return redirect("location-detail", slug=version.location.slug)
 
 
@@ -1799,6 +1836,11 @@ def _location_detail_context(request, location: Location, extra: dict | None = N
             "deployed_by",
             "rollback_of",
         ).order_by("-version_number"),
+        "deployment_records": location.deployment_records.select_related(
+            "operator",
+            "config_version",
+            "rollback_source_version",
+        ).order_by("-started_at", "-id")[:10],
     }
     if extra:
         context.update(extra)
@@ -1811,6 +1853,10 @@ def _config_version_or_404(slug: str, version_number: int) -> ConfigVersion:
         location__slug=slug,
         version_number=version_number,
     )
+
+
+def _reload_confirmed(request) -> bool:
+    return request.POST.get("confirm_reload") in {"1", "on", "true", "yes"}
 
 
 def _mark_config_version_deployed(version: ConfigVersion, user, *, rolled_back: bool):

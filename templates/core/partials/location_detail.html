@@ -29,6 +29,17 @@
   </section>
 {% endif %}
 
+{% if deployment_errors %}
+  <section class="notice-panel notice-panel--error">
+    <h2>Deployment Failed</h2>
+    <ul>
+      {% for error in deployment_errors %}
+        <li>{{ error }}</li>
+      {% endfor %}
+    </ul>
+  </section>
+{% endif %}
+
 <section class="summary-grid" aria-label="Location deployment status">
   <div class="summary-tile">
     <span>Active</span>
@@ -120,6 +131,10 @@
         <div><dt>Username</dt><dd>{{ location.deployment_ssh_username|default:"Missing" }}</dd></div>
         <div><dt>Private Key</dt><dd>{{ location.deployment_ssh_private_key|yesno:"Configured,Missing" }}</dd></div>
         <div><dt>Known Hosts</dt><dd>{{ location.deployment_ssh_known_hosts|yesno:"Configured,Missing" }}</dd></div>
+        <div><dt>Staging Path</dt><dd><code>{{ location.deployment_staging_path }}</code></dd></div>
+        <div><dt>Asterisk Path</dt><dd><code>{{ location.deployment_asterisk_path }}</code></dd></div>
+        <div><dt>TFTP Path</dt><dd><code>{{ location.deployment_tftp_path }}</code></dd></div>
+        <div><dt>Reload Command</dt><dd><code>{{ location.deployment_reload_command }}</code></dd></div>
       </dl>
     {% else %}
       <p class="restricted-copy">Restricted</p>
@@ -213,11 +228,13 @@
               {% if can_deploy_config %}
                 <form method="post" action="{% url 'location-config-export-deploy' location.slug version.version_number %}">
                   {% csrf_token %}
+                  <label class="inline-check"><input type="checkbox" name="confirm_reload" value="1" required> Reload</label>
                   <button class="button button--secondary" type="submit">Deploy</button>
                 </form>
                 {% if not forloop.first %}
                   <form method="post" action="{% url 'location-config-export-rollback' location.slug version.version_number %}">
                     {% csrf_token %}
+                    <label class="inline-check"><input type="checkbox" name="confirm_reload" value="1" required> Reload</label>
                     <button class="button button--secondary" type="submit">Rollback</button>
                   </form>
                 {% endif %}
@@ -228,6 +245,59 @@
       {% empty %}
         <tr>
           <td colspan="7">No config versions exported.</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="table-panel deployment-history" aria-label="Deployment history">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th scope="col">Started</th>
+        <th scope="col">Action</th>
+        <th scope="col">Version</th>
+        <th scope="col">Operator</th>
+        <th scope="col">Target</th>
+        <th scope="col">Status</th>
+        <th scope="col">Reload</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for deployment in deployment_records %}
+        <tr>
+          <td>{{ deployment.started_at|date:"Y-m-d H:i" }}</td>
+          <td>{{ deployment.get_action_display }}</td>
+          <td>
+            v{{ deployment.config_version.version_number }}
+            {% if deployment.rollback_source_version %}
+              <span class="table-meta">Source v{{ deployment.rollback_source_version.version_number }}</span>
+            {% endif %}
+          </td>
+          <td>{{ deployment.operator.get_username|default:"system" }}</td>
+          <td>
+            {{ deployment.target_host }}:{{ deployment.target_port }}
+            <span class="table-meta">{{ deployment.target_username|default:"unknown" }}</span>
+          </td>
+          <td>
+            <span class="status-badge{% if deployment.status == 'failed' %} status-badge--danger{% endif %}">
+              {{ deployment.get_status_display }}
+            </span>
+            {% if deployment.error_message %}
+              <span class="table-meta">{{ deployment.error_message|truncatechars:80 }}</span>
+            {% endif %}
+          </td>
+          <td>
+            {{ deployment.get_reload_result_display }}
+            {% if deployment.reload_output %}
+              <span class="table-meta">{{ deployment.reload_output|truncatechars:80 }}</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% empty %}
+        <tr>
+          <td colspan="7">No deployments recorded.</td>
         </tr>
       {% endfor %}
     </tbody>
