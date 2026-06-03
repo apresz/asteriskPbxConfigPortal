@@ -6,6 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
+        ("core", "0008_audio_prompt_ivr_prompt"),
         ("core", "0008_merge_inbound_routing_provider_trunks"),
     ]
 

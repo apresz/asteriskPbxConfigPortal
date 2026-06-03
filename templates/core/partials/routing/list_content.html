@@ -113,7 +113,11 @@
                 {% else %}
                   <span class="table-link">{{ record.name }}</span>
                 {% endif %}
-                {% if record.prompt_name %}<span class="table-meta">{{ record.prompt_name }}</span>{% endif %}
+                {% if record.prompt %}
+                  <span class="table-meta">{{ record.prompt.name }}</span>
+                {% elif record.prompt_name %}
+                  <span class="table-meta">{{ record.prompt_name }}</span>
+                {% endif %}
               </td>
               <td>{{ record.location.name }}</td>
               <td>

@@ -3,7 +3,9 @@ from django.db.models import Q
 from django.forms import BaseInlineFormSet
 
 from .extension_management import sync_extension_relationships
+from .audio_prompts import AudioPromptValidationError, validate_audio_prompt_upload
 from .models import (
+    AudioPrompt,
     CallQueue,
     DID,
     Extension,
@@ -770,7 +772,7 @@ class IVRForm(forms.ModelForm):
         "invalid_destination",
     )
     FIELDSETS = (
-        ("Identity", ("location", "name", "prompt_name", "is_active")),
+        ("Identity", ("location", "name", "prompt", "prompt_upload", "prompt_name", "is_active")),
         (
             "Routing",
             (
@@ -788,6 +790,7 @@ class IVRForm(forms.ModelForm):
         fields = (
             "location",
             "name",
+            "prompt",
             "prompt_name",
             "business_hours_destination",
             "after_hours_destination",
@@ -797,13 +800,47 @@ class IVRForm(forms.ModelForm):
             "is_active",
         )
 
+    prompt_upload = forms.FileField(
+        label="Upload prompt",
+        required=False,
+        help_text="Accepted formats: WAV, MP3, or M4A.",
+        widget=forms.ClearableFileInput(attrs={"accept": ".wav,.mp3,.m4a,audio/wav,audio/mpeg,audio/mp4"}),
+    )
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         location = _selected_location_from_form(self)
+        self.fields["prompt"].queryset = AudioPrompt.objects.select_related("location").order_by("location__name", "name")
+        self.fields["prompt"].required = False
+        self.fields["prompt_name"].required = False
+        self.fields["prompt_name"].label = "Prompt path"
+        self.fields["prompt_name"].help_text = "Optional legacy Asterisk prompt path. Upload or select a prompt when possible."
+        if location:
+            self.fields["prompt"].queryset = self.fields["prompt"].queryset.filter(location=location)
         for field_name in self.DESTINATION_FIELDS:
             self.fields[field_name].queryset = _destination_queryset(location)
             self.fields[field_name].required = False
         _configure_standard_widgets(self.fields)
+
+    def clean_prompt_upload(self):
+        upload = self.cleaned_data.get("prompt_upload")
+        if not upload:
+            return upload
+        if not self.cleaned_data.get("location"):
+            raise forms.ValidationError("Choose a location before uploading a prompt.")
+        try:
+            validate_audio_prompt_upload(upload)
+        except AudioPromptValidationError as exc:
+            raise forms.ValidationError(str(exc)) from exc
+        return upload
+
+    def clean(self):
+        cleaned_data = super().clean()
+        prompt = cleaned_data.get("prompt")
+        location = cleaned_data.get("location")
+        if prompt and location and prompt.location_id != location.id:
+            self.add_error("prompt", "Prompt must belong to the selected location.")
+        return cleaned_data
 
     @property
     def fieldsets(self):
