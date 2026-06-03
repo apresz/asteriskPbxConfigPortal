@@ -19,7 +19,14 @@ from .audit import record_audit
 from .config_export import build_location_config
 from .extension_csv import ExtensionCSVError, export_extensions_csv, extension_template_csv, import_extensions_csv
 from .extension_management import sync_extension_relationships
-from .forms import ExtensionForm, LocationForm
+from .forms import ExtensionForm, LocationForm, PhoneForm
+from .phone_csv import (
+    did_template_csv,
+    export_phones_csv,
+    export_speed_dials_csv,
+    phone_template_csv,
+    speed_dial_template_csv,
+)
 from .models import (
     APIKey,
     AuditAction,
@@ -38,6 +45,7 @@ from .models import (
     PagingGroupMember,
     Phone,
     PhoneLineAppearance,
+    PhoneSpeedDial,
     PortalPermission,
     PortalRole,
     QueueMember,
@@ -136,6 +144,52 @@ def extension_form_data(location, **overrides):
     return data
 
 
+def phone_form_data(location, **overrides):
+    data = {
+        "location": str(location.id),
+        "mac_address": "SEP001122334455",
+        "model": Phone.PhoneModel.CISCO_9971,
+        "label": "Reception Phone",
+        "is_active": "on",
+    }
+    data.update(overrides)
+    return data
+
+
+def phone_inline_formset_data(*, line_rows=None, speed_dial_rows=None):
+    line_rows = line_rows or []
+    speed_dial_rows = speed_dial_rows or []
+    data = {
+        "lines-TOTAL_FORMS": str(len(line_rows)),
+        "lines-INITIAL_FORMS": "0",
+        "lines-MIN_NUM_FORMS": "0",
+        "lines-MAX_NUM_FORMS": "1000",
+        "speed_dials-TOTAL_FORMS": str(len(speed_dial_rows)),
+        "speed_dials-INITIAL_FORMS": "0",
+        "speed_dials-MIN_NUM_FORMS": "0",
+        "speed_dials-MAX_NUM_FORMS": "1000",
+    }
+    for index, row in enumerate(line_rows):
+        data.update(
+            {
+                f"lines-{index}-id": "",
+                f"lines-{index}-line_index": str(row["line_index"]),
+                f"lines-{index}-extension": str(row["extension"].id),
+                f"lines-{index}-label": row.get("label", ""),
+            }
+        )
+    for index, row in enumerate(speed_dial_rows):
+        data.update(
+            {
+                f"speed_dials-{index}-id": "",
+                f"speed_dials-{index}-position": str(row["position"]),
+                f"speed_dials-{index}-label": row["label"],
+                f"speed_dials-{index}-destination": row["destination"],
+            }
+        )
+    return data
+
+
 def did_default_destination(location, extension):
     return InboundDestination.objects.create(
         location=location,
@@ -173,13 +227,14 @@ class PortalRouteTests(TestCase):
         self.assertContains(response, 'id="portal-main"')
         self.assertContains(response, "hx-boost")
         self.assertContains(response, "Extensions")
+        self.assertContains(response, "Phones")
         self.assertContains(response, "Dial Plan")
         self.assertContains(response, "viewer - Viewer")
         self.assertNotContains(response, "Settings")
 
     def test_initial_portal_area_routes_render(self):
         self.client.force_login(self.viewer)
-        route_names = ["extensions", "trunks", "dial-plan"]
+        route_names = ["extensions", "phones", "trunks", "dial-plan"]
 
         for route_name in route_names:
             with self.subTest(route_name=route_name):
@@ -769,6 +824,215 @@ class VoicemailRecordingConfigTests(TestCase):
         self.assertEqual(payload["location"]["slug"], "command-hq")
         self.assertEqual(payload["helper_scripts"]["recording_retention_days"], 90)
         self.assertEqual(payload["voicemail"]["mailboxes"][0]["number"], "3000")
+        
+        
+class PhoneMACValidationTests(TestCase):
+    def setUp(self):
+        self.location = Location.objects.create(**location_model_data(name="HQ", slug="hq"))
+
+    def test_phone_save_normalizes_mac_for_sep_provisioning(self):
+        phone = Phone.objects.create(
+            location=self.location,
+            mac_address="sep00:11:22:aa:bb:cc",
+            model=Phone.PhoneModel.CISCO_9951,
+            label="Reception",
+        )
+
+        self.assertEqual(phone.mac_address, "001122AABBCC")
+        self.assertEqual(phone.sep_identifier, "SEP001122AABBCC")
+
+    def test_phone_rejects_invalid_mac_values(self):
+        with self.assertRaises(ValidationError):
+            Phone.objects.create(location=self.location, mac_address="00:11:22:33:44:ZZ")
+
+    def test_phone_form_normalizes_mac_and_limits_cisco_models(self):
+        form = PhoneForm(
+            data=phone_form_data(
+                self.location,
+                mac_address="0011.2233.4455",
+                model=Phone.PhoneModel.CISCO_8961,
+            )
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["mac_address"], "001122334455")
+        self.assertEqual(
+            {choice[0] for choice in form.fields["model"].choices},
+            {
+                Phone.PhoneModel.CISCO_9971,
+                Phone.PhoneModel.CISCO_9951,
+                Phone.PhoneModel.CISCO_8961,
+            },
+        )
+
+
+class PhoneManagementViewTests(TestCase):
+    def setUp(self):
+        self.viewer = User.objects.create_user(username="phone-viewer", password="portal-pass")
+        self.editor = User.objects.create_user(username="phone-editor", password="portal-pass")
+        assign_role(self.viewer, PortalRole.VIEWER)
+        assign_role(self.editor, PortalRole.EDITOR)
+        self.location = Location.objects.create(**location_model_data(name="HQ", slug="hq"))
+        self.reception = Extension.objects.create(
+            location=self.location,
+            number="3000",
+            display_name="Reception",
+        )
+        self.sales = Extension.objects.create(
+            location=self.location,
+            number="3001",
+            display_name="Sales",
+        )
+
+    def test_phone_list_route_shows_inventory_and_csv_tooling(self):
+        phone = Phone.objects.create(
+            location=self.location,
+            mac_address="001122334455",
+            model=Phone.PhoneModel.CISCO_9971,
+            label="Reception Phone",
+        )
+        PhoneLineAppearance.objects.create(phone=phone, extension=self.reception, line_index=1, label="Primary")
+        PhoneSpeedDial.objects.create(phone=phone, position=1, label="Support", destination="3001")
+        self.client.force_login(self.viewer)
+
+        response = self.client.get(reverse("phones"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-area="phones"')
+        self.assertContains(response, "Phone Inventory")
+        self.assertContains(response, "SEP001122334455")
+        self.assertContains(response, "Line 1: 3000")
+        self.assertContains(response, "Support -> 3001")
+        self.assertContains(response, "Phones Template")
+        self.assertContains(response, "DIDs Template")
+        self.assertContains(response, "Speed Dials Template")
+
+    def test_viewer_cannot_create_phone(self):
+        self.client.force_login(self.viewer)
+
+        response = self.client.get(reverse("phone-create"))
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_editor_can_create_phone_with_multiple_lines_and_speed_dials(self):
+        self.client.force_login(self.editor)
+        post_data = phone_form_data(
+            self.location,
+            mac_address="SEP00-11-22-33-44-55",
+            model=Phone.PhoneModel.CISCO_9951,
+            label="Lobby",
+        )
+        post_data.update(
+            phone_inline_formset_data(
+                line_rows=[
+                    {"line_index": 1, "extension": self.reception, "label": "Primary"},
+                    {"line_index": 2, "extension": self.sales, "label": "Sales"},
+                ],
+                speed_dial_rows=[
+                    {"position": 1, "label": "Support", "destination": "3001"},
+                    {"position": 2, "label": "Emergency", "destination": "911"},
+                ],
+            )
+        )
+
+        response = self.client.post(reverse("phone-create"), post_data)
+
+        self.assertEqual(response.status_code, 302)
+        phone = Phone.objects.get(mac_address="001122334455")
+        self.assertEqual(phone.model, Phone.PhoneModel.CISCO_9951)
+        self.assertEqual(phone.line_appearances.count(), 2)
+        self.assertTrue(
+            PhoneLineAppearance.objects.filter(phone=phone, line_index=2, extension=self.sales, label="Sales").exists()
+        )
+        self.assertEqual(phone.speed_dials.count(), 2)
+        self.assertTrue(
+            PhoneSpeedDial.objects.filter(phone=phone, position=1, label="Support", destination="3001").exists()
+        )
+
+    def test_line_appearance_formset_rejects_duplicate_line_numbers(self):
+        self.client.force_login(self.editor)
+        post_data = phone_form_data(self.location)
+        post_data.update(
+            phone_inline_formset_data(
+                line_rows=[
+                    {"line_index": 1, "extension": self.reception},
+                    {"line_index": 1, "extension": self.sales},
+                ],
+                speed_dial_rows=[],
+            )
+        )
+
+        response = self.client.post(reverse("phone-create"), post_data)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Please correct the duplicate data for line_index.")
+        self.assertFalse(Phone.objects.filter(mac_address="001122334455").exists())
+
+
+class PhoneCSVTests(TestCase):
+    def setUp(self):
+        self.location = Location.objects.create(**location_model_data(name="HQ", slug="hq"))
+        self.extension = Extension.objects.create(
+            location=self.location,
+            number="3000",
+            display_name="Reception",
+        )
+        self.phone = Phone.objects.create(
+            location=self.location,
+            mac_address="001122334455",
+            model=Phone.PhoneModel.CISCO_9971,
+            label="Reception Phone",
+        )
+        PhoneLineAppearance.objects.create(phone=self.phone, extension=self.extension, line_index=1, label="Primary")
+        self.speed_dial = PhoneSpeedDial.objects.create(
+            phone=self.phone,
+            position=1,
+            label="Support",
+            destination="3001",
+        )
+
+    def test_csv_templates_include_phone_did_and_speed_dial_headers(self):
+        self.assertEqual(
+            next(csv.reader(StringIO(phone_template_csv()))),
+            [
+                "location_slug",
+                "mac_address",
+                "model",
+                "label",
+                "is_active",
+                "line_appearances",
+                "speed_dials",
+            ],
+        )
+        self.assertEqual(
+            next(csv.reader(StringIO(did_template_csv()))),
+            [
+                "location_slug",
+                "number",
+                "provider_slug",
+                "trunk_name",
+                "direct_extension",
+                "default_destination",
+                "label",
+                "is_active",
+            ],
+        )
+        self.assertEqual(
+            next(csv.reader(StringIO(speed_dial_template_csv()))),
+            ["phone_mac_address", "position", "label", "destination"],
+        )
+
+    def test_phone_and_speed_dial_exports_include_provisioning_data(self):
+        phone_rows = list(csv.DictReader(StringIO(export_phones_csv(Phone.objects.filter(id=self.phone.id)))))
+        speed_dial_rows = list(
+            csv.DictReader(StringIO(export_speed_dials_csv(PhoneSpeedDial.objects.filter(id=self.speed_dial.id))))
+        )
+
+        self.assertEqual(phone_rows[0]["mac_address"], "001122334455")
+        self.assertEqual(phone_rows[0]["line_appearances"], "1:3000:Primary")
+        self.assertEqual(phone_rows[0]["speed_dials"], "1:Support:3001")
+        self.assertEqual(speed_dial_rows[0]["phone_mac_address"], "001122334455")
+        self.assertEqual(speed_dial_rows[0]["destination"], "3001")
 
 
 class PortalPermissionTests(TestCase):

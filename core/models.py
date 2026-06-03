@@ -1,5 +1,6 @@
 import hashlib
 import ipaddress
+import re
 import secrets
 
 from django.conf import settings
@@ -45,6 +46,18 @@ mac_address_validator = RegexValidator(
     regex=r"^[0-9A-F]{12}$",
     message="MAC addresses must be 12 uppercase hexadecimal characters.",
 )
+
+
+def normalize_mac_address(value):
+    raw_value = str(value or "").strip().upper()
+    if raw_value.startswith("SEP"):
+        raw_value = raw_value[3:]
+    normalized = re.sub(r"[\s:.-]", "", raw_value)
+    if not re.fullmatch(r"[0-9A-F]{12}", normalized):
+        raise ValidationError(
+            "MAC addresses must be 12 hexadecimal characters, optionally separated by ':' '-' or '.', or prefixed with SEP."
+        )
+    return normalized
 
 
 class TimestampedModel(models.Model):
@@ -597,6 +610,29 @@ class Phone(TimestampedModel):
         label = f" ({self.label})" if self.label else ""
         return f"{self.mac_address}{label}"
 
+    @property
+    def sep_identifier(self):
+        return f"SEP{self.mac_address}"
+
+    def clean_fields(self, exclude=None):
+        if not exclude or "mac_address" not in exclude:
+            try:
+                self.mac_address = normalize_mac_address(self.mac_address)
+            except ValidationError as exc:
+                raise ValidationError({"mac_address": exc.messages}) from exc
+        super().clean_fields(exclude=exclude)
+
+    def clean(self):
+        super().clean()
+        try:
+            self.mac_address = normalize_mac_address(self.mac_address)
+        except ValidationError as exc:
+            raise ValidationError({"mac_address": exc.messages}) from exc
+
+    def save(self, *args, **kwargs):
+        self.mac_address = normalize_mac_address(self.mac_address)
+        super().save(*args, **kwargs)
+
 
 class PhoneLineAppearance(TimestampedModel):
     phone = models.ForeignKey(
@@ -638,6 +674,29 @@ class PhoneLineAppearance(TimestampedModel):
 
     def __str__(self):
         return f"{self.phone} line {self.line_index}: {self.extension}"
+
+
+class PhoneSpeedDial(TimestampedModel):
+    phone = models.ForeignKey(
+        Phone,
+        on_delete=models.CASCADE,
+        related_name="speed_dials",
+    )
+    position = models.PositiveSmallIntegerField(validators=[MinValueValidator(1)])
+    label = models.CharField(max_length=120)
+    destination = models.CharField(max_length=64)
+
+    class Meta:
+        ordering = ["phone", "position"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["phone", "position"],
+                name="unique_phone_speed_dial_position",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.phone} speed dial {self.position}: {self.label}"
 
 
 class IVR(TimestampedModel):

@@ -598,6 +598,7 @@ a {
 
 .location-form,
 .extension-form,
+.phone-form,
 .import-form {
   max-width: 1180px;
   display: grid;
@@ -658,6 +659,30 @@ textarea.form-control {
   gap: 10px;
   color: var(--ink);
   font-weight: 800;
+}
+
+.inline-formset {
+  display: grid;
+  gap: 12px;
+}
+
+.inline-formset__row {
+  display: grid;
+  grid-template-columns: minmax(92px, 0.55fr) minmax(180px, 1.2fr) minmax(180px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.inline-formset__row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.inline-formset__delete {
+  margin-bottom: 1px;
+  white-space: nowrap;
 }
 
 .checkbox-input {
@@ -758,7 +783,8 @@ textarea.form-control {
 
   .summary-grid,
   .record-grid,
-  .form-grid {
+  .form-grid,
+  .inline-formset__row {
     grid-template-columns: 1fr;
   }
 

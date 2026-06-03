@@ -1,8 +1,20 @@
 from django import forms
 from django.db.models import Q
+from django.forms import BaseInlineFormSet
 
 from .extension_management import sync_extension_relationships
-from .models import CallQueue, DID, Extension, Location, PagingGroup, RingGroup
+from .models import (
+    CallQueue,
+    DID,
+    Extension,
+    Location,
+    PagingGroup,
+    Phone,
+    PhoneLineAppearance,
+    PhoneSpeedDial,
+    RingGroup,
+    normalize_mac_address,
+)
 
 
 class LocationForm(forms.ModelForm):
@@ -387,3 +399,146 @@ class ExtensionForm(forms.ModelForm):
             records = cleaned_data.get(field_name) or []
             if any(record.location_id != location.id for record in records):
                 self.add_error(field_name, f"{label} must belong to the selected location.")
+
+
+class PhoneForm(forms.ModelForm):
+    FIELDSETS = (
+        ("Identity", ("location", "mac_address", "model", "label", "is_active")),
+    )
+
+    mac_address = forms.CharField(max_length=32, label="MAC address")
+
+    class Meta:
+        model = Phone
+        fields = ("location", "mac_address", "model", "label", "is_active")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for field_name, field in self.fields.items():
+            if field.widget.__class__ in (forms.CheckboxInput,):
+                field.widget.attrs.setdefault("class", "checkbox-input")
+            else:
+                field.widget.attrs.setdefault("class", "form-control")
+        self.fields["mac_address"].widget.attrs.setdefault("placeholder", "SEP001122334455")
+        self.fields["model"].choices = [
+            choice
+            for choice in Phone.PhoneModel.choices
+            if choice[0] in {
+                Phone.PhoneModel.CISCO_9971,
+                Phone.PhoneModel.CISCO_9951,
+                Phone.PhoneModel.CISCO_8961,
+            }
+        ]
+
+    @property
+    def fieldsets(self):
+        return [
+            {
+                "legend": legend,
+                "fields": [self[field_name] for field_name in field_names if field_name in self.fields],
+            }
+            for legend, field_names in self.FIELDSETS
+        ]
+
+    def clean_mac_address(self):
+        return normalize_mac_address(self.cleaned_data["mac_address"])
+
+
+class PhoneLineAppearanceForm(forms.ModelForm):
+    class Meta:
+        model = PhoneLineAppearance
+        fields = ("line_index", "extension", "label")
+
+    def __init__(self, *args, location=None, **kwargs):
+        self.location = location
+        super().__init__(*args, **kwargs)
+        if location is not None:
+            self.fields["extension"].queryset = Extension.objects.filter(location=location).order_by("number")
+        else:
+            self.fields["extension"].queryset = Extension.objects.select_related("location").order_by(
+                "location__name",
+                "number",
+            )
+        for field_name, field in self.fields.items():
+            field.widget.attrs.setdefault("class", "form-control")
+            if field_name in {"line_index"}:
+                field.widget.attrs["min"] = "1"
+
+    def clean(self):
+        cleaned_data = super().clean()
+        extension = cleaned_data.get("extension")
+        if extension and self.location and extension.location_id != self.location.id:
+            self.add_error("extension", "Line appearance extensions must belong to the selected phone location.")
+        return cleaned_data
+
+
+class PhoneSpeedDialForm(forms.ModelForm):
+    class Meta:
+        model = PhoneSpeedDial
+        fields = ("position", "label", "destination")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for field_name, field in self.fields.items():
+            field.widget.attrs.setdefault("class", "form-control")
+            if field_name == "position":
+                field.widget.attrs["min"] = "1"
+
+
+class BasePhoneLineAppearanceFormSet(BaseInlineFormSet):
+    def clean(self):
+        super().clean()
+        if any(self.errors):
+            return
+        self._validate_unique_values("line_index", "Line numbers must be unique per phone.")
+        self._validate_unique_values("extension", "Extensions can only appear once per phone.")
+
+    def _validate_unique_values(self, field_name, message):
+        values = set()
+        for form in self.forms:
+            if not getattr(form, "cleaned_data", None) or form.cleaned_data.get("DELETE"):
+                continue
+            value = form.cleaned_data.get(field_name)
+            if value in {None, ""}:
+                continue
+            if value in values:
+                raise forms.ValidationError(message)
+            values.add(value)
+
+
+class BasePhoneSpeedDialFormSet(BaseInlineFormSet):
+    def clean(self):
+        super().clean()
+        if any(self.errors):
+            return
+        positions = set()
+        for form in self.forms:
+            if not getattr(form, "cleaned_data", None) or form.cleaned_data.get("DELETE"):
+                continue
+            position = form.cleaned_data.get("position")
+            if position in {None, ""}:
+                continue
+            if position in positions:
+                raise forms.ValidationError("Speed-dial positions must be unique per phone.")
+            positions.add(position)
+
+
+PhoneLineAppearanceFormSet = forms.inlineformset_factory(
+    Phone,
+    PhoneLineAppearance,
+    form=PhoneLineAppearanceForm,
+    formset=BasePhoneLineAppearanceFormSet,
+    fields=("line_index", "extension", "label"),
+    extra=2,
+    can_delete=True,
+)
+
+PhoneSpeedDialFormSet = forms.inlineformset_factory(
+    Phone,
+    PhoneSpeedDial,
+    form=PhoneSpeedDialForm,
+    formset=BasePhoneSpeedDialFormSet,
+    fields=("position", "label", "destination"),
+    extra=3,
+    can_delete=True,
+)

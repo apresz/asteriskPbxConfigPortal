@@ -1,0 +1,81 @@
+<section class="page-heading page-heading--actions" data-area="phones">
+  <span>
+    <p class="eyebrow">Phones</p>
+    <h1>Phone Inventory</h1>
+    <p>Cisco phone provisioning records, line appearances, and speed-dial assignments.</p>
+  </span>
+  <span class="button-row">
+    <a class="button button--secondary" href="{% url 'phone-template' %}">Phones Template</a>
+    <a class="button button--secondary" href="{% url 'did-template' %}">DIDs Template</a>
+    <a class="button button--secondary" href="{% url 'speed-dial-template' %}">Speed Dials Template</a>
+    <a class="button button--secondary" href="{% url 'phone-export' %}">Export Phones</a>
+    <a class="button button--secondary" href="{% url 'speed-dial-export' %}">Export Speed Dials</a>
+    {% if can_edit_phones %}
+      <a class="button" href="{% url 'phone-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Phone</a>
+    {% endif %}
+  </span>
+</section>
+
+{% if phones %}
+  <section class="table-panel" aria-label="Phones">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th scope="col">Phone</th>
+          <th scope="col">Location</th>
+          <th scope="col">Model</th>
+          <th scope="col">Line Appearances</th>
+          <th scope="col">Speed Dials</th>
+          <th scope="col">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for phone in phones %}
+          <tr>
+            <td>
+              {% if can_edit_phones %}
+                <a class="table-link" href="{% url 'phone-edit' phone.mac_address %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">{{ phone.mac_address }}</a>
+              {% else %}
+                <span class="table-link">{{ phone.mac_address }}</span>
+              {% endif %}
+              <span class="table-meta">{{ phone.sep_identifier }}</span>
+              {% if phone.label %}<span class="table-meta">{{ phone.label }}</span>{% endif %}
+            </td>
+            <td>{{ phone.location.name }}</td>
+            <td>{{ phone.get_model_display }}</td>
+            <td>
+              <div class="tag-list">
+                {% for appearance in phone.line_appearances.all %}
+                  <span class="tag">Line {{ appearance.line_index }}: {{ appearance.extension.number }}{% if appearance.label %} - {{ appearance.label }}{% endif %}</span>
+                {% empty %}
+                  <span class="table-meta">No lines assigned</span>
+                {% endfor %}
+              </div>
+            </td>
+            <td>
+              <div class="tag-list">
+                {% for speed_dial in phone.speed_dials.all %}
+                  <span class="tag">{{ speed_dial.position }}: {{ speed_dial.label }} -> {{ speed_dial.destination }}</span>
+                {% empty %}
+                  <span class="table-meta">No speed dials</span>
+                {% endfor %}
+              </div>
+            </td>
+            <td>
+              <span class="status-badge{% if not phone.is_active %} status-badge--muted{% endif %}">
+                {{ phone.is_active|yesno:"Active,Inactive" }}
+              </span>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% else %}
+  <section class="empty-state">
+    <h2>No phones configured</h2>
+    {% if can_edit_phones %}
+      <a class="button" href="{% url 'phone-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Phone</a>
+    {% endif %}
+  </section>
+{% endif %}

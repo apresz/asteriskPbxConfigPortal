@@ -16,6 +16,7 @@ from .models import (
     PagingGroupMember,
     Phone,
     PhoneLineAppearance,
+    PhoneSpeedDial,
     PortalUserProfile,
     Provider,
     QueueMember,
@@ -168,3 +169,4 @@ admin.site.register(QueueMember)
 admin.site.register(PagingGroup)
 admin.site.register(PagingGroupMember)
 admin.site.register(PhoneLineAppearance)
+admin.site.register(PhoneSpeedDial)

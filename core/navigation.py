@@ -15,6 +15,12 @@ PORTAL_AREAS = {
         "status": "Manage extension records",
         "permission": PortalPermission.VIEW,
     },
+    "phones": {
+        "label": "Phones",
+        "summary": "Cisco phone inventory, line appearances, and speed-dial assignments.",
+        "status": "Manage Cisco phone provisioning data",
+        "permission": PortalPermission.VIEW,
+    },
     "trunks": {
         "label": "Trunks",
         "summary": "Carrier trunks, SIP endpoints, and upstream routing.",
