@@ -1,0 +1,308 @@
+<section class="page-heading page-heading--actions" data-area="{{ kind }}">
+  <span>
+    <p class="eyebrow">Routing</p>
+    <h1>{{ page_title }}</h1>
+    <p>{{ page_description }}</p>
+  </span>
+  {% if can_edit_routing %}
+    <span class="button-row">
+      <a class="button" href="{% url create_url %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New</a>
+    </span>
+  {% endif %}
+</section>
+
+{% if records %}
+  <section class="table-panel" aria-label="{{ page_title }}">
+    <table class="data-table">
+      {% if kind == "inbound-destinations" %}
+        <thead>
+          <tr>
+            <th scope="col">Destination</th>
+            <th scope="col">Location</th>
+            <th scope="col">Type</th>
+            <th scope="col">Target</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for record in records %}
+            <tr>
+              <td>
+                {% if can_edit_routing %}
+                  <a class="table-link" href="{% url edit_url record.id %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">{{ record.name }}</a>
+                {% else %}
+                  <span class="table-link">{{ record.name }}</span>
+                {% endif %}
+              </td>
+              <td>{{ record.location.name }}</td>
+              <td>{{ record.get_destination_type_display }}</td>
+              <td>{{ record.target }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      {% elif kind == "dids" %}
+        <thead>
+          <tr>
+            <th scope="col">DID</th>
+            <th scope="col">Location</th>
+            <th scope="col">Direct Route</th>
+            <th scope="col">Fallback</th>
+            <th scope="col">Carrier</th>
+            <th scope="col">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for record in records %}
+            <tr>
+              <td>
+                {% if can_edit_routing %}
+                  <a class="table-link" href="{% url edit_url record.id %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">{{ record.number }}</a>
+                {% else %}
+                  <span class="table-link">{{ record.number }}</span>
+                {% endif %}
+                {% if record.label %}<span class="table-meta">{{ record.label }}</span>{% endif %}
+              </td>
+              <td>{{ record.location.name }}</td>
+              <td>
+                {% if record.direct_extension %}
+                  {{ record.direct_extension.number }}
+                  <span class="table-meta">{{ record.direct_extension.display_name }}</span>
+                {% else %}
+                  <span class="table-meta">No direct extension</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if record.location.default_inbound_destination %}
+                  {{ record.location.default_inbound_destination.name }}
+                  <span class="table-meta">Location default</span>
+                {% elif record.default_destination %}
+                  {{ record.default_destination.name }}
+                  <span class="table-meta">DID default</span>
+                {% else %}
+                  <span class="table-meta">No fallback</span>
+                {% endif %}
+              </td>
+              <td>
+                {{ record.provider|default:"" }}
+                {% if record.trunk %}<span class="table-meta">{{ record.trunk.name }}</span>{% endif %}
+              </td>
+              <td>
+                <span class="status-badge{% if not record.is_active %} status-badge--muted{% endif %}">
+                  {{ record.is_active|yesno:"Active,Inactive" }}
+                </span>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      {% elif kind == "ivrs" %}
+        <thead>
+          <tr>
+            <th scope="col">IVR</th>
+            <th scope="col">Location</th>
+            <th scope="col">Hours Routing</th>
+            <th scope="col">Timeout / Invalid</th>
+            <th scope="col">Menu</th>
+            <th scope="col">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for record in records %}
+            <tr>
+              <td>
+                {% if can_edit_routing %}
+                  <a class="table-link" href="{% url edit_url record.id %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">{{ record.name }}</a>
+                {% else %}
+                  <span class="table-link">{{ record.name }}</span>
+                {% endif %}
+                {% if record.prompt_name %}<span class="table-meta">{{ record.prompt_name }}</span>{% endif %}
+              </td>
+              <td>{{ record.location.name }}</td>
+              <td>
+                <span class="table-meta">Business: {{ record.business_hours_destination|default:"Not set" }}</span>
+                <span class="table-meta">After: {{ record.after_hours_destination|default:"Not set" }}</span>
+              </td>
+              <td>
+                <span class="table-meta">{{ record.timeout_seconds }}s: {{ record.timeout_destination|default:"Not set" }}</span>
+                <span class="table-meta">Invalid: {{ record.invalid_destination|default:"Not set" }}</span>
+              </td>
+              <td>
+                <div class="tag-list">
+                  {% for option in record.menu_options.all %}
+                    <span class="tag">{{ option.digit }}: {{ option.destination.name }}</span>
+                  {% empty %}
+                    <span class="table-meta">No options</span>
+                  {% endfor %}
+                </div>
+              </td>
+              <td>
+                <span class="status-badge{% if not record.is_active %} status-badge--muted{% endif %}">
+                  {{ record.is_active|yesno:"Active,Inactive" }}
+                </span>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      {% elif kind == "ring-groups" %}
+        <thead>
+          <tr>
+            <th scope="col">Ring Group</th>
+            <th scope="col">Location</th>
+            <th scope="col">Strategy</th>
+            <th scope="col">Timeout</th>
+            <th scope="col">Members</th>
+            <th scope="col">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for record in records %}
+            <tr>
+              <td>
+                {% if can_edit_routing %}
+                  <a class="table-link" href="{% url edit_url record.id %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">{{ record.name }}</a>
+                {% else %}
+                  <span class="table-link">{{ record.name }}</span>
+                {% endif %}
+              </td>
+              <td>{{ record.location.name }}</td>
+              <td>{{ record.get_strategy_display }}</td>
+              <td>{{ record.timeout_seconds }}s</td>
+              <td>
+                <div class="tag-list">
+                  {% for member in record.members.all %}
+                    <span class="tag">{{ member.extension.number }}</span>
+                  {% empty %}
+                    <span class="table-meta">No members</span>
+                  {% endfor %}
+                </div>
+              </td>
+              <td>
+                <span class="status-badge{% if not record.is_active %} status-badge--muted{% endif %}">
+                  {{ record.is_active|yesno:"Active,Inactive" }}
+                </span>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      {% elif kind == "queues" %}
+        <thead>
+          <tr>
+            <th scope="col">Queue</th>
+            <th scope="col">Location</th>
+            <th scope="col">Strategy</th>
+            <th scope="col">Timing / MOH</th>
+            <th scope="col">Overflow</th>
+            <th scope="col">Members</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for record in records %}
+            <tr>
+              <td>
+                {% if can_edit_routing %}
+                  <a class="table-link" href="{% url edit_url record.id %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">{{ record.name }}</a>
+                {% else %}
+                  <span class="table-link">{{ record.name }}</span>
+                {% endif %}
+                <span class="table-meta">{{ record.get_recording_policy_display }}</span>
+              </td>
+              <td>{{ record.location.name }}</td>
+              <td>{{ record.get_strategy_display }}</td>
+              <td>
+                <span class="table-meta">Timeout {{ record.timeout_seconds }}s</span>
+                <span class="table-meta">Retry {{ record.retry_seconds }}s</span>
+                <span class="table-meta">MOH {{ record.music_on_hold|default:"default" }}</span>
+              </td>
+              <td>{{ record.overflow_destination|default:"Not set" }}</td>
+              <td>
+                <div class="tag-list">
+                  {% for member in record.members.all %}
+                    <span class="tag">{{ member.extension.number }}</span>
+                  {% empty %}
+                    <span class="table-meta">No members</span>
+                  {% endfor %}
+                </div>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      {% elif kind == "paging-groups" %}
+        <thead>
+          <tr>
+            <th scope="col">Paging Group</th>
+            <th scope="col">Location</th>
+            <th scope="col">Page Code</th>
+            <th scope="col">Members</th>
+            <th scope="col">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for record in records %}
+            <tr>
+              <td>
+                {% if can_edit_routing %}
+                  <a class="table-link" href="{% url edit_url record.id %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">{{ record.name }}</a>
+                {% else %}
+                  <span class="table-link">{{ record.name }}</span>
+                {% endif %}
+              </td>
+              <td>{{ record.location.name }}</td>
+              <td>{{ record.page_code }}</td>
+              <td>
+                <div class="tag-list">
+                  {% for member in record.members.all %}
+                    <span class="tag">{{ member.extension.number }}</span>
+                  {% empty %}
+                    <span class="table-meta">No members</span>
+                  {% endfor %}
+                </div>
+              </td>
+              <td>
+                <span class="status-badge{% if not record.is_active %} status-badge--muted{% endif %}">
+                  {{ record.is_active|yesno:"Active,Inactive" }}
+                </span>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      {% elif kind == "feature-codes" %}
+        <thead>
+          <tr>
+            <th scope="col">Feature Code</th>
+            <th scope="col">Location</th>
+            <th scope="col">Type</th>
+            <th scope="col">Destination</th>
+            <th scope="col">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for record in records %}
+            <tr>
+              <td>
+                {% if can_edit_routing %}
+                  <a class="table-link" href="{% url edit_url record.id %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">{{ record.code }}</a>
+                {% else %}
+                  <span class="table-link">{{ record.code }}</span>
+                {% endif %}
+                <span class="table-meta">{{ record.name }}</span>
+              </td>
+              <td>{{ record.location.name }}</td>
+              <td>{{ record.get_feature_type_display }}</td>
+              <td>{{ record.destination|default:"Not set" }}</td>
+              <td>
+                <span class="status-badge{% if not record.is_active %} status-badge--muted{% endif %}">
+                  {{ record.is_active|yesno:"Active,Inactive" }}
+                </span>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      {% endif %}
+    </table>
+  </section>
+{% else %}
+  <section class="empty-state">
+    <h2>{{ empty_label }}</h2>
+    {% if can_edit_routing %}
+      <a class="button" href="{% url create_url %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New</a>
+    {% endif %}
+  </section>
+{% endif %}

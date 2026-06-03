@@ -1,0 +1,13 @@
+<section class="record-header" data-area="{{ area_slug }}">
+  <span>
+    <p class="eyebrow">{{ eyebrow }}</p>
+    <h1>{{ confirm_title }}</h1>
+    <p>{{ record }}</p>
+  </span>
+</section>
+
+<form class="confirm-actions" method="post">
+  {% csrf_token %}
+  <button class="button button--danger" type="submit">Delete</button>
+  <a class="button button--secondary" href="{% url cancel_url %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Cancel</a>
+</form>

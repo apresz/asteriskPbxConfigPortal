@@ -1,0 +1,74 @@
+<section class="record-header" data-area="{{ area_slug }}">
+  <span>
+    <p class="eyebrow">{{ eyebrow }}</p>
+    <h1>{{ form_title }}</h1>
+  </span>
+  <a class="button button--secondary" href="{% url cancel_url %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Cancel</a>
+</section>
+
+<form class="routing-form" method="post" novalidate>
+  {% csrf_token %}
+  {{ form.non_field_errors }}
+
+  {% for fieldset in form.fieldsets %}
+    <fieldset class="form-section">
+      <legend>{{ fieldset.legend }}</legend>
+      <div class="form-grid">
+        {% for field in fieldset.fields %}
+          {% if field.field.widget.input_type == "checkbox" %}
+            <label class="form-check" for="{{ field.id_for_label }}">
+              {{ field }}
+              <span>{{ field.label }}</span>
+            </label>
+            {{ field.errors }}
+          {% else %}
+            <label class="form-field" for="{{ field.id_for_label }}">
+              <span>{{ field.label }}{% if field.field.required %} <strong aria-hidden="true">*</strong>{% endif %}</span>
+              {{ field }}
+              {{ field.errors }}
+            </label>
+          {% endif %}
+        {% endfor %}
+      </div>
+    </fieldset>
+  {% endfor %}
+
+  {% if formset %}
+    <fieldset class="form-section">
+      <legend>{{ formset_title }}</legend>
+      {{ formset.management_form }}
+      {{ formset.non_form_errors }}
+      <div class="inline-formset">
+        {% for option_form in formset.forms %}
+          <div class="inline-form-row">
+            {% for hidden in option_form.hidden_fields %}
+              {{ hidden }}
+            {% endfor %}
+            {% for field in option_form.visible_fields %}
+              {% if field.field.widget.input_type == "checkbox" %}
+                <label class="form-check" for="{{ field.id_for_label }}">
+                  {{ field }}
+                  <span>{{ field.label }}</span>
+                </label>
+                {{ field.errors }}
+              {% else %}
+                <label class="form-field" for="{{ field.id_for_label }}">
+                  <span>{{ field.label }}{% if field.field.required %} <strong aria-hidden="true">*</strong>{% endif %}</span>
+                  {{ field }}
+                  {{ field.errors }}
+                </label>
+              {% endif %}
+            {% endfor %}
+          </div>
+        {% endfor %}
+      </div>
+    </fieldset>
+  {% endif %}
+
+  <div class="form-actions">
+    <button class="button" type="submit">Save</button>
+    {% if object_instance and delete_url %}
+      <a class="button button--danger" href="{% url delete_url object_instance.id %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Delete</a>
+    {% endif %}
+  </div>
+</form>

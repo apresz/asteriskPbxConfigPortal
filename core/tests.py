@@ -33,6 +33,7 @@ from .models import (
     AuditLog,
     AuditOutcome,
     DID,
+    FeatureCode,
     IVR,
     IVRMenuOption,
     CallQueue,
@@ -190,6 +191,27 @@ def phone_inline_formset_data(*, line_rows=None, speed_dial_rows=None):
     return data
 
 
+def ivr_menu_formset_data(*, option_rows=None, total_forms=4):
+    option_rows = option_rows or []
+    data = {
+        "menu_options-TOTAL_FORMS": str(total_forms),
+        "menu_options-INITIAL_FORMS": "0",
+        "menu_options-MIN_NUM_FORMS": "0",
+        "menu_options-MAX_NUM_FORMS": "1000",
+    }
+    for index in range(total_forms):
+        row = option_rows[index] if index < len(option_rows) else {}
+        data.update(
+            {
+                f"menu_options-{index}-id": "",
+                f"menu_options-{index}-digit": row.get("digit", ""),
+                f"menu_options-{index}-label": row.get("label", ""),
+                f"menu_options-{index}-destination": str(row["destination"].id) if row.get("destination") else "",
+            }
+        )
+    return data
+
+
 def did_default_destination(location, extension):
     return InboundDestination.objects.create(
         location=location,
@@ -228,13 +250,31 @@ class PortalRouteTests(TestCase):
         self.assertContains(response, "hx-boost")
         self.assertContains(response, "Extensions")
         self.assertContains(response, "Phones")
+        self.assertContains(response, "DIDs")
+        self.assertContains(response, "IVRs")
+        self.assertContains(response, "Ring Groups")
+        self.assertContains(response, "Queues")
+        self.assertContains(response, "Paging Groups")
+        self.assertContains(response, "Feature Codes")
         self.assertContains(response, "Dial Plan")
         self.assertContains(response, "viewer - Viewer")
         self.assertNotContains(response, "Settings")
 
     def test_initial_portal_area_routes_render(self):
         self.client.force_login(self.viewer)
-        route_names = ["extensions", "phones", "trunks", "dial-plan"]
+        route_names = [
+            "extensions",
+            "phones",
+            "inbound-destinations",
+            "dids",
+            "ivrs",
+            "ring-groups",
+            "queues",
+            "paging-groups",
+            "feature-codes",
+            "trunks",
+            "dial-plan",
+        ]
 
         for route_name in route_names:
             with self.subTest(route_name=route_name):
@@ -1035,6 +1075,165 @@ class PhoneCSVTests(TestCase):
         self.assertEqual(speed_dial_rows[0]["destination"], "3001")
 
 
+class InboundRoutingManagementViewTests(TestCase):
+    def setUp(self):
+        self.viewer = User.objects.create_user(username="routing-viewer", password="portal-pass")
+        self.editor = User.objects.create_user(username="routing-editor", password="portal-pass")
+        assign_role(self.viewer, PortalRole.VIEWER)
+        assign_role(self.editor, PortalRole.EDITOR)
+        self.location = Location.objects.create(**location_model_data(name="HQ", slug="hq"))
+        self.reception = Extension.objects.create(
+            location=self.location,
+            number="3000",
+            display_name="Reception",
+        )
+
+    def test_editor_configures_inbound_routing_surfaces(self):
+        self.client.force_login(self.editor)
+
+        destination_response = self.client.post(
+            reverse("inbound-destination-create"),
+            {
+                "location": str(self.location.id),
+                "name": "Reception Destination",
+                "destination_type": InboundDestination.DestinationType.EXTENSION,
+                "extension": str(self.reception.id),
+                "ivr": "",
+                "ring_group": "",
+                "queue": "",
+            },
+        )
+        self.assertEqual(destination_response.status_code, 302)
+        destination = InboundDestination.objects.get(name="Reception Destination")
+
+        did_response = self.client.post(
+            reverse("did-create"),
+            {
+                "location": str(self.location.id),
+                "number": "+15551203000",
+                "label": "Main line",
+                "provider": "",
+                "trunk": "",
+                "direct_extension": str(self.reception.id),
+                "default_destination": str(destination.id),
+                "is_active": "on",
+            },
+        )
+        self.assertEqual(did_response.status_code, 302)
+
+        ring_response = self.client.post(
+            reverse("ring-group-create"),
+            {
+                "location": str(self.location.id),
+                "name": "Reception Ring",
+                "strategy": RingGroup.Strategy.RING_ALL,
+                "timeout_seconds": "25",
+                "is_active": "on",
+                "members": [str(self.reception.id)],
+            },
+        )
+        self.assertEqual(ring_response.status_code, 302)
+
+        queue_response = self.client.post(
+            reverse("queue-create"),
+            {
+                "location": str(self.location.id),
+                "name": "Reception Queue",
+                "strategy": CallQueue.Strategy.ROUND_ROBIN,
+                "timeout_seconds": "45",
+                "retry_seconds": "7",
+                "music_on_hold": "default",
+                "overflow_destination": str(destination.id),
+                "recording_policy": CallQueue.RecordingPolicy.NEVER,
+                "is_active": "on",
+                "members": [str(self.reception.id)],
+            },
+        )
+        self.assertEqual(queue_response.status_code, 302)
+
+        paging_response = self.client.post(
+            reverse("paging-group-create"),
+            {
+                "location": str(self.location.id),
+                "name": "Reception Page",
+                "page_code": "7100",
+                "is_active": "on",
+                "members": [str(self.reception.id)],
+            },
+        )
+        self.assertEqual(paging_response.status_code, 302)
+
+        ivr_post = {
+            "location": str(self.location.id),
+            "name": "Main IVR",
+            "prompt_name": "main-menu",
+            "business_hours_destination": str(destination.id),
+            "after_hours_destination": str(destination.id),
+            "timeout_seconds": "12",
+            "timeout_destination": str(destination.id),
+            "invalid_destination": str(destination.id),
+            "is_active": "on",
+        }
+        ivr_post.update(
+            ivr_menu_formset_data(
+                option_rows=[
+                    {
+                        "digit": "1",
+                        "label": "Reception",
+                        "destination": destination,
+                    }
+                ]
+            )
+        )
+        ivr_response = self.client.post(reverse("ivr-create"), ivr_post)
+        self.assertEqual(ivr_response.status_code, 302)
+
+        feature_response = self.client.post(
+            reverse("feature-code-create"),
+            {
+                "location": str(self.location.id),
+                "code": "*98",
+                "name": "Voicemail",
+                "feature_type": FeatureCode.FeatureType.VOICEMAIL_MAIN,
+                "destination": str(destination.id),
+                "notes": "Main voicemail access",
+                "is_active": "on",
+            },
+        )
+        self.assertEqual(feature_response.status_code, 302)
+
+        self.assertEqual(DID.objects.get(number="+15551203000").direct_extension, self.reception)
+        self.assertTrue(RingGroup.objects.filter(name="Reception Ring", members__extension=self.reception).exists())
+        self.assertTrue(CallQueue.objects.filter(name="Reception Queue", members__extension=self.reception).exists())
+        self.assertTrue(PagingGroup.objects.filter(name="Reception Page", members__extension=self.reception).exists())
+        self.assertTrue(IVRMenuOption.objects.filter(ivr__name="Main IVR", digit="1", destination=destination).exists())
+        self.assertTrue(FeatureCode.objects.filter(code="*98", destination=destination).exists())
+
+    def test_viewer_sees_routing_lists(self):
+        InboundDestination.objects.create(
+            location=self.location,
+            name="Reception Destination",
+            destination_type=InboundDestination.DestinationType.EXTENSION,
+            extension=self.reception,
+        )
+        self.client.force_login(self.viewer)
+
+        expectations = {
+            "inbound-destinations": "Reception Destination",
+            "dids": "DID Routing",
+            "ivrs": "IVRs",
+            "ring-groups": "Ring Groups",
+            "queues": "Queues",
+            "paging-groups": "Paging Groups",
+            "feature-codes": "Feature Codes",
+        }
+        for route_name, expected_text in expectations.items():
+            with self.subTest(route_name=route_name):
+                response = self.client.get(reverse(route_name))
+                self.assertEqual(response.status_code, 200)
+                self.assertContains(response, expected_text)
+
+
 class PortalPermissionTests(TestCase):
     def setUp(self):
         self.viewer = User.objects.create_user(username="viewer", password="portal-pass")
@@ -1405,6 +1604,187 @@ class LANWarpOnlyMiddlewareTests(SimpleTestCase):
         response = client.get(reverse("home"), headers={"X-Forwarded-For": "10.20.30.40"})
 
         self.assertEqual(response.status_code, 302)
+
+
+class InboundRoutingModelTests(TestCase):
+    def setUp(self):
+        self.hq = Location.objects.create(**location_model_data(name="HQ", slug="hq"))
+        self.warehouse = Location.objects.create(**location_model_data(name="Warehouse", slug="warehouse"))
+        self.reception = Extension.objects.create(
+            location=self.hq,
+            number="3000",
+            display_name="Reception",
+        )
+        self.fallback = Extension.objects.create(
+            location=self.hq,
+            number="3999",
+            display_name="Fallback",
+        )
+        self.warehouse_extension = Extension.objects.create(
+            location=self.warehouse,
+            number="4000",
+            display_name="Warehouse",
+        )
+        self.fallback_destination = InboundDestination.objects.create(
+            location=self.hq,
+            name="HQ Fallback",
+            destination_type=InboundDestination.DestinationType.EXTENSION,
+            extension=self.fallback,
+        )
+        self.warehouse_destination = InboundDestination.objects.create(
+            location=self.warehouse,
+            name="Warehouse Fallback",
+            destination_type=InboundDestination.DestinationType.EXTENSION,
+            extension=self.warehouse_extension,
+        )
+        self.hq.default_inbound_destination = self.fallback_destination
+        self.hq.save(update_fields=["default_inbound_destination", "updated_at"])
+
+    def test_did_routes_direct_extension_before_location_default(self):
+        did = DID(
+            location=self.hq,
+            number="+15551203000",
+            direct_extension=self.reception,
+        )
+
+        did.full_clean()
+        did.save()
+
+        self.assertEqual(did.effective_destination, self.reception)
+
+        did.direct_extension = None
+        did.full_clean()
+        did.save(update_fields=["direct_extension", "updated_at"])
+
+        did.refresh_from_db()
+        self.assertEqual(did.effective_destination, self.fallback_destination)
+        self.assertEqual(build_location_config(self.hq)["inbound"]["dids"][0]["route_source"], "location_default")
+
+    def test_did_rejects_duplicate_number_and_missing_fallback(self):
+        DID.objects.create(
+            location=self.hq,
+            number="+15551203000",
+            default_destination=self.fallback_destination,
+        )
+        duplicate = DID(
+            location=self.hq,
+            number="+15551203000",
+            default_destination=self.fallback_destination,
+        )
+        no_fallback_location = Location.objects.create(**location_model_data(name="No Fallback", slug="no-fallback"))
+        missing_fallback = DID(location=no_fallback_location, number="+15551203001")
+
+        with self.assertRaises(ValidationError) as duplicate_context:
+            duplicate.full_clean()
+        self.assertIn("number", duplicate_context.exception.message_dict)
+
+        with self.assertRaises(ValidationError) as missing_context:
+            missing_fallback.full_clean()
+        self.assertIn("default_destination", missing_context.exception.message_dict)
+
+    def test_ivr_timeout_invalid_and_hours_destinations_are_local(self):
+        ivr = IVR(
+            location=self.hq,
+            name="Main IVR",
+            prompt_name="main-menu",
+            business_hours_destination=self.fallback_destination,
+            after_hours_destination=self.fallback_destination,
+            timeout_seconds=15,
+            timeout_destination=self.fallback_destination,
+            invalid_destination=self.fallback_destination,
+        )
+
+        ivr.full_clean()
+        ivr.save()
+        option = IVRMenuOption(ivr=ivr, digit="1", label="Reception", destination=self.fallback_destination)
+        option.full_clean()
+        option.save()
+
+        ivr.invalid_destination = self.warehouse_destination
+        with self.assertRaises(ValidationError) as context:
+            ivr.full_clean()
+        self.assertIn("invalid_destination", context.exception.message_dict)
+
+    def test_queue_static_members_strategy_timing_moh_and_overflow(self):
+        queue = CallQueue(
+            location=self.hq,
+            name="Support Queue",
+            strategy=CallQueue.Strategy.ROUND_ROBIN,
+            timeout_seconds=45,
+            retry_seconds=7,
+            music_on_hold="default",
+            overflow_destination=self.fallback_destination,
+        )
+
+        queue.full_clean()
+        queue.save()
+        member = QueueMember(queue=queue, extension=self.reception)
+        member.full_clean()
+        member.save()
+
+        self.assertEqual(queue.strategy, CallQueue.Strategy.ROUND_ROBIN)
+        self.assertEqual(queue.timeout_seconds, 45)
+        self.assertEqual(queue.retry_seconds, 7)
+        self.assertEqual(queue.music_on_hold, "default")
+        self.assertEqual(queue.overflow_destination, self.fallback_destination)
+
+        queue.overflow_destination = self.warehouse_destination
+        with self.assertRaises(ValidationError) as context:
+            queue.full_clean()
+        self.assertIn("overflow_destination", context.exception.message_dict)
+
+    def test_ring_group_paging_group_and_feature_code_models(self):
+        ring_group = RingGroup.objects.create(
+            location=self.hq,
+            name="Reception Ring",
+            strategy=RingGroup.Strategy.HUNT,
+            timeout_seconds=22,
+        )
+        ring_member = RingGroupMember(ring_group=ring_group, extension=self.reception, priority=1)
+        ring_member.full_clean()
+        ring_member.save()
+
+        paging_group = PagingGroup.objects.create(location=self.hq, name="Reception Page", page_code="7100")
+        paging_member = PagingGroupMember(paging_group=paging_group, extension=self.reception)
+        paging_member.full_clean()
+        paging_member.save()
+
+        feature_code = FeatureCode(
+            location=self.hq,
+            code="*98",
+            name="Voicemail",
+            feature_type=FeatureCode.FeatureType.VOICEMAIL_MAIN,
+            destination=self.fallback_destination,
+        )
+        feature_code.full_clean()
+        feature_code.save()
+
+        cross_location_feature = FeatureCode(
+            location=self.hq,
+            code="*99",
+            name="Bad Forward",
+            feature_type=FeatureCode.FeatureType.CUSTOM,
+            destination=self.warehouse_destination,
+        )
+        invalid_code = FeatureCode(
+            location=self.hq,
+            code="transfer-now",
+            name="Invalid",
+            feature_type=FeatureCode.FeatureType.CUSTOM,
+        )
+
+        with self.assertRaises(ValidationError) as destination_context:
+            cross_location_feature.full_clean()
+        self.assertIn("destination", destination_context.exception.message_dict)
+
+        with self.assertRaises(ValidationError) as code_context:
+            invalid_code.full_clean()
+        self.assertIn("code", code_context.exception.message_dict)
+
+        inbound_config = build_location_config(self.hq)["inbound"]
+        self.assertEqual(inbound_config["ring_groups"][0]["members"][0]["extension"], "3000")
+        self.assertEqual(inbound_config["paging_groups"][0]["members"], ["3000"])
+        self.assertEqual(inbound_config["feature_codes"][0]["code"], "*98")
 
 
 class PBXDomainModelTests(TestCase):

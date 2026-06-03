@@ -21,6 +21,48 @@ PORTAL_AREAS = {
         "status": "Manage Cisco phone provisioning data",
         "permission": PortalPermission.VIEW,
     },
+    "inbound-destinations": {
+        "label": "Destinations",
+        "summary": "Reusable inbound targets for DIDs, IVRs, queues, and feature codes.",
+        "status": "Manage inbound routing targets",
+        "permission": PortalPermission.VIEW,
+    },
+    "dids": {
+        "label": "DIDs",
+        "summary": "Direct inbound DID routing and default destination fallback.",
+        "status": "Manage inbound numbers",
+        "permission": PortalPermission.VIEW,
+    },
+    "ivrs": {
+        "label": "IVRs",
+        "summary": "Business-hours, after-hours, timeout, invalid-input, and menu routing.",
+        "status": "Manage IVR menus",
+        "permission": PortalPermission.VIEW,
+    },
+    "ring-groups": {
+        "label": "Ring Groups",
+        "summary": "Static ring groups with member extensions, strategy, and timeout.",
+        "status": "Manage ring groups",
+        "permission": PortalPermission.VIEW,
+    },
+    "queues": {
+        "label": "Queues",
+        "summary": "Static queues with strategy, retry, timeout, MOH, and overflow.",
+        "status": "Manage queues",
+        "permission": PortalPermission.VIEW,
+    },
+    "paging-groups": {
+        "label": "Paging Groups",
+        "summary": "Static paging groups with dialable page codes and members.",
+        "status": "Manage paging groups",
+        "permission": PortalPermission.VIEW,
+    },
+    "feature-codes": {
+        "label": "Feature Codes",
+        "summary": "PBX feature-code assignments for voicemail, pickup, park, paging, and custom actions.",
+        "status": "Manage feature codes",
+        "permission": PortalPermission.VIEW,
+    },
     "trunks": {
         "label": "Trunks",
         "summary": "Carrier trunks, SIP endpoints, and upstream routing.",
