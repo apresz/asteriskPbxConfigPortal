@@ -123,6 +123,13 @@ class ExtensionAdmin(admin.ModelAdmin):
     search_fields = ("number", "display_name", "sip_username", "caller_id_number")
 
 
+@admin.register(CallQueue)
+class CallQueueAdmin(admin.ModelAdmin):
+    list_display = ("name", "location", "strategy", "recording_policy", "is_active")
+    list_filter = ("location", "strategy", "recording_policy", "is_active")
+    search_fields = ("name",)
+
+
 @admin.register(Phone)
 class PhoneAdmin(admin.ModelAdmin):
     list_display = ("mac_address", "model", "location", "label", "is_active")
@@ -145,14 +152,19 @@ class TrunkAdmin(admin.ModelAdmin):
 
 
 admin.site.register(Provider)
-admin.site.register(OutboundRoute)
+@admin.register(OutboundRoute)
+class OutboundRouteAdmin(admin.ModelAdmin):
+    list_display = ("name", "location", "dial_pattern", "priority", "recording_policy", "is_emergency_route", "is_active")
+    list_filter = ("location", "recording_policy", "is_emergency_route", "is_active")
+    search_fields = ("name", "dial_pattern", "caller_id_number")
+
+
 admin.site.register(OutboundRouteTrunk)
 admin.site.register(InboundDestination)
 admin.site.register(IVR)
 admin.site.register(IVRMenuOption)
 admin.site.register(RingGroup)
 admin.site.register(RingGroupMember)
-admin.site.register(CallQueue)
 admin.site.register(QueueMember)
 admin.site.register(PagingGroup)
 admin.site.register(PagingGroupMember)

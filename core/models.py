@@ -82,6 +82,12 @@ class PortalPermission(models.TextChoices):
     ADMINISTER = "administer", "Administer portal"
 
 
+class PBXRecordingPolicy(models.TextChoices):
+    NEVER = "never", "Off"
+    ALWAYS = "always", "Always record"
+    ON_DEMAND = "on_demand", "On demand"
+
+
 class AuditAction(models.TextChoices):
     CONFIG_CHANGE = "config_change", "Config change"
     CONFIG_EXPORT = "config_export", "Config export"
@@ -420,16 +426,16 @@ class Location(TimestampedModel):
     emergency_trunk = models.CharField("emergency trunk", max_length=120)
     recording_retention_days = models.PositiveIntegerField(
         "recording retention days",
-        default=365,
+        default=90,
         validators=[MinValueValidator(1)],
     )
-    smtp_host = models.CharField("SMTP host", max_length=255)
+    smtp_host = models.CharField("SMTP host", max_length=255, blank=True)
     smtp_port = models.PositiveIntegerField(
         "SMTP port",
         default=587,
         validators=port_validators,
     )
-    smtp_from_email = models.EmailField("SMTP from email")
+    smtp_from_email = models.EmailField("SMTP from email", blank=True)
     smtp_use_tls = models.BooleanField("SMTP use TLS", default=True)
     smtp_use_ssl = models.BooleanField("SMTP use SSL", default=False)
     smtp_username = models.CharField("SMTP username", max_length=120, blank=True)
@@ -479,6 +485,13 @@ class Location(TimestampedModel):
         if self.smtp_use_tls and self.smtp_use_ssl:
             errors["smtp_use_ssl"] = "SMTP TLS and SSL cannot both be enabled."
 
+        if bool(self.smtp_host) != bool(self.smtp_from_email):
+            message = "SMTP host and from email must be configured together."
+            if not self.smtp_host:
+                errors["smtp_host"] = message
+            if not self.smtp_from_email:
+                errors["smtp_from_email"] = message
+
         if errors:
             raise ValidationError(errors)
 
@@ -510,11 +523,7 @@ class Provider(TimestampedModel):
 
 
 class Extension(TimestampedModel):
-    class RecordingPolicy(models.TextChoices):
-        INHERIT = "inherit", "Inherit location policy"
-        ALWAYS = "always", "Always record"
-        ON_DEMAND = "on_demand", "On demand"
-        NEVER = "never", "Never record"
+    RecordingPolicy = PBXRecordingPolicy
 
     location = models.ForeignKey(
         Location,
@@ -544,8 +553,8 @@ class Extension(TimestampedModel):
     )
     recording_policy = models.CharField(
         max_length=16,
-        choices=RecordingPolicy.choices,
-        default=RecordingPolicy.INHERIT,
+        choices=PBXRecordingPolicy.choices,
+        default=PBXRecordingPolicy.NEVER,
     )
     emergency_calling_enabled = models.BooleanField(default=True)
     is_active = models.BooleanField(default=True)
@@ -743,6 +752,8 @@ class RingGroup(TimestampedModel):
 
 
 class CallQueue(TimestampedModel):
+    RecordingPolicy = PBXRecordingPolicy
+
     class Strategy(models.TextChoices):
         RING_ALL = "ring_all", "Ring all"
         LEAST_RECENT = "least_recent", "Least recent"
@@ -763,6 +774,11 @@ class CallQueue(TimestampedModel):
     timeout_seconds = models.PositiveSmallIntegerField(default=30)
     retry_seconds = models.PositiveSmallIntegerField(default=5)
     music_on_hold = models.CharField(max_length=80, blank=True)
+    recording_policy = models.CharField(
+        max_length=16,
+        choices=PBXRecordingPolicy.choices,
+        default=PBXRecordingPolicy.NEVER,
+    )
     is_active = models.BooleanField(default=True)
 
     class Meta:
@@ -1168,6 +1184,8 @@ class Trunk(TimestampedModel):
 
 
 class OutboundRoute(TimestampedModel):
+    RecordingPolicy = PBXRecordingPolicy
+
     location = models.ForeignKey(
         Location,
         on_delete=models.CASCADE,
@@ -1178,6 +1196,11 @@ class OutboundRoute(TimestampedModel):
     priority = models.PositiveSmallIntegerField(validators=[MinValueValidator(1)])
     is_emergency_route = models.BooleanField(default=False)
     caller_id_number = models.CharField(max_length=32, blank=True)
+    recording_policy = models.CharField(
+        max_length=16,
+        choices=PBXRecordingPolicy.choices,
+        default=PBXRecordingPolicy.NEVER,
+    )
     is_active = models.BooleanField(default=True)
 
     class Meta:
