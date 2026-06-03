@@ -1,0 +1,89 @@
+<section class="page-heading page-heading--actions" data-area="extensions">
+  <span>
+    <p class="eyebrow">Extensions</p>
+    <h1>Extension Management</h1>
+    <p>Internal users, SIP credentials, caller ID, recording, emergency state, and group memberships.</p>
+  </span>
+  <span class="button-row">
+    <a class="button button--secondary" href="{% url 'extension-template' %}">CSV Template</a>
+    <a class="button button--secondary" href="{% url 'extension-export' %}">Export CSV</a>
+    {% if can_edit_extensions %}
+      <a class="button button--secondary" href="{% url 'extension-import' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Import CSV</a>
+      <a class="button" href="{% url 'extension-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Extension</a>
+    {% endif %}
+  </span>
+</section>
+
+{% if extensions %}
+  <section class="table-panel" aria-label="Extensions">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th scope="col">Extension</th>
+          <th scope="col">Location</th>
+          <th scope="col">SIP / DID</th>
+          <th scope="col">Voicemail</th>
+          <th scope="col">Recording</th>
+          <th scope="col">911</th>
+          <th scope="col">Memberships</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for extension in extensions %}
+          <tr>
+            <td>
+              {% if can_edit_extensions %}
+                <a class="table-link" href="{% url 'extension-edit' extension.number %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">{{ extension.number }}</a>
+              {% else %}
+                <span class="table-link">{{ extension.number }}</span>
+              {% endif %}
+              <span class="table-meta">{{ extension.display_name }}</span>
+              {% if extension.email %}<span class="table-meta">{{ extension.email }}</span>{% endif %}
+            </td>
+            <td>{{ extension.location.name }}</td>
+            <td>
+              <span class="stacked-value">{{ extension.sip_username|default:extension.number }}</span>
+              {% for did in extension.direct_dids.all %}
+                <span class="table-meta">{{ did.number }}</span>
+              {% empty %}
+                <span class="table-meta">No direct DID</span>
+              {% endfor %}
+            </td>
+            <td>
+              <span class="status-badge{% if not extension.voicemail_enabled %} status-badge--muted{% endif %}">
+                {{ extension.voicemail_enabled|yesno:"Enabled,Disabled" }}
+              </span>
+              {% if extension.voicemail_pin %}<span class="table-meta">PIN configured</span>{% endif %}
+            </td>
+            <td>{{ extension.get_recording_policy_display }}</td>
+            <td>
+              <span class="status-badge{% if not extension.emergency_calling_enabled %} status-badge--danger{% endif %}">
+                {{ extension.emergency_calling_enabled|yesno:"Enabled,Disabled" }}
+              </span>
+            </td>
+            <td>
+              <div class="tag-list">
+                {% for membership in extension.ring_group_memberships.all %}
+                  <span class="tag">Ring: {{ membership.ring_group.name }}</span>
+                {% endfor %}
+                {% for membership in extension.queue_memberships.all %}
+                  <span class="tag">Queue: {{ membership.queue.name }}</span>
+                {% endfor %}
+                {% for membership in extension.paging_group_memberships.all %}
+                  <span class="tag">Page: {{ membership.paging_group.name }}</span>
+                {% endfor %}
+              </div>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% else %}
+  <section class="empty-state">
+    <h2>No extensions configured</h2>
+    {% if can_edit_extensions %}
+      <a class="button" href="{% url 'extension-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Extension</a>
+    {% endif %}
+  </section>
+{% endif %}

@@ -435,6 +435,31 @@ a {
   color: var(--muted);
 }
 
+.status-badge--danger {
+  border-color: rgba(164, 61, 61, 0.36);
+  background: rgba(164, 61, 61, 0.1);
+  color: #a43d3d;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tag {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
 .empty-state,
 .restricted-panel {
   max-width: 780px;
@@ -454,6 +479,35 @@ a {
 .restricted-panel {
   margin-bottom: 18px;
   border-left: 4px solid var(--warn);
+}
+
+.notice-panel {
+  max-width: 780px;
+  margin-bottom: 18px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-left-width: 4px;
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.notice-panel--success {
+  border-left-color: var(--success);
+}
+
+.notice-panel--error {
+  border-left-color: #a43d3d;
+}
+
+.notice-panel p,
+.notice-panel ul {
+  margin: 0;
+}
+
+.notice-panel h2 {
+  margin: 0 0 10px;
+  font-size: 1.05rem;
 }
 
 .restricted-panel p,
@@ -542,7 +596,9 @@ a {
   overflow-wrap: anywhere;
 }
 
-.location-form {
+.location-form,
+.extension-form,
+.import-form {
   max-width: 1180px;
   display: grid;
   gap: 14px;

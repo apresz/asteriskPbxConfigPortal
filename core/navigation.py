@@ -12,7 +12,7 @@ PORTAL_AREAS = {
     "extensions": {
         "label": "Extensions",
         "summary": "Internal users, devices, and extension assignments.",
-        "status": "Ready for provisioning model work",
+        "status": "Manage extension records",
         "permission": PortalPermission.VIEW,
     },
     "trunks": {

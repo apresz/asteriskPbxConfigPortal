@@ -28,6 +28,11 @@ extension_number_validator = RegexValidator(
     message="Extension numbers must be exactly four digits.",
 )
 
+voicemail_pin_validator = RegexValidator(
+    regex=r"^\d{4,12}$",
+    message="Voicemail PINs must be 4 to 12 digits.",
+)
+
 did_number_validator = RegexValidator(
     regex=r"^\+?[1-9]\d{6,14}$",
     message="DIDs must be 7 to 15 digits, optionally prefixed with '+'.",
@@ -290,6 +295,12 @@ class Provider(TimestampedModel):
 
 
 class Extension(TimestampedModel):
+    class RecordingPolicy(models.TextChoices):
+        INHERIT = "inherit", "Inherit location policy"
+        ALWAYS = "always", "Always record"
+        ON_DEMAND = "on_demand", "On demand"
+        NEVER = "never", "Never record"
+
     location = models.ForeignKey(
         Location,
         on_delete=models.CASCADE,
@@ -303,7 +314,24 @@ class Extension(TimestampedModel):
     display_name = models.CharField(max_length=120)
     email = models.EmailField(blank=True)
     sip_username = models.CharField(max_length=80, blank=True)
+    sip_password = models.CharField(max_length=255, blank=True)
     voicemail_enabled = models.BooleanField(default=True)
+    voicemail_pin = models.CharField(
+        max_length=12,
+        blank=True,
+        validators=[voicemail_pin_validator],
+    )
+    caller_id_name = models.CharField(max_length=80, blank=True)
+    caller_id_number = models.CharField(
+        max_length=16,
+        blank=True,
+        validators=[did_number_validator],
+    )
+    recording_policy = models.CharField(
+        max_length=16,
+        choices=RecordingPolicy.choices,
+        default=RecordingPolicy.INHERIT,
+    )
     emergency_calling_enabled = models.BooleanField(default=True)
     is_active = models.BooleanField(default=True)
 
