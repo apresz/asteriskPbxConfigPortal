@@ -1,0 +1,56 @@
+<section class="page-heading page-heading--actions" data-area="locations">
+  <span>
+    <p class="eyebrow">Locations</p>
+    <h1>Location Management</h1>
+    <p>Site-level PBX network, emergency, deployment, SMTP, AMI, and agent settings.</p>
+  </span>
+  {% if can_edit_locations %}
+    <a class="button" href="{% url 'location-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Location</a>
+  {% endif %}
+</section>
+
+{% if locations %}
+  <section class="table-panel" aria-label="Locations">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th scope="col">Location</th>
+          <th scope="col">LAN Subnet</th>
+          <th scope="col">PBX IPs</th>
+          <th scope="col">Active</th>
+          <th scope="col">Last Deployed</th>
+          <th scope="col">Deployment Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for location in locations %}
+          <tr>
+            <td>
+              <a class="table-link" href="{% url 'location-detail' location.slug %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">{{ location.name }}</a>
+              <span class="table-meta">{{ location.timezone }}</span>
+            </td>
+            <td>{{ location.lan_subnet }}</td>
+            <td>
+              <span class="stacked-value">LAN {{ location.pbx_lan_ip }}</span>
+              <span class="table-meta">WARP {{ location.pbx_warp_ip }}</span>
+            </td>
+            <td>
+              <span class="status-badge{% if not location.is_active %} status-badge--muted{% endif %}">
+                {{ location.is_active|yesno:"Active,Inactive" }}
+              </span>
+            </td>
+            <td>{{ location.last_deployed_at|date:"Y-m-d H:i"|default:"Never" }}</td>
+            <td>{{ location.get_deployment_status_display }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% else %}
+  <section class="empty-state">
+    <h2>No locations configured</h2>
+    {% if can_edit_locations %}
+      <a class="button" href="{% url 'location-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Location</a>
+    {% endif %}
+  </section>
+{% endif %}

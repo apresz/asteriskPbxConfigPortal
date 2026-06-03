@@ -12,6 +12,7 @@ from .access import (
     user_has_permission,
 )
 from .audit import record_audit
+from .forms import LocationForm
 from .models import (
     AuditAction,
     AuditLog,
@@ -37,6 +38,68 @@ from .models import (
 
 
 User = get_user_model()
+
+
+def location_form_data(**overrides):
+    data = {
+        "name": "Branch Office",
+        "slug": "branch-office",
+        "description": "Branch PBX",
+        "timezone": "America/Los_Angeles",
+        "lan_subnet": "10.30.0.0/24",
+        "pbx_lan_ip": "10.30.0.10",
+        "pbx_warp_ip": "100.64.30.10",
+        "deployment_ssh_host": "pbx-branch.example.test",
+        "deployment_ssh_port": "22",
+        "deployment_ssh_username": "deploy",
+        "deployment_ssh_private_key": "branch-private-key",
+        "deployment_ssh_known_hosts": "pbx-branch.example.test ssh-ed25519 fixture",
+        "sip_bind_ip": "10.30.0.10",
+        "sip_port": "5060",
+        "rtp_port_start": "10000",
+        "rtp_port_end": "20000",
+        "iax_bind_ip": "10.30.0.10",
+        "iax_port": "4569",
+        "default_did": "+15551203000",
+        "emergency_caller_id": "+15551203999",
+        "emergency_trunk": "Branch Emergency SIP",
+        "recording_retention_days": "365",
+        "smtp_host": "smtp-branch.example.test",
+        "smtp_port": "587",
+        "smtp_from_email": "pbx-branch@example.test",
+        "smtp_use_tls": "on",
+        "smtp_username": "pbx-branch",
+        "smtp_password": "smtp-secret",
+        "ami_host": "127.0.0.1",
+        "ami_port": "5038",
+        "ami_username": "ami-branch",
+        "ami_secret": "ami-secret",
+        "agent_secret": "agent-secret",
+        "is_active": "on",
+        "deployment_status": Location.DeploymentStatus.READY,
+    }
+    data.update(overrides)
+    return data
+
+
+def location_model_data(**overrides):
+    data = location_form_data()
+    for field_name in (
+        "deployment_ssh_port",
+        "sip_port",
+        "rtp_port_start",
+        "rtp_port_end",
+        "iax_port",
+        "recording_retention_days",
+        "smtp_port",
+        "ami_port",
+    ):
+        data[field_name] = int(data[field_name])
+    data["smtp_use_tls"] = True
+    data["smtp_use_ssl"] = False
+    data["is_active"] = True
+    data.update(overrides)
+    return data
 
 
 class PortalRouteTests(TestCase):
@@ -104,6 +167,165 @@ class PortalRouteTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'data-area="extensions"')
         self.assertNotContains(response, "<html")
+
+
+class LocationFormValidationTests(TestCase):
+    def test_admin_form_requires_complete_location_fields(self):
+        form = LocationForm(data={}, include_sensitive_fields=True)
+
+        self.assertFalse(form.is_valid())
+        for field_name in (
+            "name",
+            "slug",
+            "lan_subnet",
+            "pbx_lan_ip",
+            "pbx_warp_ip",
+            "deployment_ssh_host",
+            "deployment_ssh_port",
+            "deployment_ssh_username",
+            "deployment_ssh_private_key",
+            "sip_bind_ip",
+            "sip_port",
+            "rtp_port_start",
+            "rtp_port_end",
+            "iax_bind_ip",
+            "iax_port",
+            "default_did",
+            "emergency_caller_id",
+            "emergency_trunk",
+            "recording_retention_days",
+            "smtp_host",
+            "smtp_port",
+            "smtp_from_email",
+            "smtp_username",
+            "smtp_password",
+            "ami_host",
+            "ami_port",
+            "ami_username",
+            "ami_secret",
+            "agent_secret",
+        ):
+            with self.subTest(field_name=field_name):
+                self.assertIn(field_name, form.errors)
+
+    def test_admin_form_accepts_complete_location_record(self):
+        form = LocationForm(data=location_form_data(), include_sensitive_fields=True)
+
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_form_validates_lan_membership_and_rtp_range(self):
+        form = LocationForm(
+            data=location_form_data(
+                pbx_lan_ip="10.31.0.10",
+                rtp_port_start="20000",
+                rtp_port_end="10000",
+            ),
+            include_sensitive_fields=True,
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("pbx_lan_ip", form.errors)
+        self.assertIn("rtp_port_end", form.errors)
+
+
+class LocationManagementViewTests(TestCase):
+    def setUp(self):
+        self.viewer = User.objects.create_user(username="location-viewer", password="portal-pass")
+        self.editor = User.objects.create_user(username="location-editor", password="portal-pass")
+        self.admin = User.objects.create_user(username="location-admin", password="portal-pass")
+        assign_role(self.viewer, PortalRole.VIEWER)
+        assign_role(self.editor, PortalRole.EDITOR)
+        assign_role(self.admin, PortalRole.ADMIN)
+
+    def test_location_list_route_shows_status_fields(self):
+        Location.objects.create(**location_model_data())
+        self.client.force_login(self.viewer)
+
+        response = self.client.get(reverse("locations"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-area="locations"')
+        self.assertContains(response, "Active")
+        self.assertContains(response, "Last Deployed")
+        self.assertContains(response, "Deployment Status")
+        self.assertContains(response, "Branch Office")
+
+    def test_viewer_cannot_create_location(self):
+        self.client.force_login(self.viewer)
+
+        response = self.client.get(reverse("location-create"))
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_editor_form_hides_sensitive_fields_and_shows_emergency_fields(self):
+        self.client.force_login(self.editor)
+
+        response = self.client.get(reverse("location-create"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Emergency caller ID")
+        self.assertContains(response, "Emergency trunk")
+        self.assertContains(response, "Restricted Settings")
+        self.assertNotContains(response, 'name="deployment_ssh_private_key"')
+        self.assertNotContains(response, 'name="agent_secret"')
+        self.assertNotContains(response, 'name="ami_secret"')
+
+    def test_admin_form_shows_sensitive_deployment_and_agent_fields(self):
+        self.client.force_login(self.admin)
+
+        response = self.client.get(reverse("location-create"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'name="deployment_ssh_private_key"')
+        self.assertContains(response, 'name="deployment_ssh_host"')
+        self.assertContains(response, 'name="agent_secret"')
+        self.assertContains(response, 'name="ami_secret"')
+
+    def test_admin_can_create_complete_location_record(self):
+        self.client.force_login(self.admin)
+
+        response = self.client.post(reverse("location-create"), location_form_data())
+
+        location = Location.objects.get(slug="branch-office")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(location.lan_subnet, "10.30.0.0/24")
+        self.assertEqual(location.default_did, "+15551203000")
+        self.assertEqual(location.emergency_caller_id, "+15551203999")
+        self.assertEqual(location.deployment_ssh_private_key, "branch-private-key")
+        self.assertEqual(location.deployment_status, Location.DeploymentStatus.READY)
+
+    def test_editor_update_ignores_spoofed_sensitive_fields(self):
+        location = Location.objects.create(
+            **location_model_data(
+                name="Spoof Target",
+                slug="spoof-target",
+                deployment_ssh_private_key="original-private-key",
+                smtp_password="original-smtp-password",
+                ami_secret="original-ami-secret",
+                agent_secret="original-agent-secret",
+            )
+        )
+        self.client.force_login(self.editor)
+
+        response = self.client.post(
+            reverse("location-edit", args=[location.slug]),
+            location_form_data(
+                name="Spoof Target Updated",
+                slug="spoof-target",
+                deployment_ssh_private_key="spoofed-private-key",
+                smtp_password="spoofed-smtp-password",
+                ami_secret="spoofed-ami-secret",
+                agent_secret="spoofed-agent-secret",
+            ),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        location.refresh_from_db()
+        self.assertEqual(location.name, "Spoof Target Updated")
+        self.assertEqual(location.deployment_ssh_private_key, "original-private-key")
+        self.assertEqual(location.smtp_password, "original-smtp-password")
+        self.assertEqual(location.ami_secret, "original-ami-secret")
+        self.assertEqual(location.agent_secret, "original-agent-secret")
 
 
 class PortalPermissionTests(TestCase):
