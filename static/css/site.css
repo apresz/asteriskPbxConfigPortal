@@ -358,6 +358,16 @@ a {
   flex-wrap: wrap;
 }
 
+.button-row form,
+.table-actions form {
+  margin: 0;
+}
+
+.button-row button,
+.table-actions button {
+  width: auto;
+}
+
 .table-panel {
   max-width: 1180px;
   overflow-x: auto;
@@ -403,6 +413,32 @@ a {
 .table-link:focus {
   text-decoration: underline;
   outline: none;
+}
+
+.table-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.data-table code {
+  overflow-wrap: anywhere;
+}
+
+.export-history .data-table {
+  min-width: 1040px;
+}
+
+.manifest-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.manifest-list li + li {
+  margin-top: 4px;
 }
 
 .table-meta,

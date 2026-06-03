@@ -9,6 +9,22 @@ urlpatterns = [
     path("locations/<slug:slug>/", views.location_detail, name="location-detail"),
     path("locations/<slug:slug>/edit/", views.location_update, name="location-edit"),
     path("locations/<slug:slug>/delete/", views.location_delete, name="location-delete"),
+    path("locations/<slug:slug>/exports/", views.location_config_export, name="location-config-export"),
+    path(
+        "locations/<slug:slug>/exports/<int:version_number>/download/",
+        views.location_config_export_download,
+        name="location-config-export-download",
+    ),
+    path(
+        "locations/<slug:slug>/exports/<int:version_number>/deploy/",
+        views.location_config_export_deploy,
+        name="location-config-export-deploy",
+    ),
+    path(
+        "locations/<slug:slug>/exports/<int:version_number>/rollback/",
+        views.location_config_export_rollback,
+        name="location-config-export-rollback",
+    ),
     path("extensions/", views.extension_list, name="extensions"),
     path("extensions/new/", views.extension_create, name="extension-create"),
     path("extensions/import/", views.extension_import, name="extension-import"),

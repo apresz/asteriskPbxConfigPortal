@@ -1,14 +1,23 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import hashlib
 import ipaddress
+import json
+from pathlib import Path
 import re
 from io import BytesIO
 from typing import Any
 import xml.etree.ElementTree as ET
+import zipfile
+
+from django.db import transaction
+from django.db.models import Max
+from django.utils import timezone
 
 from .models import (
     AudioPrompt,
+    ConfigVersion,
     Extension,
     FeatureCode,
     Location,
@@ -51,6 +60,22 @@ CISCO_MODEL_PRODUCTS = {
     Phone.PhoneModel.CISCO_9951: "Cisco CP-9951",
     Phone.PhoneModel.CISCO_8961: "Cisco CP-8961",
 }
+
+ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+
+
+@dataclass(frozen=True)
+class ConfigExportArchive:
+    archive_bytes: bytes
+    checksum: str
+    file_manifest: list[dict[str, Any]]
+    manifest: dict[str, Any]
+
+
+class ConfigExportValidationError(Exception):
+    def __init__(self, validation: dict[str, list[dict[str, Any]]]):
+        self.validation = validation
+        super().__init__("Export blocked by validation errors.")
 
 
 def build_location_config(
@@ -187,6 +212,9 @@ def build_route_generation_choices(location: Location) -> dict[str, list[dict[st
             for extension in local_extensions
             if not extension.emergency_calling_enabled
         ],
+    }
+
+
 def mac_to_sep_filename(mac_address: str) -> str:
     return f"SEP{normalize_mac_address(mac_address)}.cnf.xml"
 
@@ -236,6 +264,229 @@ def build_cisco_tftp_output(location: Location) -> dict[str, Any]:
             "bundled": False,
         },
     }
+
+
+def create_config_version(
+    location: Location,
+    *,
+    exported_by=None,
+    require_emergency: bool = True,
+    rollback_of: ConfigVersion | None = None,
+) -> ConfigVersion:
+    validation = validate_location_routing(location, require_emergency=require_emergency)
+    if validation["errors"]:
+        raise ConfigExportValidationError(validation)
+
+    with transaction.atomic():
+        locked_location = Location.objects.select_for_update().get(pk=location.pk)
+        version_number = (
+            ConfigVersion.objects.filter(location=locked_location).aggregate(last=Max("version_number"))["last"] or 0
+        ) + 1
+        exported_at = timezone.now()
+        archive = build_config_export_archive(
+            locked_location,
+            version_number=version_number,
+            exported_at=exported_at,
+            exported_by=exported_by,
+            validation=validation,
+            require_emergency=require_emergency,
+        )
+        return ConfigVersion.objects.create(
+            location=locked_location,
+            version_number=version_number,
+            exported_by=exported_by if getattr(exported_by, "is_authenticated", False) else None,
+            exported_at=exported_at,
+            checksum=archive.checksum,
+            warnings=validation["warnings"],
+            emergency_status=_emergency_status(validation, require_emergency=require_emergency),
+            file_manifest=archive.file_manifest,
+            deployment_snapshot=_deployment_snapshot(locked_location),
+            archive=archive.archive_bytes,
+            archive_size_bytes=len(archive.archive_bytes),
+            rollback_of=rollback_of,
+        )
+
+
+def build_config_export_archive(
+    location: Location,
+    *,
+    version_number: int,
+    exported_at,
+    exported_by=None,
+    validation: dict[str, list[dict[str, Any]]] | None = None,
+    require_emergency: bool = True,
+) -> ConfigExportArchive:
+    validation = validation or validate_location_routing(location, require_emergency=require_emergency)
+    config = build_location_config(location, require_emergency=require_emergency, validation=validation)
+    exported_by_username = exported_by.get_username() if getattr(exported_by, "is_authenticated", False) else "system"
+    files = _export_payload_files(location, config)
+    payload_manifest = [_manifest_entry(path, content, content_type) for path, content, content_type in files]
+    manifest = {
+        "format": "pbx-config-export/v1",
+        "version": {
+            "number": version_number,
+            "exported_at": exported_at.isoformat(),
+            "exported_by": exported_by_username,
+        },
+        "location": {
+            "id": location.id,
+            "slug": location.slug,
+            "name": location.name,
+            "timezone": location.timezone,
+        },
+        "emergency_status": _emergency_status(validation, require_emergency=require_emergency),
+        "warnings": validation["warnings"],
+        "deployment": _deployment_snapshot(location),
+        "files": payload_manifest,
+    }
+    manifest_content = _json_bytes(manifest)
+    archive_files = [
+        *files,
+        ("manifest.json", manifest_content, "application/json"),
+    ]
+    checksum_lines = [
+        f"{_sha256(content)}  {path}"
+        for path, content, _content_type in archive_files
+    ]
+    checksum_content = ("\n".join(checksum_lines) + "\n").encode("utf-8")
+    archive_files.append(("SHA256SUMS", checksum_content, "text/plain"))
+
+    archive_bytes = _zip_archive(archive_files)
+    file_manifest = [
+        _manifest_entry(path, content, content_type)
+        for path, content, content_type in archive_files
+    ]
+    return ConfigExportArchive(
+        archive_bytes=archive_bytes,
+        checksum=_sha256(archive_bytes),
+        file_manifest=file_manifest,
+        manifest=manifest,
+    )
+
+
+def write_config_version_directory(version: ConfigVersion, output_dir: str | Path) -> None:
+    target = Path(output_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(BytesIO(bytes(version.archive))) as archive:
+        for zip_info in archive.infolist():
+            destination = (target / zip_info.filename).resolve()
+            try:
+                destination.relative_to(target.resolve())
+            except ValueError as exc:
+                raise ValueError(f"Unsafe ZIP member path: {zip_info.filename}") from exc
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(archive.read(zip_info.filename))
+
+
+def _export_payload_files(location: Location, config: dict[str, Any]) -> list[tuple[str, bytes, str]]:
+    files: list[tuple[str, bytes, str]] = [
+        ("docker-compose.yml", _docker_compose_yml(location).encode("utf-8"), "application/x-yaml"),
+        (".env.example", _env_example(location).encode("utf-8"), "text/plain"),
+    ]
+    files.extend(
+        (
+            f"asterisk/{filename}",
+            config["asterisk_configs"][filename].encode("utf-8"),
+            "text/plain",
+        )
+        for filename in ASTERISK_CONFIG_FILENAMES
+    )
+    files.extend(
+        (
+            f"tftp/{file['path'].lstrip('/')}",
+            file["content"].encode("utf-8"),
+            file["content_type"],
+        )
+        for file in config["tftp"]["files"]
+    )
+    return files
+
+
+def _docker_compose_yml(location: Location) -> str:
+    return "\n".join(
+        [
+            "services:",
+            "  asterisk:",
+            "    image: asterisk:latest",
+            f"    container_name: pbx-{location.slug}",
+            "    restart: unless-stopped",
+            "    env_file:",
+            "      - .env",
+            "    network_mode: host",
+            "    volumes:",
+            "      - ./asterisk:/etc/asterisk:ro",
+            "      - ./tftp:/srv/tftp:ro",
+            "",
+        ]
+    )
+
+
+def _env_example(location: Location) -> str:
+    return "\n".join(
+        [
+            f"PBX_LOCATION_SLUG={location.slug}",
+            f"PBX_LAN_IP={location.pbx_lan_ip}",
+            f"PBX_WARP_IP={location.pbx_warp_ip}",
+            f"TZ={location.timezone}",
+            "ASTERISK_UID=1000",
+            "ASTERISK_GID=1000",
+            "",
+        ]
+    )
+
+
+def _deployment_snapshot(location: Location) -> dict[str, Any]:
+    return {
+        "location_deployment_status": location.deployment_status,
+        "last_deployed_at": location.last_deployed_at.isoformat() if location.last_deployed_at else None,
+        "ssh_host_configured": bool(location.deployment_ssh_host),
+        "ssh_username_configured": bool(location.deployment_ssh_username),
+        "ssh_private_key_configured": bool(location.deployment_ssh_private_key),
+        "ssh_known_hosts_configured": bool(location.deployment_ssh_known_hosts),
+    }
+
+
+def _emergency_status(
+    validation: dict[str, list[dict[str, Any]]],
+    *,
+    require_emergency: bool,
+) -> dict[str, Any]:
+    error_codes = [error["code"] for error in validation["errors"]]
+    warning_codes = [warning["code"] for warning in validation["warnings"]]
+    return {
+        "required": require_emergency,
+        "blocked": bool(validation["errors"]),
+        "error_codes": error_codes,
+        "warning_codes": warning_codes,
+    }
+
+
+def _manifest_entry(path: str, content: bytes, content_type: str) -> dict[str, Any]:
+    return {
+        "path": path,
+        "size": len(content),
+        "sha256": _sha256(content),
+        "content_type": content_type,
+    }
+
+
+def _json_bytes(payload: dict[str, Any]) -> bytes:
+    return (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def _sha256(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
+
+
+def _zip_archive(files: list[tuple[str, bytes, str]]) -> bytes:
+    output = BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path, content, _content_type in files:
+            zip_info = zipfile.ZipInfo(path, date_time=ZIP_TIMESTAMP)
+            zip_info.compress_type = zipfile.ZIP_DEFLATED
+            zip_info.external_attr = 0o644 << 16
+            archive.writestr(zip_info, content)
+    return output.getvalue()
 
 
 def validate_location_routing(location: Location, *, require_emergency: bool = False) -> dict[str, list[dict[str, Any]]]:

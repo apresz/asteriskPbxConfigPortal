@@ -4,6 +4,7 @@ from .models import (
     AuditLog,
     APIKey,
     AudioPrompt,
+    ConfigVersion,
     DID,
     IVR,
     IVRMenuOption,
@@ -108,6 +109,37 @@ class LocationAdmin(admin.ModelAdmin):
         ("AMI", {"fields": ("ami_host", "ami_port", "ami_username", "ami_secret")}),
         ("Agent", {"fields": ("agent_secret",)}),
         ("Deployment Status", {"fields": ("deployment_status", "last_deployed_at")}),
+    )
+
+
+@admin.register(ConfigVersion)
+class ConfigVersionAdmin(admin.ModelAdmin):
+    list_display = (
+        "location",
+        "version_number",
+        "exported_at",
+        "exported_by",
+        "checksum",
+        "deployment_status",
+        "deployed_at",
+    )
+    list_filter = ("location", "deployment_status", "exported_at")
+    search_fields = ("location__name", "location__slug", "checksum")
+    readonly_fields = (
+        "location",
+        "version_number",
+        "exported_by",
+        "exported_at",
+        "checksum",
+        "warnings",
+        "emergency_status",
+        "file_manifest",
+        "deployment_snapshot",
+        "archive",
+        "archive_size_bytes",
+        "rollback_of",
+        "created_at",
+        "updated_at",
     )
 
 
