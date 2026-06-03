@@ -16,6 +16,7 @@ from .access import (
     user_has_permission,
 )
 from .audit import record_audit
+from .config_export import build_location_config
 from .extension_csv import ExtensionCSVError, export_extensions_csv, extension_template_csv, import_extensions_csv
 from .extension_management import sync_extension_relationships
 from .forms import ExtensionForm, LocationForm
@@ -31,6 +32,7 @@ from .models import (
     Extension,
     InboundDestination,
     Location,
+    OutboundRoute,
     OutboundRouteTrunk,
     PagingGroup,
     PagingGroupMember,
@@ -71,7 +73,7 @@ def location_form_data(**overrides):
         "default_did": "+15551203000",
         "emergency_caller_id": "+15551203999",
         "emergency_trunk": "Branch Emergency SIP",
-        "recording_retention_days": "365",
+        "recording_retention_days": "90",
         "smtp_host": "smtp-branch.example.test",
         "smtp_port": "587",
         "smtp_from_email": "pbx-branch@example.test",
@@ -123,7 +125,7 @@ def extension_form_data(location, **overrides):
         "voicemail_pin": "1234",
         "caller_id_name": "Branch Desk",
         "caller_id_number": "+15551203000",
-        "recording_policy": Extension.RecordingPolicy.INHERIT,
+        "recording_policy": Extension.RecordingPolicy.NEVER,
         "emergency_calling_enabled": "on",
         "is_active": "on",
         "ring_groups": [],
@@ -235,11 +237,7 @@ class LocationFormValidationTests(TestCase):
             "emergency_caller_id",
             "emergency_trunk",
             "recording_retention_days",
-            "smtp_host",
             "smtp_port",
-            "smtp_from_email",
-            "smtp_username",
-            "smtp_password",
             "ami_host",
             "ami_port",
             "ami_username",
@@ -253,6 +251,33 @@ class LocationFormValidationTests(TestCase):
         form = LocationForm(data=location_form_data(), include_sensitive_fields=True)
 
         self.assertTrue(form.is_valid(), form.errors)
+
+    def test_location_accepts_voicemail_without_smtp_settings(self):
+        form = LocationForm(
+            data=location_form_data(
+                smtp_host="",
+                smtp_from_email="",
+                smtp_username="",
+                smtp_password="",
+            ),
+            include_sensitive_fields=True,
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_location_rejects_partial_smtp_settings(self):
+        form = LocationForm(
+            data=location_form_data(
+                smtp_host="smtp-branch.example.test",
+                smtp_from_email="",
+                smtp_username="",
+                smtp_password="",
+            ),
+            include_sensitive_fields=True,
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("smtp_from_email", form.errors)
 
     def test_form_validates_lan_membership_and_rtp_range(self):
         form = LocationForm(
@@ -600,7 +625,7 @@ class ExtensionCSVTests(TestCase):
             "location_slug": self.location.slug,
             "number": "3002",
             "display_name": "Duplicate",
-            "recording_policy": Extension.RecordingPolicy.INHERIT,
+            "recording_policy": Extension.RecordingPolicy.NEVER,
             "emergency_calling_enabled": "true",
             "is_active": "true",
         }
@@ -611,6 +636,139 @@ class ExtensionCSVTests(TestCase):
             import_extensions_csv(output.getvalue(), actor=self.admin, can_disable_911=True)
 
         self.assertIn("duplicate extension number 3002 in CSV", context.exception.errors[0])
+
+
+class VoicemailRecordingConfigTests(TestCase):
+    def test_defaults_allow_phone_voicemail_without_smtp(self):
+        location_data = location_model_data(
+            smtp_host="",
+            smtp_from_email="",
+            smtp_username="",
+            smtp_password="",
+        )
+        location_data.pop("recording_retention_days")
+        location = Location(**location_data)
+        location.full_clean()
+        location.save()
+
+        self.assertEqual(location.recording_retention_days, 90)
+        self.assertIsNone(build_location_config(location)["voicemail"]["smtp"])
+
+    def test_recording_policy_defaults_to_off_for_extension_queue_and_route(self):
+        location = Location.objects.create(**location_model_data(name="HQ", slug="hq"))
+        extension = Extension.objects.create(location=location, number="3000", display_name="HQ Desk")
+        queue = CallQueue.objects.create(location=location, name="Support Queue")
+        route = OutboundRoute.objects.create(
+            location=location,
+            name="Local",
+            dial_pattern="NXXNXXXXXX",
+            priority=1,
+        )
+
+        self.assertEqual(extension.recording_policy, Extension.RecordingPolicy.NEVER)
+        self.assertEqual(queue.recording_policy, CallQueue.RecordingPolicy.NEVER)
+        self.assertEqual(route.recording_policy, OutboundRoute.RecordingPolicy.NEVER)
+
+    def test_recording_policy_and_retention_validation(self):
+        location = Location.objects.create(**location_model_data(name="HQ", slug="hq"))
+        invalid_retention = Location(**location_model_data(name="Bad Retention", slug="bad-retention", recording_retention_days=0))
+        queue = CallQueue(location=location, name="Support Queue", recording_policy="invalid")
+        route = OutboundRoute(
+            location=location,
+            name="Local",
+            dial_pattern="NXXNXXXXXX",
+            priority=1,
+            recording_policy="invalid",
+        )
+
+        with self.assertRaises(ValidationError) as retention_context:
+            invalid_retention.full_clean()
+        self.assertIn("recording_retention_days", retention_context.exception.message_dict)
+
+        with self.assertRaises(ValidationError) as queue_context:
+            queue.full_clean()
+        self.assertIn("recording_policy", queue_context.exception.message_dict)
+
+        with self.assertRaises(ValidationError) as route_context:
+            route.full_clean()
+        self.assertIn("recording_policy", route_context.exception.message_dict)
+
+    def test_config_export_exposes_voicemail_recording_and_retention(self):
+        location = Location.objects.create(
+            **location_model_data(
+                name="No SMTP",
+                slug="no-smtp",
+                recording_retention_days=90,
+                smtp_host="",
+                smtp_from_email="",
+                smtp_username="",
+                smtp_password="",
+            )
+        )
+        Extension.objects.create(
+            location=location,
+            number="3000",
+            display_name="HQ Desk",
+            email="desk@example.test",
+            voicemail_enabled=True,
+            voicemail_pin="4321",
+            recording_policy=Extension.RecordingPolicy.ALWAYS,
+        )
+        CallQueue.objects.create(
+            location=location,
+            name="Support Queue",
+            recording_policy=CallQueue.RecordingPolicy.ON_DEMAND,
+        )
+        OutboundRoute.objects.create(
+            location=location,
+            name="Local",
+            dial_pattern="NXXNXXXXXX",
+            priority=1,
+            recording_policy=OutboundRoute.RecordingPolicy.NEVER,
+        )
+
+        config = build_location_config(location)
+
+        self.assertIsNone(config["voicemail"]["smtp"])
+        self.assertEqual(
+            config["voicemail"]["mailboxes"][0],
+            {
+                "number": "3000",
+                "name": "HQ Desk",
+                "enabled": True,
+                "pin": "4321",
+                "email_enabled": False,
+                "email": "",
+            },
+        )
+        self.assertEqual(config["recording"]["retention_days"], 90)
+        self.assertEqual(config["helper_scripts"]["recording_retention_days"], 90)
+        self.assertEqual(config["recording"]["extensions"][0]["policy"], Extension.RecordingPolicy.ALWAYS)
+        self.assertEqual(config["recording"]["queues"][0]["policy"], CallQueue.RecordingPolicy.ON_DEMAND)
+        self.assertEqual(config["recording"]["routes"][0]["policy"], OutboundRoute.RecordingPolicy.NEVER)
+
+        location.smtp_host = "smtp-hq.example.test"
+        location.smtp_from_email = "pbx-hq@example.test"
+        location.save()
+        config = build_location_config(location)
+
+        self.assertEqual(config["voicemail"]["smtp"]["host"], "smtp-hq.example.test")
+        self.assertTrue(config["voicemail"]["mailboxes"][0]["email_enabled"])
+        self.assertEqual(config["voicemail"]["mailboxes"][0]["email"], "desk@example.test")
+
+    def test_export_command_outputs_helper_script_snapshot(self):
+        location = Location.objects.create(
+            **location_model_data(name="Command HQ", slug="command-hq", recording_retention_days=90)
+        )
+        Extension.objects.create(location=location, number="3000", display_name="HQ Desk")
+        output = StringIO()
+
+        call_command("export_pbx_config", location.slug, stdout=output)
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["location"]["slug"], "command-hq")
+        self.assertEqual(payload["helper_scripts"]["recording_retention_days"], 90)
+        self.assertEqual(payload["voicemail"]["mailboxes"][0]["number"], "3000")
 
 
 class PortalPermissionTests(TestCase):

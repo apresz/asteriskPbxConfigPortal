@@ -219,7 +219,7 @@ def _field_values_for_row(row, extension, location, row_errors):
         "voicemail_pin": _text_or_existing(row.get("voicemail_pin"), extension.voicemail_pin),
         "caller_id_name": (row.get("caller_id_name") or "").strip(),
         "caller_id_number": (row.get("caller_id_number") or "").strip(),
-        "recording_policy": (row.get("recording_policy") or extension.recording_policy or Extension.RecordingPolicy.INHERIT).strip(),
+        "recording_policy": (row.get("recording_policy") or extension.recording_policy or Extension.RecordingPolicy.NEVER).strip(),
         "voicemail_enabled": _parse_bool(row.get("voicemail_enabled"), extension.voicemail_enabled if extension.pk else True, row_errors, "voicemail_enabled"),
         "emergency_calling_enabled": _parse_bool(
             row.get("emergency_calling_enabled"),

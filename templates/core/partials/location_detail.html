@@ -65,13 +65,17 @@
   <article class="record-section">
     <h2>SMTP</h2>
     <dl>
-      <div><dt>Host</dt><dd>{{ location.smtp_host }}:{{ location.smtp_port }}</dd></div>
-      <div><dt>From Email</dt><dd>{{ location.smtp_from_email }}</dd></div>
-      <div><dt>TLS</dt><dd>{{ location.smtp_use_tls|yesno:"Enabled,Disabled" }}</dd></div>
-      <div><dt>SSL</dt><dd>{{ location.smtp_use_ssl|yesno:"Enabled,Disabled" }}</dd></div>
-      {% if can_manage_location_secrets %}
-        <div><dt>SMTP Username</dt><dd>{{ location.smtp_username|default:"Missing" }}</dd></div>
-        <div><dt>SMTP Password</dt><dd>{{ location.smtp_password|yesno:"Configured,Missing" }}</dd></div>
+      {% if location.smtp_host and location.smtp_from_email %}
+        <div><dt>Host</dt><dd>{{ location.smtp_host }}:{{ location.smtp_port }}</dd></div>
+        <div><dt>From Email</dt><dd>{{ location.smtp_from_email }}</dd></div>
+        <div><dt>TLS</dt><dd>{{ location.smtp_use_tls|yesno:"Enabled,Disabled" }}</dd></div>
+        <div><dt>SSL</dt><dd>{{ location.smtp_use_ssl|yesno:"Enabled,Disabled" }}</dd></div>
+        {% if can_manage_location_secrets %}
+          <div><dt>SMTP Username</dt><dd>{{ location.smtp_username|default:"Missing" }}</dd></div>
+          <div><dt>SMTP Password</dt><dd>{{ location.smtp_password|yesno:"Configured,Missing" }}</dd></div>
+        {% endif %}
+      {% else %}
+        <div><dt>Status</dt><dd>Not configured</dd></div>
       {% endif %}
     </dl>
   </article>

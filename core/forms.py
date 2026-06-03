@@ -22,8 +22,6 @@ class LocationForm(forms.ModelForm):
         "deployment_ssh_host",
         "deployment_ssh_username",
         "deployment_ssh_private_key",
-        "smtp_username",
-        "smtp_password",
         "ami_username",
         "ami_secret",
         "agent_secret",
