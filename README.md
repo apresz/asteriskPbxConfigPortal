@@ -22,6 +22,8 @@ Key settings:
 - `DJANGO_CSRF_TRUSTED_ORIGINS`: comma-separated trusted origins with scheme.
 - `PORTAL_ENFORCE_CLIENT_CIDR`: when true, restricts requests to configured LAN/WARP CIDRs.
 - `PORTAL_ALLOWED_CLIENT_CIDRS`: comma-separated CIDR list for client IP allowlisting.
+- `PBX_AGENT_PORTAL_URL`: WARP-reachable portal URL used in exported PBX agent WebSocket config.
+- `PBX_ACTIVE_CONFIG_MARKER`: deployed marker path the PBX agent reads for active version reporting.
 
 ## Routes
 

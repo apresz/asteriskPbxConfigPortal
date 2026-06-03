@@ -1,0 +1,68 @@
+<?xml version='1.0' encoding='utf-8'?>
+<device>
+  <deviceProtocol>SIP</deviceProtocol>
+  <product>Cisco CP-9951</product>
+  <model>CP-9951</model>
+  <phoneLabel>CP-9951 Phone</phoneLabel>
+  <transportLayerProtocol>TCP</transportLayerProtocol>
+  <directoryURL>http://10.50.0.10/cisco/company-directory.xml</directoryURL>
+  <loadInformation>sip9951.9-4-2</loadInformation>
+  <devicePool>
+    <dateTimeSetting>
+      <dateTemplate>M/D/Ya</dateTemplate>
+      <timeZone>America/Los_Angeles</timeZone>
+    </dateTimeSetting>
+    <callManagerGroup>
+      <members>
+        <member priority="0">
+          <callManager>
+            <ports>
+              <ethernetPhonePort>2000</ethernetPhonePort>
+              <sipPort>5060</sipPort>
+              <securedSipPort>5061</securedSipPort>
+            </ports>
+            <processNodeName>10.50.0.10</processNodeName>
+          </callManager>
+        </member>
+      </members>
+    </callManagerGroup>
+  </devicePool>
+  <sipProfile>
+    <sipProxies>
+      <backupProxy />
+      <backupProxyPort />
+      <emergencyProxy />
+      <emergencyProxyPort />
+      <outboundProxy />
+      <outboundProxyPort />
+      <registerWithProxy>true</registerWithProxy>
+    </sipProxies>
+    <sipPort>5060</sipPort>
+    <transportLayerProtocol>TCP</transportLayerProtocol>
+    <phoneLabel>CP-9951 Phone</phoneLabel>
+    <dialTemplate>dialplan.xml</dialTemplate>
+    <sipLines>
+      <line button="1">
+        <featureID>9</featureID>
+        <featureLabel>Primary</featureLabel>
+        <proxy>USECALLMANAGER</proxy>
+        <port>5060</port>
+        <name>5102</name>
+        <displayName>Desk 5102</displayName>
+        <authName>sip5102</authName>
+        <authPassword>secret5102</authPassword>
+        <contact>5102</contact>
+        <messagesNumber>*97</messagesNumber>
+      </line>
+    </sipLines>
+  </sipProfile>
+  <phoneServices>
+    <provisioning>0</provisioning>
+    <phoneService type="1" category="0">
+      <name>Company Directory</name>
+      <url>http://10.50.0.10/cisco/company-directory.xml</url>
+      <vendor>Local PBX</vendor>
+      <version>1</version>
+    </phoneService>
+  </phoneServices>
+</device>

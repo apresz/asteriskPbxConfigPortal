@@ -79,9 +79,25 @@ class APIKeyAdmin(admin.ModelAdmin):
 
 @admin.register(Location)
 class LocationAdmin(admin.ModelAdmin):
-    list_display = ("name", "slug", "timezone", "is_active", "deployment_status", "last_deployed_at")
+    list_display = (
+        "name",
+        "slug",
+        "timezone",
+        "is_active",
+        "deployment_status",
+        "last_deployed_at",
+        "active_config_version_number",
+        "active_config_reported_at",
+    )
     list_filter = ("is_active", "deployment_status", "timezone")
     search_fields = ("name", "slug")
+    readonly_fields = (
+        "agent_token",
+        "active_config_version_number",
+        "active_config_checksum",
+        "active_config_timestamp",
+        "active_config_reported_at",
+    )
     fieldsets = (
         ("Identity", {"fields": ("name", "slug", "description", "timezone", "is_active")}),
         ("Network", {"fields": ("lan_subnet", "pbx_lan_ip", "pbx_warp_ip")}),
@@ -113,7 +129,18 @@ class LocationAdmin(admin.ModelAdmin):
             {"fields": ("smtp_host", "smtp_port", "smtp_from_email", "smtp_use_tls", "smtp_use_ssl", "smtp_username", "smtp_password")},
         ),
         ("AMI", {"fields": ("ami_host", "ami_port", "ami_username", "ami_secret")}),
-        ("Agent", {"fields": ("agent_secret",)}),
+        ("Agent", {"fields": ("agent_token", "agent_secret")}),
+        (
+            "PBX Active Config",
+            {
+                "fields": (
+                    "active_config_version_number",
+                    "active_config_checksum",
+                    "active_config_timestamp",
+                    "active_config_reported_at",
+                )
+            },
+        ),
         ("Deployment Status", {"fields": ("deployment_status", "last_deployed_at")}),
     )
 

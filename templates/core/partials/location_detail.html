@@ -53,6 +53,10 @@
     <span>Deployment Status</span>
     <strong>{{ location.get_deployment_status_display }}</strong>
   </div>
+  <div class="summary-tile">
+    <span>PBX Active Version</span>
+    <strong>{% if location.active_config_version_number %}v{{ location.active_config_version_number }}{% else %}Not reported{% endif %}</strong>
+  </div>
 </section>
 
 <section class="record-grid">
@@ -141,11 +145,22 @@
     <h2>Agent</h2>
     {% if can_manage_location_secrets %}
       <dl>
+        <div><dt>Agent Token</dt><dd><code>{{ location.agent_token }}</code></dd></div>
         <div><dt>Agent Secret</dt><dd>{{ location.agent_secret|yesno:"Configured,Missing" }}</dd></div>
       </dl>
     {% else %}
       <p class="restricted-copy">Restricted</p>
     {% endif %}
+  </article>
+
+  <article class="record-section">
+    <h2>PBX Active Config</h2>
+    <dl>
+      <div><dt>Version</dt><dd>{% if location.active_config_version_number %}v{{ location.active_config_version_number }}{% else %}Not reported{% endif %}</dd></div>
+      <div><dt>Checksum</dt><dd>{% if location.active_config_checksum %}<code>{{ location.active_config_checksum }}</code>{% else %}Not reported{% endif %}</dd></div>
+      <div><dt>Marker Timestamp</dt><dd>{{ location.active_config_timestamp|date:"Y-m-d H:i"|default:"Not reported" }}</dd></div>
+      <div><dt>Reported At</dt><dd>{{ location.active_config_reported_at|date:"Y-m-d H:i"|default:"Not reported" }}</dd></div>
+    </dl>
   </article>
 </section>
 
