@@ -16,7 +16,7 @@ from .access import (
 )
 from .audit import record_audit
 from .audio_prompts import AudioPromptConversionError, create_audio_prompt_from_upload
-from .config_export import validate_location_routing
+from .config_export import ConfigExportValidationError, create_config_version, validate_location_routing
 from .extension_csv import (
     ExtensionCSVError,
     export_extensions_csv,
@@ -48,6 +48,7 @@ from .models import (
     AuditAction,
     AuditOutcome,
     CallQueue,
+    ConfigVersion,
     DID,
     Extension,
     FeatureCode,
@@ -562,7 +563,7 @@ def location_list(request):
 @permission_required(PortalPermission.VIEW)
 def location_detail(request, slug: str):
     location = get_object_or_404(Location, slug=slug)
-    context = _location_context(request, {"location": location})
+    context = _location_detail_context(request, location)
     return render(request, _template(request, "core/locations/detail.html", "core/partials/location_detail.html"), context)
 
 
@@ -630,6 +631,83 @@ def location_delete(request, slug: str):
         _template(request, "core/locations/confirm_delete.html", "core/partials/location_confirm_delete.html"),
         context,
     )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+@require_POST
+def location_config_export(request, slug: str):
+    location = get_object_or_404(Location, slug=slug)
+    try:
+        version = create_config_version(location, exported_by=request.user, require_emergency=True)
+    except ConfigExportValidationError as exc:
+        record_audit(
+            actor=request.user,
+            action=AuditAction.CONFIG_EXPORT,
+            target=f"locations/{location.slug}/config",
+            outcome=AuditOutcome.FAILURE,
+            details={
+                "location_id": location.id,
+                "location_slug": location.slug,
+                "validation": exc.validation,
+            },
+        )
+        context = _location_detail_context(
+            request,
+            location,
+            {
+                "export_errors": [error["message"] for error in exc.validation["errors"]],
+                "export_validation": exc.validation,
+            },
+        )
+        return render(
+            request,
+            _template(request, "core/locations/detail.html", "core/partials/location_detail.html"),
+            context,
+            status=400,
+        )
+
+    record_audit(
+        actor=request.user,
+        action=AuditAction.CONFIG_EXPORT,
+        target=f"locations/{location.slug}/config",
+        outcome=AuditOutcome.SUCCESS,
+        details={
+            "location_id": location.id,
+            "location_slug": location.slug,
+            "config_version_id": version.id,
+            "version_number": version.version_number,
+            "checksum": version.checksum,
+            "warnings": version.warnings,
+        },
+    )
+    return redirect("location-detail", slug=location.slug)
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def location_config_export_download(request, slug: str, version_number: int):
+    version = _config_version_or_404(slug, version_number)
+    response = HttpResponse(bytes(version.archive), content_type="application/zip")
+    response["Content-Disposition"] = (
+        f'attachment; filename="{version.location.slug}-config-v{version.version_number}.zip"'
+    )
+    response["Content-Length"] = str(version.archive_size_bytes)
+    return response
+
+
+@permission_required(PortalPermission.RUN_LIVE_OPERATIONS)
+@require_POST
+def location_config_export_deploy(request, slug: str, version_number: int):
+    version = _config_version_or_404(slug, version_number)
+    _mark_config_version_deployed(version, request.user, rolled_back=False)
+    return redirect("location-detail", slug=version.location.slug)
+
+
+@permission_required(PortalPermission.RUN_LIVE_OPERATIONS)
+@require_POST
+def location_config_export_rollback(request, slug: str, version_number: int):
+    version = _config_version_or_404(slug, version_number)
+    _mark_config_version_deployed(version, request.user, rolled_back=True)
+    return redirect("location-detail", slug=version.location.slug)
 
 
 @permission_required(PortalPermission.VIEW)
@@ -1641,9 +1719,56 @@ def _location_context(request, context):
             "areas": visible_portal_areas(request.user),
             "can_edit_locations": user_has_permission(request.user, PortalPermission.EDIT_CONFIG),
             "can_manage_location_secrets": _can_manage_location_secrets(request),
+            "can_export_config": user_has_permission(request.user, PortalPermission.EDIT_CONFIG),
+            "can_deploy_config": user_has_permission(request.user, PortalPermission.RUN_LIVE_OPERATIONS),
         }
     )
     return context
+
+
+def _location_detail_context(request, location: Location, extra: dict | None = None):
+    context = {
+        "location": location,
+        "config_versions": location.config_versions.select_related(
+            "exported_by",
+            "deployed_by",
+            "rollback_of",
+        ).order_by("-version_number"),
+    }
+    if extra:
+        context.update(extra)
+    return _location_context(request, context)
+
+
+def _config_version_or_404(slug: str, version_number: int) -> ConfigVersion:
+    return get_object_or_404(
+        ConfigVersion.objects.select_related("location", "exported_by", "deployed_by"),
+        location__slug=slug,
+        version_number=version_number,
+    )
+
+
+def _mark_config_version_deployed(version: ConfigVersion, user, *, rolled_back: bool):
+    with transaction.atomic():
+        version = ConfigVersion.objects.select_for_update().select_related("location").get(pk=version.pk)
+        version.mark_deployed(user, rolled_back=rolled_back)
+        version.location.last_deployed_at = version.deployed_at
+        version.location.deployment_status = Location.DeploymentStatus.DEPLOYED
+        version.location.save(update_fields=["last_deployed_at", "deployment_status", "updated_at"])
+    record_audit(
+        actor=user,
+        action=AuditAction.DEPLOYMENT,
+        target=f"locations/{version.location.slug}/config/v{version.version_number}",
+        outcome=AuditOutcome.SUCCESS,
+        details={
+            "location_id": version.location_id,
+            "location_slug": version.location.slug,
+            "config_version_id": version.id,
+            "version_number": version.version_number,
+            "checksum": version.checksum,
+            "rolled_back": rolled_back,
+        },
+    )
 
 
 def _can_manage_location_secrets(request) -> bool:

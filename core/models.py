@@ -542,6 +542,106 @@ class Provider(TimestampedModel):
         return self.name
 
 
+class ConfigVersion(TimestampedModel):
+    class DeploymentStatus(models.TextChoices):
+        NOT_DEPLOYED = "not_deployed", "Not deployed"
+        DEPLOYED = "deployed", "Deployed"
+        ROLLED_BACK = "rolled_back", "Rolled back"
+
+    IMMUTABLE_FIELD_NAMES = (
+        "location_id",
+        "version_number",
+        "exported_by_id",
+        "exported_at",
+        "checksum",
+        "warnings",
+        "emergency_status",
+        "file_manifest",
+        "deployment_snapshot",
+        "archive",
+        "archive_size_bytes",
+        "rollback_of_id",
+    )
+
+    location = models.ForeignKey(
+        Location,
+        on_delete=models.CASCADE,
+        related_name="config_versions",
+    )
+    version_number = models.PositiveIntegerField()
+    exported_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="exported_config_versions",
+    )
+    exported_at = models.DateTimeField(default=timezone.now, db_index=True)
+    checksum = models.CharField(max_length=64, db_index=True)
+    warnings = models.JSONField(default=list, blank=True)
+    emergency_status = models.JSONField(default=dict, blank=True)
+    file_manifest = models.JSONField(default=list, blank=True)
+    deployment_snapshot = models.JSONField(default=dict, blank=True)
+    archive = models.BinaryField(editable=False)
+    archive_size_bytes = models.PositiveBigIntegerField(default=0)
+    deployment_status = models.CharField(
+        max_length=24,
+        choices=DeploymentStatus.choices,
+        default=DeploymentStatus.NOT_DEPLOYED,
+    )
+    deployed_at = models.DateTimeField(null=True, blank=True)
+    deployed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="deployed_config_versions",
+    )
+    rollback_of = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="rollback_versions",
+    )
+
+    class Meta:
+        ordering = ["location", "-version_number"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["location", "version_number"],
+                name="unique_config_version_per_location",
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            self._validate_immutable_fields()
+        super().save(*args, **kwargs)
+
+    def mark_deployed(self, user, *, rolled_back: bool = False):
+        self.deployment_status = (
+            self.DeploymentStatus.ROLLED_BACK if rolled_back else self.DeploymentStatus.DEPLOYED
+        )
+        self.deployed_at = timezone.now()
+        self.deployed_by = user if getattr(user, "is_authenticated", False) else None
+        self.save(update_fields=["deployment_status", "deployed_at", "deployed_by", "updated_at"])
+
+    def _validate_immutable_fields(self):
+        original = type(self).objects.only(*self.IMMUTABLE_FIELD_NAMES).get(pk=self.pk)
+        for field_name in self.IMMUTABLE_FIELD_NAMES:
+            current_value = getattr(self, field_name)
+            original_value = getattr(original, field_name)
+            if field_name == "archive":
+                current_value = bytes(current_value or b"")
+                original_value = bytes(original_value or b"")
+            if current_value != original_value:
+                raise ValidationError("Config version export data is immutable once created.")
+
+    def __str__(self):
+        return f"{self.location.slug} config v{self.version_number}"
+
+
 class Extension(TimestampedModel):
     RecordingPolicy = PBXRecordingPolicy
 

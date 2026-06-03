@@ -6,11 +6,28 @@
   </span>
   <span class="button-row">
     <a class="button button--secondary" href="{% url 'locations' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Locations</a>
+    {% if can_export_config %}
+      <form method="post" action="{% url 'location-config-export' location.slug %}">
+        {% csrf_token %}
+        <button class="button" type="submit">Export ZIP</button>
+      </form>
+    {% endif %}
     {% if can_edit_locations %}
       <a class="button" href="{% url 'location-edit' location.slug %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Edit</a>
     {% endif %}
   </span>
 </section>
+
+{% if export_errors %}
+  <section class="notice-panel notice-panel--error">
+    <h2>Export Blocked</h2>
+    <ul>
+      {% for error in export_errors %}
+        <li>{{ error }}</li>
+      {% endfor %}
+    </ul>
+  </section>
+{% endif %}
 
 <section class="summary-grid" aria-label="Location deployment status">
   <div class="summary-tile">
@@ -115,4 +132,89 @@
       <p class="restricted-copy">Restricted</p>
     {% endif %}
   </article>
+</section>
+
+<section class="table-panel export-history" aria-label="Export history">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th scope="col">Version</th>
+        <th scope="col">Export</th>
+        <th scope="col">Checksum</th>
+        <th scope="col">Manifest</th>
+        <th scope="col">Warnings</th>
+        <th scope="col">Deployment</th>
+        <th scope="col">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for version in config_versions %}
+        <tr>
+          <td>
+            <strong>v{{ version.version_number }}</strong>
+            {% if version.rollback_of %}
+              <span class="table-meta">Rollback of v{{ version.rollback_of.version_number }}</span>
+            {% endif %}
+          </td>
+          <td>
+            {{ version.exported_at|date:"Y-m-d H:i" }}
+            <span class="table-meta">by {{ version.exported_by.get_username|default:"system" }}</span>
+          </td>
+          <td>
+            <code>{{ version.checksum }}</code>
+            <span class="table-meta">{{ version.archive_size_bytes }} bytes</span>
+          </td>
+          <td>
+            <details>
+              <summary>{{ version.file_manifest|length }} files</summary>
+              <ul class="manifest-list">
+                {% for file in version.file_manifest %}
+                  <li><code>{{ file.path }}</code> <span>{{ file.sha256|slice:":12" }}</span></li>
+                {% endfor %}
+              </ul>
+            </details>
+          </td>
+          <td>
+            {{ version.warnings|length }}
+            {% if version.emergency_status.warning_codes %}
+              <span class="table-meta">{{ version.emergency_status.warning_codes|join:", " }}</span>
+            {% endif %}
+          </td>
+          <td>
+            <span class="status-badge{% if version.deployment_status == 'not_deployed' %} status-badge--muted{% endif %}">
+              {{ version.get_deployment_status_display }}
+            </span>
+            {% if version.deployed_at %}
+              <span class="table-meta">{{ version.deployed_at|date:"Y-m-d H:i" }} by {{ version.deployed_by.get_username|default:"system" }}</span>
+            {% else %}
+              <span class="table-meta">Location {{ version.deployment_snapshot.location_deployment_status|default:"unknown" }}</span>
+            {% endif %}
+          </td>
+          <td>
+            <div class="table-actions">
+              {% if can_export_config %}
+                <a class="button button--secondary" href="{% url 'location-config-export-download' location.slug version.version_number %}">Download</a>
+              {% endif %}
+              {% if can_deploy_config %}
+                <form method="post" action="{% url 'location-config-export-deploy' location.slug version.version_number %}">
+                  {% csrf_token %}
+                  <button class="button button--secondary" type="submit">Deploy</button>
+                </form>
+                {% if not forloop.first %}
+                  <form method="post" action="{% url 'location-config-export-rollback' location.slug version.version_number %}">
+                    {% csrf_token %}
+                    <button class="button button--secondary" type="submit">Rollback</button>
+                  </form>
+                {% endif %}
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+      {% empty %}
+        <tr>
+          <td colspan="7">No config versions exported.</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
 </section>

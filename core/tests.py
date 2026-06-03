@@ -1,10 +1,12 @@
 import csv
-from io import StringIO
+import hashlib
+from io import BytesIO, StringIO
 import json
 from pathlib import Path
 import subprocess
 import tempfile
 from unittest import mock
+import zipfile
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
@@ -26,9 +28,9 @@ from .audio_prompts import AudioPromptConversionError, create_audio_prompt_from_
 from .config_export import (
     ASTERISK_CONFIG_FILENAMES,
     build_asterisk_config_files,
+    create_config_version,
     build_location_config,
     build_route_generation_choices,
-    build_location_config,
     mac_to_sep_filename,
     select_route_caller_id,
     validate_location_routing,
@@ -54,6 +56,7 @@ from .models import (
     IVR,
     IVRMenuOption,
     CallQueue,
+    ConfigVersion,
     Extension,
     InboundDestination,
     Location,
@@ -566,6 +569,96 @@ class LocationManagementViewTests(TestCase):
         self.assertEqual(location.emergency_caller_id, "+15551203999")
         self.assertEqual(location.deployment_ssh_private_key, "branch-private-key")
         self.assertEqual(location.deployment_status, Location.DeploymentStatus.READY)
+
+    def test_export_history_actions_follow_role_permissions(self):
+        operator = User.objects.create_user(username="location-operator", password="portal-pass")
+        assign_role(operator, PortalRole.OPERATOR)
+        location = Location.objects.create(**location_model_data(name="Export HQ", slug="export-hq"))
+        Extension.objects.create(location=location, number="3000", display_name="Export Desk")
+        add_emergency_route(location)
+        first = create_config_version(location, exported_by=self.admin)
+        second = create_config_version(location, exported_by=self.admin)
+
+        self.client.force_login(self.viewer)
+        viewer_response = self.client.get(reverse("location-detail", args=[location.slug]))
+
+        self.assertEqual(viewer_response.status_code, 200)
+        self.assertContains(viewer_response, "Export history")
+        self.assertContains(viewer_response, f"v{second.version_number}")
+        self.assertContains(viewer_response, second.checksum)
+        self.assertContains(viewer_response, "docker-compose.yml")
+        self.assertNotContains(viewer_response, "Export ZIP")
+        self.assertNotContains(viewer_response, "Download")
+        self.assertNotContains(viewer_response, ">Deploy</button>")
+        self.assertNotContains(viewer_response, ">Rollback</button>")
+
+        self.client.force_login(self.editor)
+        editor_response = self.client.get(reverse("location-detail", args=[location.slug]))
+
+        self.assertContains(editor_response, "Export ZIP")
+        self.assertContains(editor_response, "Download")
+        self.assertNotContains(editor_response, ">Deploy</button>")
+        self.assertNotContains(editor_response, ">Rollback</button>")
+
+        self.client.force_login(operator)
+        operator_response = self.client.get(reverse("location-detail", args=[location.slug]))
+
+        self.assertNotContains(operator_response, "Export ZIP")
+        self.assertNotContains(operator_response, "Download")
+        self.assertContains(operator_response, ">Deploy</button>")
+        self.assertContains(operator_response, ">Rollback</button>")
+
+        self.client.force_login(self.viewer)
+        self.assertEqual(
+            self.client.post(reverse("location-config-export", args=[location.slug])).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.get(reverse("location-config-export-download", args=[location.slug, first.version_number])).status_code,
+            403,
+        )
+
+    def test_export_download_deploy_and_rollback_actions_update_history(self):
+        operator = User.objects.create_user(username="deploy-operator", password="portal-pass")
+        assign_role(operator, PortalRole.OPERATOR)
+        location = Location.objects.create(**location_model_data(name="Deploy HQ", slug="deploy-hq"))
+        Extension.objects.create(location=location, number="3000", display_name="Deploy Desk")
+        add_emergency_route(location)
+
+        self.client.force_login(self.editor)
+        export_response = self.client.post(reverse("location-config-export", args=[location.slug]))
+
+        self.assertEqual(export_response.status_code, 302)
+        version = ConfigVersion.objects.get(location=location)
+        self.assertEqual(version.version_number, 1)
+
+        download_response = self.client.get(
+            reverse("location-config-export-download", args=[location.slug, version.version_number])
+        )
+
+        self.assertEqual(download_response.status_code, 200)
+        self.assertEqual(download_response["Content-Type"], "application/zip")
+        self.assertEqual(download_response.content, bytes(version.archive))
+
+        self.client.force_login(operator)
+        deploy_response = self.client.post(
+            reverse("location-config-export-deploy", args=[location.slug, version.version_number])
+        )
+
+        self.assertEqual(deploy_response.status_code, 302)
+        version.refresh_from_db()
+        location.refresh_from_db()
+        self.assertEqual(version.deployment_status, ConfigVersion.DeploymentStatus.DEPLOYED)
+        self.assertEqual(location.deployment_status, Location.DeploymentStatus.DEPLOYED)
+        self.assertIsNotNone(location.last_deployed_at)
+
+        rollback_response = self.client.post(
+            reverse("location-config-export-rollback", args=[location.slug, version.version_number])
+        )
+
+        self.assertEqual(rollback_response.status_code, 302)
+        version.refresh_from_db()
+        self.assertEqual(version.deployment_status, ConfigVersion.DeploymentStatus.ROLLED_BACK)
 
     def test_editor_update_ignores_spoofed_sensitive_fields(self):
         location = Location.objects.create(
@@ -1529,26 +1622,134 @@ class AsteriskConfigGenerationTests(TestCase):
             ],
         )
 
-    def test_export_command_writes_asterisk_files_to_output_dir(self):
+    def test_export_command_writes_spec_export_structure_to_output_dir_and_zip(self):
         output = StringIO()
         with tempfile.TemporaryDirectory() as output_dir:
-            call_command("export_pbx_config", self.hq.slug, "--output-dir", output_dir, stdout=output)
+            zip_path = Path(output_dir) / "hq-config.zip"
+            expanded_dir = Path(output_dir) / "expanded"
+            call_command(
+                "export_pbx_config",
+                self.hq.slug,
+                "--output-dir",
+                expanded_dir,
+                "--zip-output",
+                zip_path,
+                stdout=output,
+            )
             payload = json.loads(output.getvalue())
-            output_path = Path(output_dir)
+            version = ConfigVersion.objects.get(location=self.hq)
 
             self.assertEqual(
-                (output_path / "extensions.conf").read_text(encoding="utf-8"),
+                (expanded_dir / "asterisk" / "extensions.conf").read_text(encoding="utf-8"),
                 payload["asterisk_configs"]["extensions.conf"],
             )
             self.assertEqual(
-                (output_path / "pjsip.conf").read_text(encoding="utf-8"),
+                (expanded_dir / "asterisk" / "pjsip.conf").read_text(encoding="utf-8"),
                 self._golden("pjsip.conf"),
             )
+            self.assertTrue((expanded_dir / "docker-compose.yml").exists())
+            self.assertTrue((expanded_dir / ".env.example").exists())
+            self.assertTrue((expanded_dir / "tftp" / "company-directory.xml").exists())
+            self.assertTrue((expanded_dir / "manifest.json").exists())
+            self.assertTrue((expanded_dir / "SHA256SUMS").exists())
+            self.assertEqual(payload["config_version"]["version_number"], version.version_number)
+            self.assertEqual(payload["config_version"]["checksum"], version.checksum)
+            self.assertEqual(zip_path.read_bytes(), bytes(version.archive))
 
     def _golden(self, filename):
         return (
             Path(__file__).with_name("testdata") / "asterisk_configs" / filename
         ).read_text(encoding="utf-8")
+
+
+class ConfigVersionExportTests(TestCase):
+    maxDiff = None
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="exporter", password="portal-pass")
+        self.location = Location.objects.create(**location_model_data(name="Version HQ", slug="version-hq"))
+        self.extension = Extension.objects.create(
+            location=self.location,
+            number="3000",
+            display_name="Version Desk",
+            sip_username="3000",
+            sip_password="sip-secret",
+            emergency_calling_enabled=True,
+        )
+        add_emergency_route(self.location)
+
+    def test_every_export_creates_new_immutable_version_record(self):
+        first = create_config_version(self.location, exported_by=self.user)
+        second = create_config_version(self.location, exported_by=self.user)
+
+        self.assertEqual(first.version_number, 1)
+        self.assertEqual(second.version_number, 2)
+        self.assertEqual(ConfigVersion.objects.filter(location=self.location).count(), 2)
+        self.assertEqual(first.exported_by, self.user)
+        self.assertEqual(first.archive_size_bytes, len(bytes(first.archive)))
+        self.assertEqual(first.checksum, hashlib.sha256(bytes(first.archive)).hexdigest())
+        first_checksum = first.checksum
+        first.checksum = "0" * 64
+        with self.assertRaises(ValidationError):
+            first.save()
+        first.refresh_from_db()
+        self.assertEqual(first.checksum, first_checksum)
+
+    def test_export_zip_structure_manifest_and_checksum_snapshot(self):
+        version = create_config_version(self.location, exported_by=self.user)
+
+        with zipfile.ZipFile(BytesIO(bytes(version.archive))) as archive:
+            names = sorted(archive.namelist())
+            manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+            checksums = archive.read("SHA256SUMS").decode("utf-8").splitlines()
+
+        self.assertEqual(
+            names,
+            sorted(
+                [
+                    ".env.example",
+                    "SHA256SUMS",
+                    "asterisk/cdr.conf",
+                    "asterisk/cel.conf",
+                    "asterisk/extensions.conf",
+                    "asterisk/features.conf",
+                    "asterisk/iax.conf",
+                    "asterisk/manager.conf",
+                    "asterisk/musiconhold.conf",
+                    "asterisk/pjsip.conf",
+                    "asterisk/queues.conf",
+                    "asterisk/recording.conf",
+                    "asterisk/retention.conf",
+                    "asterisk/voicemail.conf",
+                    "docker-compose.yml",
+                    "manifest.json",
+                    "tftp/company-directory.xml",
+                    "tftp/firmware/CISCO-FIRMWARE-CHECKLIST.txt",
+                    "tftp/firmware/README-no-firmware-bundled.txt",
+                ]
+            ),
+        )
+        self.assertEqual(manifest["format"], "pbx-config-export/v1")
+        self.assertEqual(manifest["location"]["slug"], "version-hq")
+        self.assertEqual(manifest["version"]["number"], 1)
+        self.assertEqual(manifest["version"]["exported_by"], "exporter")
+        self.assertFalse(manifest["emergency_status"]["blocked"])
+        self.assertIn(
+            {
+                "path": "docker-compose.yml",
+                "content_type": "application/x-yaml",
+                "size": next(file["size"] for file in version.file_manifest if file["path"] == "docker-compose.yml"),
+                "sha256": next(file["sha256"] for file in version.file_manifest if file["path"] == "docker-compose.yml"),
+            },
+            manifest["files"],
+        )
+        self.assertTrue(any(line.endswith("  manifest.json") for line in checksums))
+        self.assertTrue(any(line.endswith("  asterisk/pjsip.conf") for line in checksums))
+        self.assertEqual(version.checksum, hashlib.sha256(bytes(version.archive)).hexdigest())
+        self.assertEqual(
+            {file["path"] for file in version.file_manifest},
+            set(names),
+        )
 
 
 class ExportValidationEngineTests(TestCase):
