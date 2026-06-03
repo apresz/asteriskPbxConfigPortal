@@ -18,7 +18,7 @@ def populate_agent_tokens(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0010_configversion"),
+        ("core", "0012_alter_auditlog_action"),
     ]
 
     operations = [

@@ -1822,7 +1822,9 @@ class ConfigVersionExportTests(TestCase):
 
     def setUp(self):
         self.user = User.objects.create_user(username="exporter", password="portal-pass")
-        self.location = Location.objects.create(**location_model_data(name="Version HQ", slug="version-hq"))
+        self.location = Location.objects.create(
+            **location_model_data(name="Version HQ", slug="version-hq", agent_token="agent-token")
+        )
         self.extension = Extension.objects.create(
             location=self.location,
             number="3000",
@@ -1940,7 +1942,10 @@ class ConfigVersionExportTests(TestCase):
         self.assertIn("      - ./tftp:/usr/share/nginx/html/cisco:ro", services["provisioning-http"])
         self.assertIn('      - "${PROVISIONING_HTTP_PORT:-80}:80/tcp"', services["provisioning-http"])
         self.assertIn("    network_mode: host", services["pbx-agent"])
+        self.assertIn('      PBX_AGENT_WS_URL: "${PBX_AGENT_WS_URL:?PBX_AGENT_WS_URL is required}"', services["pbx-agent"])
+        self.assertIn('      PBX_AGENT_TOKEN: "${PBX_AGENT_TOKEN:?PBX_AGENT_TOKEN is required}"', services["pbx-agent"])
         self.assertIn('      PBX_AGENT_SECRET: "${PBX_AGENT_SECRET:?PBX_AGENT_SECRET is required}"', services["pbx-agent"])
+        self.assertIn("      PBX_ACTIVE_CONFIG_MARKER: ${PBX_ACTIVE_CONFIG_MARKER:-/etc/asterisk/pbx-active-config.json}", services["pbx-agent"])
 
     def _runtime_golden(self, filename):
         return (Path(__file__).with_name("testdata") / "runtime_bundle" / filename).read_text(encoding="utf-8")
