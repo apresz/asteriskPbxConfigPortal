@@ -4,14 +4,35 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import IntegrityError, transaction
-from django.http import Http404, JsonResponse
+from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from .access import assign_role, get_user_role, permission_required, user_has_permission
+from .access import (
+    assign_role,
+    get_user_role,
+    permission_required,
+    user_has_permission,
+)
 from .audit import record_audit
-from .forms import LocationForm
-from .models import APIKey, AuditAction, AuditOutcome, Location, PortalPermission, PortalRole, ServiceIdentity
+from .extension_csv import (
+    ExtensionCSVError,
+    export_extensions_csv,
+    extension_template_csv,
+    import_extensions_csv,
+)
+from .extension_management import clear_extension_relationships, is_911_disable_change
+from .forms import ExtensionForm, LocationForm
+from .models import (
+    APIKey,
+    AuditAction,
+    AuditOutcome,
+    Extension,
+    Location,
+    PortalPermission,
+    PortalRole,
+    ServiceIdentity,
+)
 from .navigation import PORTAL_AREAS, visible_portal_areas
 
 
@@ -336,6 +357,127 @@ def location_delete(request, slug: str):
     )
 
 
+@permission_required(PortalPermission.VIEW)
+def extension_list(request):
+    extensions = _extension_queryset()
+    context = _extension_context(request, {"extensions": extensions})
+    return render(request, _template(request, "core/extensions/list.html", "core/partials/extensions/list_content.html"), context)
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def extension_create(request):
+    can_disable_911 = _can_disable_911(request)
+    if request.method == "POST":
+        form = ExtensionForm(request.POST, can_disable_911=can_disable_911)
+        if form.is_valid():
+            logs_911_disable = is_911_disable_change(None, form.cleaned_data["emergency_calling_enabled"])
+            extension = form.save()
+            if logs_911_disable:
+                _record_911_disable(request, extension, AuditOutcome.SUCCESS, "form")
+            return redirect("extensions")
+        _record_denied_911_if_needed(request, form, "new")
+    else:
+        form = ExtensionForm(can_disable_911=can_disable_911)
+
+    context = _extension_context(
+        request,
+        {
+            "form": form,
+            "form_title": "New Extension",
+            "form_action": "Create",
+            "extension": None,
+        },
+    )
+    return render(request, _template(request, "core/extensions/form.html", "core/partials/extensions/form_content.html"), context)
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def extension_update(request, number: str):
+    extension = get_object_or_404(Extension, number=number)
+    can_disable_911 = _can_disable_911(request)
+    if request.method == "POST":
+        original_911_enabled = extension.emergency_calling_enabled
+        form = ExtensionForm(request.POST, instance=extension, can_disable_911=can_disable_911)
+        if form.is_valid():
+            logs_911_disable = original_911_enabled and not form.cleaned_data["emergency_calling_enabled"]
+            extension = form.save()
+            if logs_911_disable:
+                _record_911_disable(request, extension, AuditOutcome.SUCCESS, "form")
+            return redirect("extensions")
+        _record_denied_911_if_needed(request, form, extension.number)
+    else:
+        form = ExtensionForm(instance=extension, can_disable_911=can_disable_911)
+
+    context = _extension_context(
+        request,
+        {
+            "form": form,
+            "form_title": f"Edit {extension.number}",
+            "form_action": "Save",
+            "extension": extension,
+        },
+    )
+    return render(request, _template(request, "core/extensions/form.html", "core/partials/extensions/form_content.html"), context)
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def extension_delete(request, number: str):
+    extension = get_object_or_404(Extension, number=number)
+    if request.method == "POST":
+        clear_extension_relationships(extension)
+        extension.delete()
+        return redirect("extensions")
+
+    context = _extension_context(request, {"extension": extension})
+    return render(
+        request,
+        _template(request, "core/extensions/confirm_delete.html", "core/partials/extensions/confirm_delete_content.html"),
+        context,
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def extension_import(request):
+    context = {}
+    if request.method == "POST":
+        upload = request.FILES.get("csv_file")
+        if upload is None:
+            context["import_errors"] = ["Choose an extension CSV file."]
+        else:
+            try:
+                imported_count = import_extensions_csv(
+                    upload,
+                    actor=request.user,
+                    can_disable_911=_can_disable_911(request),
+                )
+            except ExtensionCSVError as exc:
+                context["import_errors"] = exc.errors
+            else:
+                context["import_result"] = f"Imported {imported_count} extension row(s)."
+
+    return render(
+        request,
+        _template(request, "core/extensions/import.html", "core/partials/extensions/import_content.html"),
+        _extension_context(request, context),
+    )
+
+
+@permission_required(PortalPermission.VIEW)
+def extension_export(request):
+    record_audit(
+        actor=request.user,
+        action=AuditAction.CONFIG_EXPORT,
+        target="extensions/csv",
+        outcome=AuditOutcome.SUCCESS,
+    )
+    return _csv_response(export_extensions_csv(_extension_queryset()), "extensions.csv")
+
+
+@permission_required(PortalPermission.VIEW)
+def extension_template(request):
+    return _csv_response(extension_template_csv(), "extensions-template.csv")
+
+
 def _template(request, full_template: str, partial_template: str) -> str:
     if request.headers.get("HX-Request") == "true":
         return partial_template
@@ -466,3 +608,52 @@ def _location_context(request, context):
 
 def _can_manage_location_secrets(request) -> bool:
     return user_has_permission(request.user, PortalPermission.ADMINISTER)
+
+
+def _extension_queryset():
+    return Extension.objects.select_related("location").prefetch_related(
+        "direct_dids",
+        "ring_group_memberships__ring_group",
+        "queue_memberships__queue",
+        "paging_group_memberships__paging_group",
+    )
+
+
+def _extension_context(request, context):
+    context.update(
+        {
+            "areas": visible_portal_areas(request.user),
+            "can_edit_extensions": user_has_permission(request.user, PortalPermission.EDIT_CONFIG),
+            "can_disable_911": _can_disable_911(request),
+        }
+    )
+    return context
+
+
+def _can_disable_911(request) -> bool:
+    return user_has_permission(request.user, PortalPermission.ADMINISTER)
+
+
+def _record_denied_911_if_needed(request, form, extension_number):
+    if form.denied_911_disable:
+        _record_911_disable(request, extension_number, AuditOutcome.DENIED, "form")
+
+
+def _record_911_disable(request, extension_or_number, outcome, source):
+    if isinstance(extension_or_number, Extension):
+        extension_number = extension_or_number.number
+    else:
+        extension_number = extension_or_number
+    record_audit(
+        actor=request.user,
+        action=AuditAction.CONFIG_CHANGE,
+        target=f"extensions/{extension_number}/911",
+        outcome=outcome,
+        details={"source": source, "emergency_calling_enabled": False},
+    )
+
+
+def _csv_response(csv_text, filename):
+    response = HttpResponse(csv_text, content_type="text/csv")
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response

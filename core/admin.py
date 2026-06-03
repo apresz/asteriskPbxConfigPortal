@@ -109,9 +109,17 @@ class LocationAdmin(admin.ModelAdmin):
 
 @admin.register(Extension)
 class ExtensionAdmin(admin.ModelAdmin):
-    list_display = ("number", "display_name", "location", "is_active")
-    list_filter = ("location", "is_active")
-    search_fields = ("number", "display_name")
+    list_display = (
+        "number",
+        "display_name",
+        "location",
+        "voicemail_enabled",
+        "recording_policy",
+        "emergency_calling_enabled",
+        "is_active",
+    )
+    list_filter = ("location", "recording_policy", "voicemail_enabled", "emergency_calling_enabled", "is_active")
+    search_fields = ("number", "display_name", "sip_username", "caller_id_number")
 
 
 @admin.register(Phone)
