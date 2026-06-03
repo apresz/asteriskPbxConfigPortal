@@ -39,6 +39,7 @@
                 <span class="table-link">{{ phone.mac_address }}</span>
               {% endif %}
               <span class="table-meta">{{ phone.sep_identifier }}</span>
+              {% if phone.firmware_load_name %}<span class="table-meta">Load {{ phone.firmware_load_name }}</span>{% endif %}
               {% if phone.label %}<span class="table-meta">{{ phone.label }}</span>{% endif %}
             </td>
             <td>{{ phone.location.name }}</td>

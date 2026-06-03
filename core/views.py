@@ -15,6 +15,7 @@ from .access import (
     user_has_permission,
 )
 from .audit import record_audit
+from .config_export import validate_location_routing
 from .extension_csv import (
     ExtensionCSVError,
     export_extensions_csv,
@@ -25,6 +26,7 @@ from .extension_management import clear_extension_relationships, is_911_disable_
 from .forms import (
     CallQueueForm,
     DIDForm,
+    ExtensionForm,
     FeatureCodeForm,
     InboundDestinationForm,
     IVRForm,
@@ -35,7 +37,10 @@ from .forms import (
     OutboundRouteForm,
     OutboundRouteTrunkFormSet,
     ProviderForm,
-    TrunkForm
+    PhoneForm,
+    PhoneLineAppearanceFormSet,
+    PhoneSpeedDialFormSet,
+    TrunkForm,
 )
 from .models import (
     APIKey,
@@ -227,7 +232,7 @@ def outbound_route_list(request):
     routes = OutboundRoute.objects.select_related("location").prefetch_related(
         "route_trunks__trunk__provider",
     ).order_by("location__name", "priority", "name")
-    context = _dial_plan_context(request, {"routes": routes})
+    context = _dial_plan_context(request, {"routes": routes, "dial_plan_validation": _dial_plan_validation()})
     return render(request, _template(request, "core/dial_plan/list.html", "core/partials/dial_plan/list_content.html"), context)
 
 
@@ -1684,6 +1689,21 @@ def _dial_plan_context(request, context):
         }
     )
     return context
+
+
+def _dial_plan_validation():
+    validation_by_location = []
+    for location in Location.objects.filter(is_active=True).order_by("name"):
+        validation = validate_location_routing(location, require_emergency=True)
+        if validation["warnings"] or validation["errors"]:
+            validation_by_location.append(
+                {
+                    "location": location,
+                    "warnings": validation["warnings"],
+                    "errors": validation["errors"],
+                }
+            )
+    return validation_by_location
 
 
 def _phone_formset_location(request, phone):

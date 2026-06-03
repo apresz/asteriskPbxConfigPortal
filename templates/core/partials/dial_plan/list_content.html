@@ -9,6 +9,29 @@
   {% endif %}
 </section>
 
+{% if dial_plan_validation %}
+  <section class="notice-panel notice-panel--error" aria-label="Dial plan validation">
+    <h2>Dial Plan Validation</h2>
+    {% for result in dial_plan_validation %}
+      <p><strong>{{ result.location.name }}</strong></p>
+      {% if result.errors %}
+        <ul>
+          {% for error in result.errors %}
+            <li>{{ error.message }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+      {% if result.warnings %}
+        <ul>
+          {% for warning in result.warnings %}
+            <li>{{ warning.message }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    {% endfor %}
+  </section>
+{% endif %}
+
 {% if routes %}
   <section class="table-panel" aria-label="Outbound routes">
     <table class="data-table">
