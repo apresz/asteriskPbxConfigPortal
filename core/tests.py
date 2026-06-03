@@ -1,3 +1,5 @@
+from io import StringIO
+
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
@@ -12,6 +14,7 @@ from .access import (
     user_has_permission,
 )
 from .audit import record_audit
+from .extension_csv import EXTENSION_CSV_FIELDS, export_extensions_csv, extension_csv_template, import_extensions_csv
 from .models import (
     AuditAction,
     AuditLog,
@@ -104,6 +107,210 @@ class PortalRouteTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'data-area="extensions"')
         self.assertNotContains(response, "<html")
+
+
+class ExtensionManagementViewTests(TestCase):
+    def setUp(self):
+        self.location = Location.objects.create(name="Headquarters", slug="headquarters")
+        self.admin = User.objects.create_user(username="extension-admin", password="portal-pass")
+        self.editor = User.objects.create_user(username="extension-editor", password="portal-pass")
+        assign_role(self.admin, PortalRole.ADMIN)
+        assign_role(self.editor, PortalRole.EDITOR)
+
+    def test_extension_list_replaces_placeholder_with_management_actions(self):
+        self.client.force_login(self.admin)
+
+        response = self.client.get(reverse("extensions"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Create")
+        self.assertContains(response, "Import")
+        self.assertContains(response, "Template")
+        self.assertContains(response, "Export")
+        self.assertNotContains(response, "Ready for provisioning model work")
+
+    def test_extension_create_rejects_duplicate_number(self):
+        Extension.objects.create(
+            location=self.location,
+            number="1000",
+            display_name="Reception",
+        )
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            reverse("extension_create"),
+            data=self._extension_form_data(number="1000", display_name="Duplicate"),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Extension with this Number already exists.")
+        self.assertEqual(Extension.objects.filter(number="1000").count(), 1)
+
+    def test_editor_cannot_disable_911_and_denied_attempt_is_audited(self):
+        self.client.force_login(self.editor)
+
+        response = self.client.post(
+            reverse("extension_create"),
+            data=self._extension_form_data(number="1002", emergency_calling_enabled=False),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Only Admin users can disable 911 calling")
+        self.assertFalse(Extension.objects.filter(number="1002").exists())
+        audit = AuditLog.objects.get()
+        self.assertEqual(audit.actor, self.editor)
+        self.assertEqual(audit.outcome, AuditOutcome.DENIED)
+        self.assertEqual(audit.target, "extensions/1002")
+        self.assertEqual(audit.details["field"], "emergency_calling_enabled")
+
+    def test_admin_can_disable_911_and_success_is_audited(self):
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            reverse("extension_create"),
+            data=self._extension_form_data(number="1003", emergency_calling_enabled=False),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        extension = Extension.objects.get(number="1003")
+        self.assertFalse(extension.emergency_calling_enabled)
+        audit = AuditLog.objects.get()
+        self.assertEqual(audit.actor, self.admin)
+        self.assertEqual(audit.outcome, AuditOutcome.SUCCESS)
+        self.assertEqual(audit.target, "extensions/1003")
+
+    def _extension_form_data(self, **overrides):
+        data = {
+            "location": str(self.location.pk),
+            "number": "1001",
+            "display_name": "Sales",
+            "email": "sales@example.test",
+            "sip_username": "1001",
+            "sip_password": "sip-secret",
+            "voicemail_enabled": "on",
+            "voicemail_pin": "1234",
+            "caller_id_name": "Sales",
+            "caller_id_number": "+15551201001",
+            "recording_policy": Extension.RecordingPolicy.ON_DEMAND,
+            "emergency_calling_enabled": "on",
+            "is_active": "on",
+        }
+        data.update({key: value for key, value in overrides.items() if value is not False})
+        for key, value in overrides.items():
+            if value is False:
+                data.pop(key, None)
+        return data
+
+
+class ExtensionCsvTests(TestCase):
+    def setUp(self):
+        self.location = Location.objects.create(name="Headquarters", slug="headquarters")
+        self.admin = User.objects.create_user(username="csv-admin", password="portal-pass")
+        self.editor = User.objects.create_user(username="csv-editor", password="portal-pass")
+        assign_role(self.admin, PortalRole.ADMIN)
+        assign_role(self.editor, PortalRole.EDITOR)
+
+    def test_extension_csv_template_includes_membership_columns(self):
+        header = extension_csv_template().splitlines()[0].split(",")
+
+        self.assertEqual(header, EXTENSION_CSV_FIELDS)
+        self.assertIn("direct_dids", header)
+        self.assertIn("ring_groups", header)
+        self.assertIn("queues", header)
+        self.assertIn("paging_groups", header)
+
+    def test_extension_csv_export_import_round_trips_attributes_and_memberships(self):
+        extension = Extension.objects.create(
+            location=self.location,
+            number="1100",
+            display_name="Support",
+            email="support@example.test",
+            sip_username="1100",
+            sip_password="sip-secret",
+            voicemail_enabled=True,
+            voicemail_pin="4321",
+            caller_id_name="Support",
+            caller_id_number="+15551201100",
+            recording_policy=Extension.RecordingPolicy.ALWAYS,
+        )
+        destination = InboundDestination.objects.create(
+            location=self.location,
+            name="Support extension",
+            destination_type=InboundDestination.DestinationType.EXTENSION,
+            extension=extension,
+        )
+        did = DID.objects.create(
+            location=self.location,
+            number="+15551201100",
+            default_destination=destination,
+            direct_extension=extension,
+        )
+        ring_group = RingGroup.objects.create(location=self.location, name="Support Ring")
+        queue = CallQueue.objects.create(location=self.location, name="Support Queue")
+        paging_group = PagingGroup.objects.create(
+            location=self.location,
+            name="Support Page",
+            page_code="7100",
+        )
+        RingGroupMember.objects.create(ring_group=ring_group, extension=extension)
+        QueueMember.objects.create(queue=queue, extension=extension)
+        PagingGroupMember.objects.create(paging_group=paging_group, extension=extension)
+
+        csv_text = export_extensions_csv(Extension.objects.filter(pk=extension.pk))
+        did.direct_extension = None
+        did.save()
+        RingGroupMember.objects.filter(extension=extension).delete()
+        QueueMember.objects.filter(extension=extension).delete()
+        PagingGroupMember.objects.filter(extension=extension).delete()
+        extension.email = ""
+        extension.sip_password = ""
+        extension.recording_policy = Extension.RecordingPolicy.NEVER
+        extension.save()
+
+        result = import_extensions_csv(StringIO(csv_text), actor=self.admin)
+
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.imported_count, 1)
+        extension.refresh_from_db()
+        did.refresh_from_db()
+        self.assertEqual(extension.email, "support@example.test")
+        self.assertEqual(extension.sip_password, "sip-secret")
+        self.assertEqual(extension.recording_policy, Extension.RecordingPolicy.ALWAYS)
+        self.assertEqual(did.direct_extension, extension)
+        self.assertTrue(RingGroupMember.objects.filter(ring_group=ring_group, extension=extension).exists())
+        self.assertTrue(QueueMember.objects.filter(queue=queue, extension=extension).exists())
+        self.assertTrue(PagingGroupMember.objects.filter(paging_group=paging_group, extension=extension).exists())
+
+    def test_extension_csv_import_rejects_duplicate_numbers_in_file(self):
+        csv_text = "\n".join(
+            [
+                ",".join(EXTENSION_CSV_FIELDS),
+                "headquarters,1200,Desk,,,,,true,,Desk,+15551201200,inherit,true,true,,,",
+                "headquarters,1200,Desk 2,,,,,true,,Desk,+15551201201,inherit,true,true,,,",
+            ]
+        )
+
+        result = import_extensions_csv(StringIO(csv_text), actor=self.admin)
+
+        self.assertEqual(result.imported_count, 0)
+        self.assertIn("duplicate extension number 1200", result.errors[0])
+        self.assertFalse(Extension.objects.filter(number="1200").exists())
+
+    def test_extension_csv_import_requires_admin_for_911_disable(self):
+        csv_text = "\n".join(
+            [
+                ",".join(EXTENSION_CSV_FIELDS),
+                "headquarters,1300,Desk,,,,,true,,Desk,+15551201300,inherit,false,true,,,",
+            ]
+        )
+
+        result = import_extensions_csv(StringIO(csv_text), actor=self.editor)
+
+        self.assertEqual(result.imported_count, 0)
+        self.assertIn("Only Admin users can disable 911 calling", result.errors[0])
+        self.assertFalse(Extension.objects.filter(number="1300").exists())
+        audit = AuditLog.objects.get()
+        self.assertEqual(audit.outcome, AuditOutcome.DENIED)
 
 
 class PortalPermissionTests(TestCase):

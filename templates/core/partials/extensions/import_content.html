@@ -1,0 +1,39 @@
+<section class="workspace">
+  <div class="workspace__header">
+    <div>
+      <p class="eyebrow">CSV tooling</p>
+      <h1>Import extensions</h1>
+    </div>
+    <div class="toolbar">
+      <a class="button" href="{% url 'extension_csv_template' %}">Template</a>
+      <a class="button" href="{% url 'extensions' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Extensions</a>
+    </div>
+  </div>
+
+  {% include "core/partials/extensions/messages.html" %}
+
+  {% if import_errors %}
+    <div class="message-list message-list--error">
+      <ul>
+        {% for error in import_errors %}
+          <li>{{ error }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  <form class="editor-form editor-form--compact" method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    <div class="field">
+      {{ form.csv_file.label_tag }}
+      {{ form.csv_file }}
+      {% for error in form.csv_file.errors %}
+        <span class="field__error">{{ error }}</span>
+      {% endfor %}
+    </div>
+    <div class="form-actions">
+      <button class="button button--primary" type="submit">Import</button>
+      <a class="button" href="{% url 'extensions' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Cancel</a>
+    </div>
+  </form>
+</section>

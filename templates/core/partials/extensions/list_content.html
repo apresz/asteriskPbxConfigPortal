@@ -1,0 +1,117 @@
+<section class="workspace" data-area="{{ slug }}">
+  <div class="workspace__header">
+    <div>
+      <p class="eyebrow">PBX extensions</p>
+      <h1>{{ area.label }}</h1>
+      <p>{{ area.summary }}</p>
+    </div>
+    <div class="toolbar" aria-label="Extension actions">
+      {% if can_edit %}
+        <a class="button button--primary" href="{% url 'extension_create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Create</a>
+        <a class="button" href="{% url 'extension_import' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Import</a>
+      {% endif %}
+      <a class="button" href="{% url 'extension_csv_template' %}">Template</a>
+      <a class="button" href="{% url 'extension_export' %}">Export</a>
+    </div>
+  </div>
+
+  {% include "core/partials/extensions/messages.html" %}
+
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th scope="col">Number</th>
+          <th scope="col">Name</th>
+          <th scope="col">Location</th>
+          <th scope="col">SIP</th>
+          <th scope="col">DID</th>
+          <th scope="col">Voicemail</th>
+          <th scope="col">Recording</th>
+          <th scope="col">911</th>
+          <th scope="col">Memberships</th>
+          <th scope="col">State</th>
+          {% if can_edit %}<th scope="col">Actions</th>{% endif %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for extension in extensions %}
+          <tr>
+            <td><strong>{{ extension.number }}</strong></td>
+            <td>
+              {{ extension.display_name }}
+              {% if extension.caller_id_name or extension.caller_id_number %}
+                <span class="subtle">{{ extension.caller_id_name }} {{ extension.caller_id_number }}</span>
+              {% endif %}
+            </td>
+            <td>{{ extension.location.name }}</td>
+            <td>
+              {% if extension.sip_username %}
+                {{ extension.sip_username }}
+              {% else %}
+                <span class="subtle">Not set</span>
+              {% endif %}
+            </td>
+            <td>
+              {% for did in extension.direct_dids.all %}
+                <span class="tag">{{ did.number }}</span>
+              {% empty %}
+                <span class="subtle">None</span>
+              {% endfor %}
+            </td>
+            <td>
+              {% if extension.voicemail_enabled %}
+                Enabled
+              {% else %}
+                <span class="subtle">Disabled</span>
+              {% endif %}
+            </td>
+            <td>{{ extension.get_recording_policy_display }}</td>
+            <td>
+              {% if extension.emergency_calling_enabled %}
+                Enabled
+              {% else %}
+                <span class="danger-text">Disabled</span>
+              {% endif %}
+            </td>
+            <td>
+              <div class="tag-stack">
+                {% for member in extension.ring_group_memberships.all %}
+                  <span class="tag">Ring: {{ member.ring_group.name }}</span>
+                {% endfor %}
+                {% for member in extension.queue_memberships.all %}
+                  <span class="tag">Queue: {{ member.queue.name }}</span>
+                {% endfor %}
+                {% for member in extension.paging_group_memberships.all %}
+                  <span class="tag">Page: {{ member.paging_group.name }}</span>
+                {% endfor %}
+                {% if not extension.ring_group_memberships.all and not extension.queue_memberships.all and not extension.paging_group_memberships.all %}
+                  <span class="subtle">None</span>
+                {% endif %}
+              </div>
+            </td>
+            <td>
+              {% if extension.is_active %}
+                Active
+              {% else %}
+                <span class="subtle">Inactive</span>
+              {% endif %}
+            </td>
+            {% if can_edit %}
+              <td>
+                <div class="row-actions">
+                  <a href="{% url 'extension_edit' extension.pk %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Edit</a>
+                  <a href="{% url 'extension_delete' extension.pk %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Delete</a>
+                </div>
+              </td>
+            {% endif %}
+          </tr>
+        {% empty %}
+          <tr>
+            <td colspan="{% if can_edit %}11{% else %}10{% endif %}" class="empty-state">No extensions configured.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>

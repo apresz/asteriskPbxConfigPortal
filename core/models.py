@@ -131,6 +131,12 @@ class Provider(TimestampedModel):
 
 
 class Extension(TimestampedModel):
+    class RecordingPolicy(models.TextChoices):
+        INHERIT = "inherit", "Inherit"
+        NEVER = "never", "Never"
+        ON_DEMAND = "on_demand", "On demand"
+        ALWAYS = "always", "Always"
+
     location = models.ForeignKey(
         Location,
         on_delete=models.CASCADE,
@@ -144,7 +150,22 @@ class Extension(TimestampedModel):
     display_name = models.CharField(max_length=120)
     email = models.EmailField(blank=True)
     sip_username = models.CharField(max_length=80, blank=True)
+    sip_password = models.CharField(max_length=120, blank=True)
     voicemail_enabled = models.BooleanField(default=True)
+    voicemail_pin = models.CharField(
+        max_length=16,
+        blank=True,
+        validators=[
+            RegexValidator(regex=r"^\d{4,16}$", message="Voicemail PINs must be 4 to 16 digits.")
+        ],
+    )
+    caller_id_name = models.CharField(max_length=120, blank=True)
+    caller_id_number = models.CharField(max_length=32, blank=True)
+    recording_policy = models.CharField(
+        max_length=16,
+        choices=RecordingPolicy.choices,
+        default=RecordingPolicy.INHERIT,
+    )
     emergency_calling_enabled = models.BooleanField(default=True)
     is_active = models.BooleanField(default=True)
 

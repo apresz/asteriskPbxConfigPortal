@@ -1,0 +1,20 @@
+<section class="workspace workspace--narrow">
+  <div class="workspace__header">
+    <div>
+      <p class="eyebrow">Delete extension</p>
+      <h1>{{ extension.number }}</h1>
+      <p>{{ extension.display_name }}</p>
+    </div>
+  </div>
+
+  {% include "core/partials/extensions/messages.html" %}
+
+  <form class="editor-form editor-form--compact" method="post">
+    {% csrf_token %}
+    <p class="danger-text">This removes the extension if it is not referenced by phones or routing rules.</p>
+    <div class="form-actions">
+      <button class="button button--danger" type="submit">Delete</button>
+      <a class="button" href="{% url 'extensions' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Cancel</a>
+    </div>
+  </form>
+</section>

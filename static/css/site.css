@@ -280,6 +280,288 @@ a {
   font-size: 2rem;
 }
 
+.workspace {
+  display: grid;
+  gap: 20px;
+}
+
+.workspace--narrow {
+  max-width: 720px;
+}
+
+.workspace__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.workspace__header h1 {
+  margin: 0;
+  font-size: clamp(1.8rem, 3vw, 2.6rem);
+}
+
+.workspace__header p {
+  max-width: 760px;
+  margin: 10px 0 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.toolbar,
+.form-actions,
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.button {
+  min-height: 36px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--accent-strong);
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 800;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.button:hover,
+.button:focus {
+  border-color: rgba(8, 127, 140, 0.55);
+  outline: none;
+}
+
+.button--primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.button--danger {
+  border-color: #a43f3f;
+  background: #a43f3f;
+  color: #ffffff;
+}
+
+.table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.data-table {
+  width: 100%;
+  min-width: 1180px;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.data-table th,
+.data-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.data-table th {
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+}
+
+.data-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.subtle {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.danger-text {
+  color: #8f2f2f;
+  font-weight: 800;
+}
+
+.tag-stack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 160px;
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #edf4f5;
+  color: var(--accent-strong);
+  font-size: 0.78rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.row-actions a {
+  color: var(--accent-strong);
+  font-weight: 800;
+}
+
+.empty-state {
+  color: var(--muted);
+  text-align: center;
+}
+
+.editor-form {
+  display: grid;
+  gap: 18px;
+  max-width: 1120px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.editor-form--compact {
+  max-width: 560px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.field label {
+  color: var(--ink);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.field--checkbox {
+  align-content: start;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+}
+
+.field--checkbox label {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.field--checkbox input {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.form-control {
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.94rem;
+}
+
+select.form-control[multiple] {
+  min-height: 128px;
+}
+
+.form-check {
+  width: 18px;
+  height: 18px;
+}
+
+.field__help,
+.field__error {
+  font-size: 0.8rem;
+}
+
+.field__help {
+  color: var(--muted);
+}
+
+.field__error {
+  color: #8f2f2f;
+  font-weight: 800;
+}
+
+.message-list {
+  display: grid;
+  gap: 8px;
+}
+
+.message,
+.message-list--error {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 0.9rem;
+}
+
+.message--success {
+  border-color: rgba(47, 125, 79, 0.35);
+  background: #edf7f0;
+  color: #1f5f3b;
+}
+
+.message--error,
+.message-list--error {
+  border-color: rgba(143, 47, 47, 0.35);
+  background: #fff2f0;
+  color: #8f2f2f;
+}
+
+@media (max-width: 760px) {
+  .portal-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    padding: 16px;
+  }
+
+  .nav {
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  }
+
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .content {
+    padding: 18px;
+  }
+}
+
 .auth-form {
   display: grid;
   gap: 10px;
