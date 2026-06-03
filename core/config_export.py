@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .models import Extension, Location, OutboundRoute
+from .models import AudioPrompt, Extension, Location, OutboundRoute
 
 
 def build_location_config(location: Location) -> dict[str, Any]:
@@ -210,6 +210,7 @@ def build_inbound_config(location: Location) -> dict[str, Any]:
             _ivr_config(ivr)
             for ivr in location.ivrs.filter(is_active=True)
             .select_related(
+                "prompt",
                 "business_hours_destination",
                 "after_hours_destination",
                 "timeout_destination",
@@ -217,6 +218,10 @@ def build_inbound_config(location: Location) -> dict[str, Any]:
             )
             .prefetch_related("menu_options__destination")
             .order_by("name")
+        ],
+        "audio_prompts": [
+            _audio_prompt_config(prompt)
+            for prompt in location.audio_prompts.order_by("name")
         ],
         "ring_groups": [
             {
@@ -293,9 +298,11 @@ def _did_route(did) -> dict[str, Any]:
 
 
 def _ivr_config(ivr) -> dict[str, Any]:
+    prompt = _audio_prompt_ref(ivr.prompt) if ivr.prompt_id else None
     return {
         "name": ivr.name,
-        "prompt_name": ivr.prompt_name,
+        "prompt_name": prompt["playback_name"] if prompt else ivr.prompt_name,
+        "prompt": prompt,
         "business_hours_destination": _destination_ref(ivr.business_hours_destination),
         "after_hours_destination": _destination_ref(ivr.after_hours_destination),
         "timeout_seconds": ivr.timeout_seconds,
@@ -309,6 +316,30 @@ def _ivr_config(ivr) -> dict[str, Any]:
             }
             for option in ivr.menu_options.all()
         ],
+    }
+
+
+def _audio_prompt_config(prompt: AudioPrompt) -> dict[str, Any]:
+    return {
+        "id": prompt.id,
+        "name": prompt.name,
+        "original_filename": prompt.original_filename,
+        "source_format": prompt.source_format,
+        "converted_format": prompt.converted_format,
+        "sample_rate_hz": prompt.sample_rate_hz,
+        "channels": prompt.channels,
+        "converted_file": prompt.converted_file.name,
+        "asterisk_path": prompt.asterisk_path,
+        "playback_name": prompt.playback_name,
+    }
+
+
+def _audio_prompt_ref(prompt: AudioPrompt) -> dict[str, Any]:
+    return {
+        "id": prompt.id,
+        "name": prompt.name,
+        "asterisk_path": prompt.asterisk_path,
+        "playback_name": prompt.playback_name,
     }
 
 

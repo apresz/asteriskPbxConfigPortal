@@ -1,9 +1,14 @@
 import csv
 from io import StringIO
 import json
+from pathlib import Path
+import subprocess
+import tempfile
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.db import IntegrityError, transaction
 from django.test import Client, SimpleTestCase, TestCase, override_settings
@@ -16,10 +21,11 @@ from .access import (
     user_has_permission,
 )
 from .audit import record_audit
+from .audio_prompts import AudioPromptConversionError, create_audio_prompt_from_upload
 from .config_export import build_location_config, select_route_caller_id, validate_location_routing
 from .extension_csv import ExtensionCSVError, export_extensions_csv, extension_template_csv, import_extensions_csv
 from .extension_management import sync_extension_relationships
-from .forms import ExtensionForm, LocationForm, PhoneForm
+from .forms import ExtensionForm, IVRForm, LocationForm, PhoneForm
 from .phone_csv import (
     did_template_csv,
     export_phones_csv,
@@ -29,6 +35,7 @@ from .phone_csv import (
 )
 from .models import (
     APIKey,
+    AudioPrompt,
     AuditAction,
     AuditLog,
     AuditOutcome,
@@ -209,6 +216,11 @@ def ivr_menu_formset_data(*, option_rows=None, total_forms=4):
                 f"menu_options-{index}-digit": row.get("digit", ""),
                 f"menu_options-{index}-label": row.get("label", ""),
                 f"menu_options-{index}-destination": str(row["destination"].id) if row.get("destination") else "",
+            }
+        )
+    return data
+
+
 def provider_form_data(**overrides):
     data = {
         "name": "Carrier SIP",
@@ -1315,6 +1327,154 @@ class VoicemailRecordingConfigTests(TestCase):
         self.assertEqual(payload["voicemail"]["mailboxes"][0]["number"], "3000")
         
         
+class AudioPromptConversionTests(TestCase):
+    def setUp(self):
+        self.location = Location.objects.create(**location_model_data(name="HQ", slug="hq"))
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.settings_override = override_settings(MEDIA_ROOT=self.temp_dir.name)
+        self.settings_override.enable()
+        self.addCleanup(self.settings_override.disable)
+        self.addCleanup(self.temp_dir.cleanup)
+        self.commands = []
+
+    def _upload(self, filename, content_type):
+        return SimpleUploadedFile(filename, b"source-audio", content_type=content_type)
+
+    def _fake_ffmpeg(self, command, *, capture_output, text, check):
+        self.commands.append(command)
+        Path(command[-1]).write_bytes(b"RIFFasterisk-wav")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    def test_wav_mp3_and_m4a_uploads_are_converted(self):
+        uploads = [
+            ("main-menu.wav", "audio/wav", "wav"),
+            ("main-menu.mp3", "audio/mpeg", "mp3"),
+            ("main-menu.m4a", "audio/mp4", "m4a"),
+        ]
+
+        with mock.patch("core.audio_prompts.subprocess.run", side_effect=self._fake_ffmpeg):
+            prompts = [
+                create_audio_prompt_from_upload(location=self.location, uploaded_file=self._upload(filename, content_type))
+                for filename, content_type, _source_format in uploads
+            ]
+
+        self.assertEqual([prompt.source_format for prompt in prompts], ["wav", "mp3", "m4a"])
+        for prompt in prompts:
+            self.assertEqual(prompt.converted_format, "wav")
+            self.assertEqual(prompt.sample_rate_hz, 8000)
+            self.assertEqual(prompt.channels, 1)
+            self.assertTrue(prompt.converted_file.name.endswith(".wav"))
+            self.assertTrue(prompt.asterisk_path.endswith(".wav"))
+            self.assertFalse(prompt.playback_name.endswith(".wav"))
+        for command in self.commands:
+            self.assertIn("-ar", command)
+            self.assertIn("8000", command)
+            self.assertIn("-ac", command)
+            self.assertIn("1", command)
+            self.assertIn("pcm_s16le", command)
+
+    def test_failed_conversion_returns_actionable_error(self):
+        def failing_ffmpeg(command, *, capture_output, text, check):
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="unsupported codec in fixture")
+
+        with mock.patch("core.audio_prompts.subprocess.run", side_effect=failing_ffmpeg):
+            with self.assertRaises(AudioPromptConversionError) as context:
+                create_audio_prompt_from_upload(
+                    location=self.location,
+                    uploaded_file=self._upload("broken.mp3", "audio/mpeg"),
+                )
+
+        self.assertIn("Could not convert audio prompt", str(context.exception))
+        self.assertIn("unsupported codec", str(context.exception))
+
+    def test_invalid_prompt_upload_is_rejected_by_ivr_form(self):
+        form = IVRForm(
+            data={
+                "location": str(self.location.id),
+                "name": "Main IVR",
+                "prompt": "",
+                "prompt_name": "",
+                "business_hours_destination": "",
+                "after_hours_destination": "",
+                "timeout_seconds": "10",
+                "timeout_destination": "",
+                "invalid_destination": "",
+                "is_active": "on",
+            },
+            files={"prompt_upload": SimpleUploadedFile("notes.txt", b"not audio", content_type="text/plain")},
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("WAV, MP3, or M4A", form.errors["prompt_upload"][0])
+
+
+class AudioPromptIVRIntegrationTests(TestCase):
+    def setUp(self):
+        self.editor = User.objects.create_user(username="prompt-editor", password="portal-pass")
+        assign_role(self.editor, PortalRole.EDITOR)
+        self.location = Location.objects.create(**location_model_data(name="HQ", slug="hq"))
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.settings_override = override_settings(MEDIA_ROOT=self.temp_dir.name)
+        self.settings_override.enable()
+        self.addCleanup(self.settings_override.disable)
+        self.addCleanup(self.temp_dir.cleanup)
+
+    def _fake_ffmpeg(self, command, *, capture_output, text, check):
+        Path(command[-1]).write_bytes(b"RIFFasterisk-wav")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    def _ivr_post_data(self, upload):
+        data = {
+            "location": str(self.location.id),
+            "name": "Main IVR",
+            "prompt": "",
+            "prompt_name": "",
+            "business_hours_destination": "",
+            "after_hours_destination": "",
+            "timeout_seconds": "12",
+            "timeout_destination": "",
+            "invalid_destination": "",
+            "is_active": "on",
+            "prompt_upload": upload,
+        }
+        data.update(ivr_menu_formset_data(total_forms=1))
+        return data
+
+    def test_ivr_upload_references_converted_prompt_in_export(self):
+        self.client.force_login(self.editor)
+        upload = SimpleUploadedFile("main-menu.wav", b"source-audio", content_type="audio/wav")
+
+        with mock.patch("core.audio_prompts.subprocess.run", side_effect=self._fake_ffmpeg):
+            response = self.client.post(reverse("ivr-create"), self._ivr_post_data(upload))
+
+        self.assertEqual(response.status_code, 302)
+        ivr = IVR.objects.select_related("prompt").get(name="Main IVR")
+        self.assertIsNotNone(ivr.prompt)
+        self.assertEqual(ivr.prompt_name, ivr.prompt.playback_name)
+
+        inbound_config = build_location_config(self.location)["inbound"]
+        ivr_config = inbound_config["ivrs"][0]
+        prompt_config = inbound_config["audio_prompts"][0]
+        self.assertEqual(ivr_config["prompt"]["id"], ivr.prompt_id)
+        self.assertEqual(ivr_config["prompt_name"], ivr.prompt.playback_name)
+        self.assertEqual(prompt_config["asterisk_path"], ivr.prompt.asterisk_path)
+        self.assertEqual(prompt_config["playback_name"], ivr.prompt.playback_name)
+
+    def test_ivr_upload_conversion_failure_returns_form_error(self):
+        self.client.force_login(self.editor)
+        upload = SimpleUploadedFile("broken.m4a", b"source-audio", content_type="audio/mp4")
+
+        def failing_ffmpeg(command, *, capture_output, text, check):
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="unsupported codec in fixture")
+
+        with mock.patch("core.audio_prompts.subprocess.run", side_effect=failing_ffmpeg):
+            response = self.client.post(reverse("ivr-create"), self._ivr_post_data(upload))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "unsupported codec")
+        self.assertEqual(AudioPrompt.objects.count(), 0)
+
+
 class PhoneMACValidationTests(TestCase):
     def setUp(self):
         self.location = Location.objects.create(**location_model_data(name="HQ", slug="hq"))
