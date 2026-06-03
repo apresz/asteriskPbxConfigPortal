@@ -390,6 +390,26 @@ class Location(TimestampedModel):
         "deployment SSH known hosts",
         blank=True,
     )
+    deployment_staging_path = models.CharField(
+        "deployment staging path",
+        max_length=255,
+        default="/srv/pbx/staging",
+    )
+    deployment_asterisk_path = models.CharField(
+        "deployment Asterisk path",
+        max_length=255,
+        default="/srv/pbx/asterisk",
+    )
+    deployment_tftp_path = models.CharField(
+        "deployment TFTP path",
+        max_length=255,
+        default="/srv/pbx/tftp",
+    )
+    deployment_reload_command = models.CharField(
+        "deployment reload command",
+        max_length=255,
+        default="asterisk -rx 'core reload'",
+    )
     sip_bind_ip = models.CharField(
         "SIP bind IP",
         max_length=39,
@@ -496,6 +516,15 @@ class Location(TimestampedModel):
 
         if self.rtp_port_start and self.rtp_port_end and self.rtp_port_start > self.rtp_port_end:
             errors["rtp_port_end"] = "RTP port end must be greater than or equal to RTP port start."
+
+        for field_name in (
+            "deployment_staging_path",
+            "deployment_asterisk_path",
+            "deployment_tftp_path",
+        ):
+            value = getattr(self, field_name, "")
+            if value and not value.startswith("/"):
+                errors[field_name] = "Enter an absolute remote path."
 
         if self.smtp_use_tls and self.smtp_use_ssl:
             errors["smtp_use_ssl"] = "SMTP TLS and SSL cannot both be enabled."
@@ -642,6 +671,76 @@ class ConfigVersion(TimestampedModel):
 
     def __str__(self):
         return f"{self.location.slug} config v{self.version_number}"
+
+
+class DeploymentRecord(TimestampedModel):
+    class Action(models.TextChoices):
+        DEPLOY = "deploy", "Deploy"
+        ROLLBACK = "rollback", "Rollback"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        SUCCESS = "success", "Success"
+        FAILED = "failed", "Failed"
+
+    class ReloadResult(models.TextChoices):
+        NOT_RUN = "not_run", "Not run"
+        SUCCESS = "success", "Success"
+        FAILED = "failed", "Failed"
+
+    location = models.ForeignKey(
+        Location,
+        on_delete=models.CASCADE,
+        related_name="deployment_records",
+    )
+    config_version = models.ForeignKey(
+        ConfigVersion,
+        on_delete=models.PROTECT,
+        related_name="deployment_records",
+    )
+    rollback_source_version = models.ForeignKey(
+        ConfigVersion,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="rollback_deployment_records",
+    )
+    operator = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="deployment_records",
+    )
+    started_at = models.DateTimeField(default=timezone.now, db_index=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    target_host = models.CharField(max_length=255)
+    target_port = models.PositiveIntegerField(default=22, validators=port_validators)
+    target_username = models.CharField(max_length=80, blank=True)
+    staging_path = models.CharField(max_length=255)
+    asterisk_path = models.CharField(max_length=255)
+    tftp_path = models.CharField(max_length=255)
+    reload_command = models.CharField(max_length=255, blank=True)
+    action = models.CharField(max_length=16, choices=Action.choices, default=Action.DEPLOY)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    reload_result = models.CharField(
+        max_length=16,
+        choices=ReloadResult.choices,
+        default=ReloadResult.NOT_RUN,
+    )
+    reload_output = models.TextField(blank=True)
+    error_message = models.TextField(blank=True)
+    details = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-started_at", "-id"]
+
+    @property
+    def selected_version_number(self) -> int:
+        return self.config_version.version_number
+
+    def __str__(self):
+        return f"{self.get_action_display()} {self.location.slug} v{self.selected_version_number}: {self.get_status_display()}"
 
 
 class AdminBackup(TimestampedModel):

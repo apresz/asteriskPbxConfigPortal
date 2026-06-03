@@ -422,6 +422,16 @@ a {
   flex-wrap: wrap;
 }
 
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
 .data-table code {
   overflow-wrap: anywhere;
 }

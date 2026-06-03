@@ -36,6 +36,7 @@ from .config_export import (
     select_route_caller_id,
     validate_location_routing,
 )
+from .deployments import DeploymentCommandResult, DeploymentError, deploy_config_version
 from .extension_csv import ExtensionCSVError, export_extensions_csv, extension_template_csv, import_extensions_csv
 from .extension_management import sync_extension_relationships
 from .forms import ExtensionForm, IVRForm, LocationForm, PhoneForm
@@ -54,6 +55,7 @@ from .models import (
     AuditLog,
     AuditOutcome,
     DID,
+    DeploymentRecord,
     FeatureCode,
     IVR,
     IVRMenuOption,
@@ -97,6 +99,10 @@ def location_form_data(**overrides):
         "deployment_ssh_username": "deploy",
         "deployment_ssh_private_key": "branch-private-key",
         "deployment_ssh_known_hosts": "pbx-branch.example.test ssh-ed25519 fixture",
+        "deployment_staging_path": "/srv/pbx/staging",
+        "deployment_asterisk_path": "/srv/pbx/asterisk",
+        "deployment_tftp_path": "/srv/pbx/tftp",
+        "deployment_reload_command": "asterisk -rx 'core reload'",
         "sip_bind_ip": "10.30.0.10",
         "sip_port": "5060",
         "rtp_port_start": "10000",
@@ -439,6 +445,10 @@ class LocationFormValidationTests(TestCase):
             "deployment_ssh_port",
             "deployment_ssh_username",
             "deployment_ssh_private_key",
+            "deployment_staging_path",
+            "deployment_asterisk_path",
+            "deployment_tftp_path",
+            "deployment_reload_command",
             "sip_bind_ip",
             "sip_port",
             "rtp_port_start",
@@ -545,6 +555,8 @@ class LocationManagementViewTests(TestCase):
         self.assertContains(response, "Emergency trunk")
         self.assertContains(response, "Restricted Settings")
         self.assertNotContains(response, 'name="deployment_ssh_private_key"')
+        self.assertNotContains(response, 'name="deployment_staging_path"')
+        self.assertNotContains(response, 'name="deployment_reload_command"')
         self.assertNotContains(response, 'name="agent_secret"')
         self.assertNotContains(response, 'name="ami_secret"')
 
@@ -556,6 +568,8 @@ class LocationManagementViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'name="deployment_ssh_private_key"')
         self.assertContains(response, 'name="deployment_ssh_host"')
+        self.assertContains(response, 'name="deployment_staging_path"')
+        self.assertContains(response, 'name="deployment_reload_command"')
         self.assertContains(response, 'name="agent_secret"')
         self.assertContains(response, 'name="ami_secret"')
 
@@ -570,6 +584,8 @@ class LocationManagementViewTests(TestCase):
         self.assertEqual(location.default_did, "+15551203000")
         self.assertEqual(location.emergency_caller_id, "+15551203999")
         self.assertEqual(location.deployment_ssh_private_key, "branch-private-key")
+        self.assertEqual(location.deployment_asterisk_path, "/srv/pbx/asterisk")
+        self.assertEqual(location.deployment_reload_command, "asterisk -rx 'core reload'")
         self.assertEqual(location.deployment_status, Location.DeploymentStatus.READY)
 
     def test_export_history_actions_follow_role_permissions(self):
@@ -642,25 +658,59 @@ class LocationManagementViewTests(TestCase):
         self.assertEqual(download_response["Content-Type"], "application/zip")
         self.assertEqual(download_response.content, bytes(version.archive))
 
+        def fake_deploy(selected_version, *, operator, reload_confirmed, rollback=False):
+            self.assertTrue(reload_confirmed)
+            selected_version.mark_deployed(operator, rolled_back=rollback)
+            selected_location = selected_version.location
+            selected_location.last_deployed_at = selected_version.deployed_at
+            selected_location.deployment_status = Location.DeploymentStatus.DEPLOYED
+            selected_location.save(update_fields=["last_deployed_at", "deployment_status", "updated_at"])
+            return mock.Mock()
+
         self.client.force_login(operator)
-        deploy_response = self.client.post(
-            reverse("location-config-export-deploy", args=[location.slug, version.version_number])
-        )
+        with mock.patch("core.views.deploy_config_version", side_effect=fake_deploy) as deploy_mock:
+            deploy_response = self.client.post(
+                reverse("location-config-export-deploy", args=[location.slug, version.version_number]),
+                {"confirm_reload": "1"},
+            )
 
         self.assertEqual(deploy_response.status_code, 302)
+        deploy_mock.assert_called_once()
         version.refresh_from_db()
         location.refresh_from_db()
         self.assertEqual(version.deployment_status, ConfigVersion.DeploymentStatus.DEPLOYED)
         self.assertEqual(location.deployment_status, Location.DeploymentStatus.DEPLOYED)
         self.assertIsNotNone(location.last_deployed_at)
 
-        rollback_response = self.client.post(
-            reverse("location-config-export-rollback", args=[location.slug, version.version_number])
-        )
+        with mock.patch("core.views.deploy_config_version", side_effect=fake_deploy) as rollback_mock:
+            rollback_response = self.client.post(
+                reverse("location-config-export-rollback", args=[location.slug, version.version_number]),
+                {"confirm_reload": "1"},
+            )
 
         self.assertEqual(rollback_response.status_code, 302)
+        rollback_mock.assert_called_once()
         version.refresh_from_db()
         self.assertEqual(version.deployment_status, ConfigVersion.DeploymentStatus.ROLLED_BACK)
+
+    def test_deploy_requires_reload_confirmation_and_audits_denial(self):
+        operator = User.objects.create_user(username="confirm-operator", password="portal-pass")
+        assign_role(operator, PortalRole.OPERATOR)
+        location = Location.objects.create(**location_model_data(name="Confirm HQ", slug="confirm-hq"))
+        Extension.objects.create(location=location, number="3000", display_name="Confirm Desk")
+        add_emergency_route(location)
+        version = create_config_version(location, exported_by=self.admin)
+        self.client.force_login(operator)
+
+        response = self.client.post(reverse("location-config-export-deploy", args=[location.slug, version.version_number]))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertContains(response, "Reload confirmation is required", status_code=400)
+        record = DeploymentRecord.objects.get(config_version=version)
+        self.assertEqual(record.status, DeploymentRecord.Status.FAILED)
+        self.assertEqual(record.reload_result, DeploymentRecord.ReloadResult.NOT_RUN)
+        audit = AuditLog.objects.get(action=AuditAction.DEPLOYMENT)
+        self.assertEqual(audit.outcome, AuditOutcome.DENIED)
 
     def test_editor_update_ignores_spoofed_sensitive_fields(self):
         location = Location.objects.create(
@@ -668,6 +718,8 @@ class LocationManagementViewTests(TestCase):
                 name="Spoof Target",
                 slug="spoof-target",
                 deployment_ssh_private_key="original-private-key",
+                deployment_staging_path="/srv/pbx/original-staging",
+                deployment_reload_command="asterisk -rx 'core reload'",
                 smtp_password="original-smtp-password",
                 ami_secret="original-ami-secret",
                 agent_secret="original-agent-secret",
@@ -681,6 +733,8 @@ class LocationManagementViewTests(TestCase):
                 name="Spoof Target Updated",
                 slug="spoof-target",
                 deployment_ssh_private_key="spoofed-private-key",
+                deployment_staging_path="/tmp/spoofed-staging",
+                deployment_reload_command="rm -rf /",
                 smtp_password="spoofed-smtp-password",
                 ami_secret="spoofed-ami-secret",
                 agent_secret="spoofed-agent-secret",
@@ -691,6 +745,8 @@ class LocationManagementViewTests(TestCase):
         location.refresh_from_db()
         self.assertEqual(location.name, "Spoof Target Updated")
         self.assertEqual(location.deployment_ssh_private_key, "original-private-key")
+        self.assertEqual(location.deployment_staging_path, "/srv/pbx/original-staging")
+        self.assertEqual(location.deployment_reload_command, "asterisk -rx 'core reload'")
         self.assertEqual(location.smtp_password, "original-smtp-password")
         self.assertEqual(location.ami_secret, "original-ami-secret")
         self.assertEqual(location.agent_secret, "original-agent-secret")
@@ -1802,6 +1858,147 @@ class ConfigVersionExportTests(TestCase):
             if current_service:
                 services[current_service].append(line)
         return {service: "\n".join(lines) for service, lines in services.items()}
+
+
+class FakeDeploymentRunner:
+    def __init__(self, *, fail_step=None):
+        self.fail_step = fail_step
+        self.remote_commands = []
+        self.uploads = []
+
+    def run(self, command, **_kwargs):
+        self.remote_commands.append(command)
+        if self.fail_step == "reload_asterisk" and "core reload" in command:
+            return DeploymentCommandResult(command=command, returncode=1, stderr="reload failed")
+        stdout = "Reload OK" if "core reload" in command else ""
+        return DeploymentCommandResult(command=command, stdout=stdout)
+
+    def upload_bundle(self, bundle_dir, staging_path):
+        asterisk_files = sorted(path.relative_to(bundle_dir).as_posix() for path in (bundle_dir / "asterisk").rglob("*") if path.is_file())
+        tftp_files = sorted(path.relative_to(bundle_dir).as_posix() for path in (bundle_dir / "tftp").rglob("*") if path.is_file())
+        self.uploads.append(
+            {
+                "staging_path": staging_path,
+                "asterisk_files": asterisk_files,
+                "tftp_files": tftp_files,
+            }
+        )
+        return DeploymentCommandResult(command=f"upload bundle to {staging_path}")
+
+
+class ConfigDeploymentServiceTests(TestCase):
+    def setUp(self):
+        self.operator = User.objects.create_user(username="deploy-service", password="portal-pass")
+        self.location = Location.objects.create(
+            **location_model_data(
+                name="Deploy Service HQ",
+                slug="deploy-service-hq",
+                deployment_staging_path="/srv/pbx/releases",
+                deployment_asterisk_path="/srv/pbx/current/asterisk",
+                deployment_tftp_path="/srv/pbx/current/tftp",
+            )
+        )
+        Extension.objects.create(
+            location=self.location,
+            number="3000",
+            display_name="Deploy Service Desk",
+            sip_username="3000",
+            sip_password="sip-secret",
+            emergency_calling_enabled=True,
+        )
+        add_emergency_route(self.location)
+
+    def test_ssh_staging_layout_reload_and_audit_record(self):
+        version = create_config_version(self.location, exported_by=self.operator)
+        runner = FakeDeploymentRunner()
+
+        record = deploy_config_version(
+            version,
+            operator=self.operator,
+            reload_confirmed=True,
+            runner=runner,
+        )
+
+        record.refresh_from_db()
+        version.refresh_from_db()
+        self.location.refresh_from_db()
+        self.assertEqual(record.operator, self.operator)
+        self.assertEqual(record.target_host, self.location.deployment_ssh_host)
+        self.assertEqual(record.config_version, version)
+        self.assertEqual(record.status, DeploymentRecord.Status.SUCCESS)
+        self.assertEqual(record.reload_result, DeploymentRecord.ReloadResult.SUCCESS)
+        self.assertEqual(record.reload_output, "Reload OK")
+        self.assertTrue(record.staging_path.startswith("/srv/pbx/releases/deploy-service-hq/v1-"))
+        self.assertEqual(record.asterisk_path, "/srv/pbx/current/asterisk")
+        self.assertEqual(record.tftp_path, "/srv/pbx/current/tftp")
+        self.assertEqual(version.deployment_status, ConfigVersion.DeploymentStatus.DEPLOYED)
+        self.assertEqual(self.location.deployment_status, Location.DeploymentStatus.DEPLOYED)
+        self.assertIsNotNone(self.location.last_deployed_at)
+        self.assertEqual(
+            [step["name"] for step in record.details["steps"]],
+            ["prepare_staging", "upload_bundle", "verify_staging", "swap_volumes", "reload_asterisk"],
+        )
+        self.assertEqual(len(runner.uploads), 1)
+        self.assertIn("asterisk/pjsip.conf", runner.uploads[0]["asterisk_files"])
+        self.assertIn("tftp/company-directory.xml", runner.uploads[0]["tftp_files"])
+        self.assertIn("/srv/pbx/current/asterisk", runner.remote_commands[2])
+        self.assertIn("/srv/pbx/current/tftp", runner.remote_commands[2])
+
+        audit = AuditLog.objects.get(action=AuditAction.DEPLOYMENT)
+        self.assertEqual(audit.actor, self.operator)
+        self.assertEqual(audit.outcome, AuditOutcome.SUCCESS)
+        self.assertEqual(audit.details["deployment_record_id"], record.id)
+        self.assertEqual(audit.details["target_host"], self.location.deployment_ssh_host)
+        self.assertEqual(audit.details["reload_result"], DeploymentRecord.ReloadResult.SUCCESS)
+
+    def test_reload_failure_records_failed_deployment_and_audit(self):
+        version = create_config_version(self.location, exported_by=self.operator)
+        runner = FakeDeploymentRunner(fail_step="reload_asterisk")
+
+        with self.assertRaises(DeploymentError):
+            deploy_config_version(
+                version,
+                operator=self.operator,
+                reload_confirmed=True,
+                runner=runner,
+            )
+
+        record = DeploymentRecord.objects.get(config_version=version)
+        self.location.refresh_from_db()
+        version.refresh_from_db()
+        self.assertEqual(record.status, DeploymentRecord.Status.FAILED)
+        self.assertEqual(record.reload_result, DeploymentRecord.ReloadResult.FAILED)
+        self.assertEqual(record.reload_output, "reload failed")
+        self.assertEqual(self.location.deployment_status, Location.DeploymentStatus.FAILED)
+        self.assertEqual(version.deployment_status, ConfigVersion.DeploymentStatus.NOT_DEPLOYED)
+        audit = AuditLog.objects.get(action=AuditAction.DEPLOYMENT)
+        self.assertEqual(audit.outcome, AuditOutcome.FAILURE)
+        self.assertEqual(audit.details["status"], DeploymentRecord.Status.FAILED)
+
+    def test_rollback_redeploys_previous_version_and_links_source_version(self):
+        previous_version = create_config_version(self.location, exported_by=self.operator)
+        current_version = create_config_version(self.location, exported_by=self.operator)
+        self.assertEqual(current_version.version_number, 2)
+        runner = FakeDeploymentRunner()
+
+        record = deploy_config_version(
+            previous_version,
+            operator=self.operator,
+            reload_confirmed=True,
+            rollback=True,
+            runner=runner,
+        )
+
+        record.refresh_from_db()
+        previous_version.refresh_from_db()
+        self.assertEqual(record.action, DeploymentRecord.Action.ROLLBACK)
+        self.assertEqual(record.config_version, previous_version)
+        self.assertEqual(record.rollback_source_version, previous_version)
+        self.assertEqual(previous_version.deployment_status, ConfigVersion.DeploymentStatus.ROLLED_BACK)
+        audit = AuditLog.objects.get(action=AuditAction.DEPLOYMENT)
+        self.assertEqual(audit.outcome, AuditOutcome.SUCCESS)
+        self.assertEqual(audit.details["action"], DeploymentRecord.Action.ROLLBACK)
+        self.assertEqual(audit.details["rollback_source_version_id"], previous_version.id)
 
 
 class ExportValidationEngineTests(TestCase):
