@@ -16,7 +16,7 @@ from .access import (
     user_has_permission,
 )
 from .audit import record_audit
-from .config_export import build_location_config
+from .config_export import build_location_config, select_route_caller_id, validate_location_routing
 from .extension_csv import ExtensionCSVError, export_extensions_csv, extension_template_csv, import_extensions_csv
 from .extension_management import sync_extension_relationships
 from .forms import ExtensionForm, LocationForm, PhoneForm
@@ -48,10 +48,12 @@ from .models import (
     PhoneSpeedDial,
     PortalPermission,
     PortalRole,
+    Provider,
     QueueMember,
     RingGroup,
     RingGroupMember,
     ServiceIdentity,
+    Trunk,
 )
 
 
@@ -185,6 +187,69 @@ def phone_inline_formset_data(*, line_rows=None, speed_dial_rows=None):
                 f"speed_dials-{index}-position": str(row["position"]),
                 f"speed_dials-{index}-label": row["label"],
                 f"speed_dials-{index}-destination": row["destination"],
+            }
+        )
+    return data
+
+
+def provider_form_data(**overrides):
+    data = {
+        "name": "Carrier SIP",
+        "slug": "carrier-sip",
+        "provider_type": Provider.ProviderType.SIP,
+        "notes": "Primary carrier",
+        "is_active": "on",
+    }
+    data.update(overrides)
+    return data
+
+
+def trunk_form_data(location, provider, **overrides):
+    data = {
+        "location": str(location.id),
+        "provider": str(provider.id),
+        "name": "Primary SIP",
+        "trunk_type": Trunk.TrunkType.SIP,
+        "host": "sip.provider.example.test",
+        "username": "branch-user",
+        "password": "branch-secret",
+        "is_emergency_capable": "",
+        "is_active": "on",
+    }
+    data.update(overrides)
+    return data
+
+
+def outbound_route_form_data(location, **overrides):
+    data = {
+        "location": str(location.id),
+        "name": "Local",
+        "dial_pattern": "NXXNXXXXXX",
+        "priority": "1",
+        "caller_id_source": OutboundRoute.CallerIdSource.LOCATION_DEFAULT,
+        "caller_id_number": "",
+        "recording_policy": OutboundRoute.RecordingPolicy.NEVER,
+        "is_active": "on",
+        "is_emergency_route": "",
+    }
+    data.update(overrides)
+    return data
+
+
+def route_trunk_formset_data(*, trunk_rows=None):
+    trunk_rows = trunk_rows or []
+    data = {
+        "route_trunks-TOTAL_FORMS": str(len(trunk_rows)),
+        "route_trunks-INITIAL_FORMS": "0",
+        "route_trunks-MIN_NUM_FORMS": "0",
+        "route_trunks-MAX_NUM_FORMS": "1000",
+    }
+    for index, row in enumerate(trunk_rows):
+        data.update(
+            {
+                f"route_trunks-{index}-id": "",
+                f"route_trunks-{index}-priority": str(row["priority"]),
+                f"route_trunks-{index}-trunk": str(row["trunk"].id),
             }
         )
     return data
@@ -447,6 +512,395 @@ class LocationManagementViewTests(TestCase):
         self.assertEqual(location.smtp_password, "original-smtp-password")
         self.assertEqual(location.ami_secret, "original-ami-secret")
         self.assertEqual(location.agent_secret, "original-agent-secret")
+
+
+class ProviderTrunkValidationTests(TestCase):
+    def setUp(self):
+        self.location = Location.objects.create(**location_model_data(name="HQ", slug="hq"))
+        self.sip_provider = Provider.objects.create(
+            name="Carrier SIP",
+            slug="carrier-sip",
+            provider_type=Provider.ProviderType.SIP,
+        )
+        self.iax_provider = Provider.objects.create(
+            name="Carrier IAX",
+            slug="carrier-iax",
+            provider_type=Provider.ProviderType.IAX2,
+        )
+
+    def test_trunk_accepts_plaintext_credentials(self):
+        trunk = Trunk(
+            location=self.location,
+            provider=self.sip_provider,
+            name="Primary SIP",
+            trunk_type=Trunk.TrunkType.SIP,
+            host="sip.provider.example.test",
+            username="branch-user",
+            password="branch-secret",
+            is_emergency_capable=True,
+        )
+
+        trunk.full_clean()
+        trunk.save()
+
+        self.assertEqual(Trunk.objects.get(pk=trunk.pk).password, "branch-secret")
+
+    def test_trunk_provider_type_must_match(self):
+        trunk = Trunk(
+            location=self.location,
+            provider=self.iax_provider,
+            name="Mismatched",
+            trunk_type=Trunk.TrunkType.SIP,
+        )
+
+        with self.assertRaises(ValidationError) as context:
+            trunk.full_clean()
+
+        self.assertIn("trunk_type", context.exception.message_dict)
+
+    def test_provider_credential_warnings_do_not_block_non_emergency_export(self):
+        Trunk.objects.create(
+            location=self.location,
+            provider=self.sip_provider,
+            name="Missing Secret",
+            trunk_type=Trunk.TrunkType.SIP,
+            host="sip.provider.example.test",
+            username="branch-user",
+            password="",
+        )
+
+        config = build_location_config(self.location)
+
+        self.assertEqual(config["provider_trunks"][0]["credentials"]["password"], "")
+        self.assertEqual(config["routing_validation"]["warnings"][0]["code"], "provider_trunk_missing_credentials")
+        self.assertEqual(config["routing_validation"]["warnings"][0]["missing"], ["password"])
+        self.assertEqual(config["routing_validation"]["errors"], [])
+
+    def test_emergency_validation_flags_incomplete_emergency_trunk(self):
+        trunk = Trunk.objects.create(
+            location=self.location,
+            provider=self.sip_provider,
+            name="Emergency SIP",
+            trunk_type=Trunk.TrunkType.SIP,
+            host="sip.provider.example.test",
+            username="branch-user",
+            password="",
+            is_emergency_capable=True,
+        )
+        route = OutboundRoute.objects.create(
+            location=self.location,
+            name="Emergency",
+            dial_pattern="911",
+            priority=1,
+            is_emergency_route=True,
+            caller_id_source=OutboundRoute.CallerIdSource.EMERGENCY,
+        )
+        OutboundRouteTrunk.objects.create(outbound_route=route, trunk=trunk, priority=1)
+
+        validation = validate_location_routing(self.location, require_emergency=True)
+
+        self.assertIn("provider_trunk_missing_credentials", {warning["code"] for warning in validation["warnings"]})
+        self.assertIn("emergency_trunk_missing_credentials", {error["code"] for error in validation["errors"]})
+
+
+class OutboundRouteCallerIdTests(TestCase):
+    def setUp(self):
+        self.location = Location.objects.create(**location_model_data(name="HQ", slug="hq"))
+        self.extension = Extension.objects.create(
+            location=self.location,
+            number="3000",
+            display_name="HQ Desk",
+            caller_id_number="+15551203111",
+        )
+        self.did = DID.objects.create(
+            location=self.location,
+            number="+15551203001",
+            default_destination=did_default_destination(self.location, self.extension),
+            direct_extension=self.extension,
+        )
+        self.provider = Provider.objects.create(
+            name="Carrier SIP",
+            slug="carrier-sip",
+            provider_type=Provider.ProviderType.SIP,
+        )
+        self.primary_trunk = Trunk.objects.create(
+            location=self.location,
+            provider=self.provider,
+            name="Primary SIP",
+            trunk_type=Trunk.TrunkType.SIP,
+            host="sip.primary.example.test",
+            username="primary",
+            password="primary-secret",
+            is_emergency_capable=True,
+        )
+        self.backup_trunk = Trunk.objects.create(
+            location=self.location,
+            provider=self.provider,
+            name="Backup SIP",
+            trunk_type=Trunk.TrunkType.SIP,
+            host="sip.backup.example.test",
+            username="backup",
+            password="backup-secret",
+            is_emergency_capable=True,
+        )
+
+    def test_extension_location_default_and_emergency_caller_id_selection(self):
+        extension_route = OutboundRoute.objects.create(
+            location=self.location,
+            name="Extension DID",
+            dial_pattern="NXXNXXXXXX",
+            priority=1,
+            caller_id_source=OutboundRoute.CallerIdSource.EXTENSION_DID,
+        )
+        default_route = OutboundRoute.objects.create(
+            location=self.location,
+            name="Location Default",
+            dial_pattern="1NXXNXXXXXX",
+            priority=2,
+            caller_id_source=OutboundRoute.CallerIdSource.LOCATION_DEFAULT,
+        )
+        emergency_route = OutboundRoute.objects.create(
+            location=self.location,
+            name="Emergency",
+            dial_pattern="911",
+            priority=3,
+            is_emergency_route=True,
+            caller_id_source=OutboundRoute.CallerIdSource.EMERGENCY,
+        )
+
+        self.assertEqual(select_route_caller_id(extension_route, self.extension), self.did.number)
+        self.assertEqual(select_route_caller_id(default_route, self.extension), self.location.default_did)
+        self.assertEqual(select_route_caller_id(emergency_route, self.extension), self.location.emergency_caller_id)
+
+    def test_route_export_orders_provider_fallback(self):
+        route = OutboundRoute.objects.create(
+            location=self.location,
+            name="Local",
+            dial_pattern="NXXNXXXXXX",
+            priority=1,
+            caller_id_source=OutboundRoute.CallerIdSource.LOCATION_DEFAULT,
+        )
+        OutboundRouteTrunk.objects.create(outbound_route=route, trunk=self.primary_trunk, priority=2)
+        OutboundRouteTrunk.objects.create(outbound_route=route, trunk=self.backup_trunk, priority=1)
+
+        route_payload = build_location_config(self.location)["outbound_routes"][0]
+
+        self.assertEqual([trunk["name"] for trunk in route_payload["trunks"]], ["Backup SIP", "Primary SIP"])
+        self.assertEqual(route_payload["caller_id"]["number"], self.location.default_did)
+
+    def test_emergency_route_rejects_non_emergency_caller_id_source(self):
+        route = OutboundRoute(
+            location=self.location,
+            name="Bad Emergency",
+            dial_pattern="911",
+            priority=1,
+            is_emergency_route=True,
+            caller_id_source=OutboundRoute.CallerIdSource.LOCATION_DEFAULT,
+        )
+
+        with self.assertRaises(ValidationError) as context:
+            route.full_clean()
+
+        self.assertIn("caller_id_source", context.exception.message_dict)
+
+    def test_emergency_route_trunk_rejects_non_emergency_capable_trunk(self):
+        normal_trunk = Trunk.objects.create(
+            location=self.location,
+            provider=self.provider,
+            name="Normal SIP",
+            trunk_type=Trunk.TrunkType.SIP,
+            host="sip.normal.example.test",
+            username="normal",
+            password="normal-secret",
+            is_emergency_capable=False,
+        )
+        route = OutboundRoute.objects.create(
+            location=self.location,
+            name="Emergency",
+            dial_pattern="911",
+            priority=1,
+            is_emergency_route=True,
+            caller_id_source=OutboundRoute.CallerIdSource.EMERGENCY,
+        )
+        route_trunk = OutboundRouteTrunk(outbound_route=route, trunk=normal_trunk, priority=1)
+
+        with self.assertRaises(ValidationError) as context:
+            route_trunk.full_clean()
+
+        self.assertIn("trunk", context.exception.message_dict)
+
+
+class TrunkManagementViewTests(TestCase):
+    def setUp(self):
+        self.viewer = User.objects.create_user(username="trunk-viewer", password="portal-pass")
+        self.editor = User.objects.create_user(username="trunk-editor", password="portal-pass")
+        assign_role(self.viewer, PortalRole.VIEWER)
+        assign_role(self.editor, PortalRole.EDITOR)
+        self.location = Location.objects.create(**location_model_data(name="HQ", slug="hq"))
+        self.provider = Provider.objects.create(
+            name="Carrier SIP",
+            slug="carrier-sip",
+            provider_type=Provider.ProviderType.SIP,
+        )
+
+    def test_trunk_list_route_shows_management_surface(self):
+        Trunk.objects.create(
+            location=self.location,
+            provider=self.provider,
+            name="Primary SIP",
+            trunk_type=Trunk.TrunkType.SIP,
+            host="sip.provider.example.test",
+            username="branch-user",
+            password="branch-secret",
+            is_emergency_capable=True,
+        )
+        self.client.force_login(self.viewer)
+
+        response = self.client.get(reverse("trunks"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-area="trunks"')
+        self.assertContains(response, "Provider Trunks")
+        self.assertContains(response, "Primary SIP")
+        self.assertContains(response, "Password configured")
+
+    def test_viewer_cannot_create_trunk(self):
+        self.client.force_login(self.viewer)
+
+        response = self.client.get(reverse("trunk-create"))
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_editor_can_create_provider_and_trunk_with_plaintext_credentials(self):
+        self.client.force_login(self.editor)
+
+        provider_response = self.client.post(
+            reverse("provider-create"),
+            provider_form_data(name="Backup IAX", slug="backup-iax", provider_type=Provider.ProviderType.IAX2),
+        )
+        provider = Provider.objects.get(slug="backup-iax")
+        trunk_response = self.client.post(
+            reverse("trunk-create"),
+            trunk_form_data(
+                self.location,
+                provider,
+                name="Backup IAX",
+                trunk_type=Trunk.TrunkType.IAX2,
+                host="iax.provider.example.test",
+                username="iax-user",
+                password="iax-secret",
+                is_emergency_capable="on",
+            ),
+        )
+
+        self.assertEqual(provider_response.status_code, 302)
+        self.assertEqual(trunk_response.status_code, 302)
+        trunk = Trunk.objects.get(name="Backup IAX")
+        self.assertEqual(trunk.password, "iax-secret")
+        self.assertTrue(trunk.is_emergency_capable)
+
+
+class OutboundRouteManagementViewTests(TestCase):
+    def setUp(self):
+        self.viewer = User.objects.create_user(username="route-viewer", password="portal-pass")
+        self.editor = User.objects.create_user(username="route-editor", password="portal-pass")
+        assign_role(self.viewer, PortalRole.VIEWER)
+        assign_role(self.editor, PortalRole.EDITOR)
+        self.location = Location.objects.create(**location_model_data(name="HQ", slug="hq"))
+        self.provider = Provider.objects.create(
+            name="Carrier SIP",
+            slug="carrier-sip",
+            provider_type=Provider.ProviderType.SIP,
+        )
+        self.primary_trunk = Trunk.objects.create(
+            location=self.location,
+            provider=self.provider,
+            name="Primary SIP",
+            trunk_type=Trunk.TrunkType.SIP,
+            host="sip.primary.example.test",
+            username="primary",
+            password="primary-secret",
+            is_emergency_capable=True,
+        )
+        self.backup_trunk = Trunk.objects.create(
+            location=self.location,
+            provider=self.provider,
+            name="Backup SIP",
+            trunk_type=Trunk.TrunkType.SIP,
+            host="sip.backup.example.test",
+            username="backup",
+            password="backup-secret",
+            is_emergency_capable=True,
+        )
+
+    def test_dial_plan_list_route_shows_fallback_order(self):
+        route = OutboundRoute.objects.create(
+            location=self.location,
+            name="Local",
+            dial_pattern="NXXNXXXXXX",
+            priority=1,
+            caller_id_source=OutboundRoute.CallerIdSource.LOCATION_DEFAULT,
+        )
+        OutboundRouteTrunk.objects.create(outbound_route=route, trunk=self.backup_trunk, priority=1)
+        OutboundRouteTrunk.objects.create(outbound_route=route, trunk=self.primary_trunk, priority=2)
+        self.client.force_login(self.viewer)
+
+        response = self.client.get(reverse("dial-plan"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-area="dial-plan"')
+        self.assertContains(response, "Outbound Routes")
+        self.assertContains(response, "1: Backup SIP")
+        self.assertContains(response, "2: Primary SIP")
+        self.assertContains(response, "Location default DID")
+
+    def test_editor_can_create_outbound_route_with_provider_fallback_order(self):
+        self.client.force_login(self.editor)
+        post_data = outbound_route_form_data(self.location)
+        post_data.update(
+            route_trunk_formset_data(
+                trunk_rows=[
+                    {"priority": 2, "trunk": self.primary_trunk},
+                    {"priority": 1, "trunk": self.backup_trunk},
+                ],
+            )
+        )
+
+        response = self.client.post(reverse("outbound-route-create"), post_data)
+
+        self.assertEqual(response.status_code, 302)
+        route = OutboundRoute.objects.get(name="Local")
+        self.assertEqual(
+            list(route.route_trunks.order_by("priority").values_list("priority", "trunk__name")),
+            [(1, "Backup SIP"), (2, "Primary SIP")],
+        )
+
+    def test_emergency_route_form_rejects_non_emergency_trunk(self):
+        normal_trunk = Trunk.objects.create(
+            location=self.location,
+            provider=self.provider,
+            name="Normal SIP",
+            trunk_type=Trunk.TrunkType.SIP,
+            host="sip.normal.example.test",
+            username="normal",
+            password="normal-secret",
+            is_emergency_capable=False,
+        )
+        self.client.force_login(self.editor)
+        post_data = outbound_route_form_data(
+            self.location,
+            name="Emergency",
+            dial_pattern="911",
+            is_emergency_route="on",
+            caller_id_source=OutboundRoute.CallerIdSource.EMERGENCY,
+        )
+        post_data.update(route_trunk_formset_data(trunk_rows=[{"priority": 1, "trunk": normal_trunk}]))
+
+        response = self.client.post(reverse("outbound-route-create"), post_data)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Emergency routes can only use emergency-capable trunks.")
+        self.assertFalse(OutboundRoute.objects.filter(name="Emergency").exists())
 
 
 class ExtensionFormValidationTests(TestCase):

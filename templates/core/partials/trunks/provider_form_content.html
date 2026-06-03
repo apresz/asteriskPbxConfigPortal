@@ -1,0 +1,45 @@
+<section class="record-header" data-area="trunks">
+  <span>
+    <p class="eyebrow">Provider</p>
+    <h1>{{ form_title }}</h1>
+    {% if provider %}
+      <p>{{ provider.slug }} - {{ provider.get_provider_type_display }}</p>
+    {% endif %}
+  </span>
+  <a class="button button--secondary" href="{% url 'trunks' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Cancel</a>
+</section>
+
+<form class="trunk-form" method="post" novalidate>
+  {% csrf_token %}
+  {{ form.non_field_errors }}
+
+  {% for fieldset in form.fieldsets %}
+    <fieldset class="form-section">
+      <legend>{{ fieldset.legend }}</legend>
+      <div class="form-grid">
+        {% for field in fieldset.fields %}
+          {% if field.field.widget.input_type == "checkbox" %}
+            <label class="form-check" for="{{ field.id_for_label }}">
+              {{ field }}
+              <span>{{ field.label }}</span>
+            </label>
+            {{ field.errors }}
+          {% else %}
+            <label class="form-field" for="{{ field.id_for_label }}">
+              <span>{{ field.label }}{% if field.field.required %} <strong aria-hidden="true">*</strong>{% endif %}</span>
+              {{ field }}
+              {{ field.errors }}
+            </label>
+          {% endif %}
+        {% endfor %}
+      </div>
+    </fieldset>
+  {% endfor %}
+
+  <div class="form-actions">
+    <button class="button" type="submit">{{ form_action }}</button>
+    {% if provider %}
+      <a class="button button--danger" href="{% url 'provider-delete' provider.slug %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Delete</a>
+    {% endif %}
+  </div>
+</form>

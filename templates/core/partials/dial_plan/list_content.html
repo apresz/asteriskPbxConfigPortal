@@ -1,0 +1,71 @@
+<section class="page-heading page-heading--actions" data-area="dial-plan">
+  <span>
+    <p class="eyebrow">Dial Plan</p>
+    <h1>Outbound Routes</h1>
+    <p>Dial patterns, caller ID selection, emergency routing, and ordered provider fallback.</p>
+  </span>
+  {% if can_edit_dial_plan %}
+    <a class="button" href="{% url 'outbound-route-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Outbound Route</a>
+  {% endif %}
+</section>
+
+{% if routes %}
+  <section class="table-panel" aria-label="Outbound routes">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th scope="col">Route</th>
+          <th scope="col">Location</th>
+          <th scope="col">Pattern</th>
+          <th scope="col">Caller ID</th>
+          <th scope="col">Fallback</th>
+          <th scope="col">Recording</th>
+          <th scope="col">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for route in routes %}
+          <tr>
+            <td>
+              {% if can_edit_dial_plan %}
+                <a class="table-link" href="{% url 'outbound-route-edit' route.id %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">{{ route.name }}</a>
+              {% else %}
+                <span class="table-link">{{ route.name }}</span>
+              {% endif %}
+              <span class="table-meta">Priority {{ route.priority }}</span>
+              {% if route.is_emergency_route %}<span class="table-meta">Emergency route</span>{% endif %}
+            </td>
+            <td>{{ route.location.name }}</td>
+            <td>{{ route.dial_pattern }}</td>
+            <td>
+              <span class="stacked-value">{{ route.get_caller_id_source_display }}</span>
+              {% if route.caller_id_number %}<span class="table-meta">{{ route.caller_id_number }}</span>{% endif %}
+            </td>
+            <td>
+              <div class="tag-list">
+                {% for route_trunk in route.route_trunks.all %}
+                  <span class="tag">{{ route_trunk.priority }}: {{ route_trunk.trunk.name }}</span>
+                {% empty %}
+                  <span class="table-meta">No trunks assigned</span>
+                {% endfor %}
+              </div>
+            </td>
+            <td>{{ route.get_recording_policy_display }}</td>
+            <td>
+              <span class="status-badge{% if not route.is_active %} status-badge--muted{% endif %}">
+                {{ route.is_active|yesno:"Active,Inactive" }}
+              </span>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% else %}
+  <section class="empty-state">
+    <h2>No outbound routes configured</h2>
+    {% if can_edit_dial_plan %}
+      <a class="button" href="{% url 'outbound-route-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Outbound Route</a>
+    {% endif %}
+  </section>
+{% endif %}

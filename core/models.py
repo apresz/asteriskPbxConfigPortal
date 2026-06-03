@@ -1170,6 +1170,7 @@ class Trunk(TimestampedModel):
     )
     host = models.CharField(max_length=255, blank=True)
     username = models.CharField(max_length=120, blank=True)
+    password = models.CharField("password / secret", max_length=255, blank=True)
     is_emergency_capable = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
 
@@ -1182,9 +1183,29 @@ class Trunk(TimestampedModel):
     def __str__(self):
         return f"{self.location}: {self.name}"
 
+    def clean(self):
+        super().clean()
+        if not self.provider_id:
+            return
+
+        errors = {}
+        provider_type = self.provider.provider_type
+        if provider_type not in {Provider.ProviderType.SIP, Provider.ProviderType.IAX2}:
+            errors["provider"] = "Provider trunks require a SIP or IAX2 provider."
+        elif provider_type != self.trunk_type:
+            errors["trunk_type"] = "Trunk type must match the selected provider type."
+        if errors:
+            raise ValidationError(errors)
+
 
 class OutboundRoute(TimestampedModel):
     RecordingPolicy = PBXRecordingPolicy
+
+    class CallerIdSource(models.TextChoices):
+        EXTENSION_DID = "extension_did", "Extension DID"
+        LOCATION_DEFAULT = "location_default", "Location default DID"
+        EMERGENCY = "emergency", "Emergency caller ID"
+        CUSTOM = "custom", "Custom caller ID"
 
     location = models.ForeignKey(
         Location,
@@ -1195,7 +1216,16 @@ class OutboundRoute(TimestampedModel):
     dial_pattern = models.CharField(max_length=80)
     priority = models.PositiveSmallIntegerField(validators=[MinValueValidator(1)])
     is_emergency_route = models.BooleanField(default=False)
-    caller_id_number = models.CharField(max_length=32, blank=True)
+    caller_id_source = models.CharField(
+        max_length=24,
+        choices=CallerIdSource.choices,
+        default=CallerIdSource.LOCATION_DEFAULT,
+    )
+    caller_id_number = models.CharField(
+        max_length=32,
+        blank=True,
+        validators=[did_number_validator],
+    )
     recording_policy = models.CharField(
         max_length=16,
         choices=PBXRecordingPolicy.choices,
@@ -1218,6 +1248,16 @@ class OutboundRoute(TimestampedModel):
 
     def __str__(self):
         return f"{self.location}: {self.name}"
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.is_emergency_route and self.caller_id_source != self.CallerIdSource.EMERGENCY:
+            errors["caller_id_source"] = "Emergency routes must use the location emergency caller ID."
+        if self.caller_id_source == self.CallerIdSource.CUSTOM and not self.caller_id_number:
+            errors["caller_id_number"] = "Custom caller ID routes require a caller ID number."
+        if errors:
+            raise ValidationError(errors)
 
 
 class OutboundRouteTrunk(TimestampedModel):
@@ -1248,14 +1288,22 @@ class OutboundRouteTrunk(TimestampedModel):
 
     def clean(self):
         super().clean()
+        errors = {}
         if (
             self.outbound_route_id
             and self.trunk_id
             and self.outbound_route.location_id != self.trunk.location_id
         ):
-            raise ValidationError(
-                {"trunk": "Outbound route trunks must belong to the route location."}
-            )
+            errors["trunk"] = "Outbound route trunks must belong to the route location."
+        if (
+            self.outbound_route_id
+            and self.trunk_id
+            and self.outbound_route.is_emergency_route
+            and not self.trunk.is_emergency_capable
+        ):
+            errors["trunk"] = "Emergency routes can only use emergency-capable trunks."
+        if errors:
+            raise ValidationError(errors)
 
     def __str__(self):
         return f"{self.outbound_route} via {self.trunk}"
