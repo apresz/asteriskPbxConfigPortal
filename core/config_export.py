@@ -5,10 +5,18 @@ from typing import Any
 from .models import AudioPrompt, Extension, Location, OutboundRoute
 
 
-def build_location_config(location: Location) -> dict[str, Any]:
+PHONE_APPEARANCE_WARNING_LIMIT = 5
+
+
+def build_location_config(
+    location: Location,
+    *,
+    require_emergency: bool = False,
+    validation: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
     """Return the PBX configuration data needed by generators and helper scripts."""
     smtp_settings = build_smtp_settings(location)
-    routing_validation = validate_location_routing(location)
+    routing_validation = validation or validate_location_routing(location, require_emergency=require_emergency)
     return {
         "location": {
             "id": location.id,
@@ -36,6 +44,7 @@ def build_location_config(location: Location) -> dict[str, Any]:
             .order_by("priority", "name")
         ],
         "routing_validation": routing_validation,
+        "dialplan_warnings": list(routing_validation["warnings"]),
         "recording": {
             "retention_days": location.recording_retention_days,
             "extensions": [
@@ -70,9 +79,12 @@ def build_location_config(location: Location) -> dict[str, Any]:
 
 
 def validate_location_routing(location: Location, *, require_emergency: bool = False) -> dict[str, list[dict[str, Any]]]:
-    """Return routing validation issues without blocking normal config export."""
-    warnings = provider_credential_warnings(location)
+    """Return export validation issues without blocking normal config export."""
+    warnings = export_validation_warnings(location)
     errors: list[dict[str, Any]] = []
+    emergency_allowed_extensions = list(
+        location.extensions.filter(is_active=True, emergency_calling_enabled=True).order_by("number")
+    )
     active_routes = list(
         location.outbound_routes.prefetch_related("route_trunks__trunk")
         .filter(is_active=True)
@@ -80,17 +92,19 @@ def validate_location_routing(location: Location, *, require_emergency: bool = F
     )
     emergency_routes = [route for route in active_routes if route.is_emergency_route]
 
-    if require_emergency and not location.emergency_caller_id:
+    if require_emergency and emergency_allowed_extensions and not location.emergency_caller_id:
         errors.append(
             {
                 "code": "missing_emergency_caller_id",
+                "affected_extensions": [extension.number for extension in emergency_allowed_extensions],
                 "message": "Location emergency caller ID is required for emergency validation.",
             }
         )
-    if require_emergency and not emergency_routes:
+    if require_emergency and emergency_allowed_extensions and not emergency_routes:
         errors.append(
             {
                 "code": "missing_emergency_route",
+                "affected_extensions": [extension.number for extension in emergency_allowed_extensions],
                 "message": "At least one active emergency outbound route is required.",
             }
         )
@@ -134,6 +148,18 @@ def validate_location_routing(location: Location, *, require_emergency: bool = F
     return {"warnings": warnings, "errors": errors}
 
 
+def export_validation_warnings(location: Location) -> list[dict[str, Any]]:
+    warnings: list[dict[str, Any]] = []
+    warnings.extend(provider_credential_warnings(location))
+    warnings.extend(suspicious_did_warnings(location))
+    warnings.extend(phone_inventory_warnings(location))
+    warnings.extend(extension_appearance_warnings(location))
+    warnings.extend(smtp_warnings(location))
+    warnings.extend(fallback_destination_warnings(location))
+    warnings.extend(disabled_emergency_extension_warnings(location))
+    return warnings
+
+
 def provider_credential_warnings(location: Location) -> list[dict[str, Any]]:
     warnings = []
     for trunk in location.trunks.select_related("provider").filter(is_active=True).order_by("name"):
@@ -156,6 +182,204 @@ def provider_credential_warnings(location: Location) -> list[dict[str, Any]]:
                     "message": f"{trunk.name} is missing {', '.join(missing)}.",
                 }
             )
+    return warnings
+
+
+def suspicious_did_warnings(location: Location) -> list[dict[str, Any]]:
+    warnings: list[dict[str, Any]] = []
+    candidates = [
+        ("location_default_did", location.default_did, location.name),
+        ("location_emergency_caller_id", location.emergency_caller_id, location.name),
+    ]
+    candidates.extend(
+        ("did", did.number, did.label or did.number)
+        for did in location.dids.filter(is_active=True).order_by("number")
+    )
+    candidates.extend(
+        ("extension_caller_id", extension.caller_id_number, extension.number)
+        for extension in location.extensions.filter(is_active=True)
+        .exclude(caller_id_number="")
+        .order_by("number")
+    )
+    candidates.extend(
+        ("route_custom_caller_id", route.caller_id_number, route.name)
+        for route in location.outbound_routes.filter(
+            is_active=True,
+            caller_id_source=OutboundRoute.CallerIdSource.CUSTOM,
+        ).order_by("priority", "name")
+        if route.caller_id_number
+    )
+
+    for source, number, label in candidates:
+        if not number or number.startswith("+"):
+            continue
+        warnings.append(
+            {
+                "code": "suspicious_did",
+                "source": source,
+                "label": label,
+                "number": number,
+                "reason": "missing_plus_prefix",
+                "message": f"{number} is dialable but not E.164-style; verify DID/caller ID formatting.",
+            }
+        )
+    return warnings
+
+
+def phone_inventory_warnings(location: Location) -> list[dict[str, Any]]:
+    warnings: list[dict[str, Any]] = []
+    phones = (
+        location.phones.filter(is_active=True)
+        .prefetch_related("line_appearances__extension")
+        .order_by("mac_address")
+    )
+    for phone in phones:
+        active_line_numbers = [
+            appearance.extension.number
+            for appearance in phone.line_appearances.all()
+            if appearance.extension.is_active
+        ]
+        if not active_line_numbers:
+            warnings.append(
+                {
+                    "code": "phone_incomplete",
+                    "phone": phone.mac_address,
+                    "missing": ["line_appearances"],
+                    "message": f"{phone.sep_identifier} has no active line appearances.",
+                }
+            )
+        if not phone.firmware_load_name:
+            warnings.append(
+                {
+                    "code": "phone_missing_firmware_load_name",
+                    "phone": phone.mac_address,
+                    "model": phone.model,
+                    "message": f"{phone.sep_identifier} has no firmware/load name configured.",
+                }
+            )
+    return warnings
+
+
+def extension_appearance_warnings(location: Location) -> list[dict[str, Any]]:
+    warnings: list[dict[str, Any]] = []
+    extensions = (
+        location.extensions.filter(is_active=True)
+        .prefetch_related("phone_appearances__phone")
+        .order_by("number")
+    )
+    for extension in extensions:
+        appearance_count = sum(
+            1
+            for appearance in extension.phone_appearances.all()
+            if appearance.phone.is_active
+        )
+        if appearance_count > PHONE_APPEARANCE_WARNING_LIMIT:
+            warnings.append(
+                {
+                    "code": "extension_over_phone_appearance_limit",
+                    "extension": extension.number,
+                    "appearance_count": appearance_count,
+                    "limit": PHONE_APPEARANCE_WARNING_LIMIT,
+                    "message": (
+                        f"Extension {extension.number} has {appearance_count} active phone appearances; "
+                        f"recommended maximum is {PHONE_APPEARANCE_WARNING_LIMIT}."
+                    ),
+                }
+            )
+    return warnings
+
+
+def smtp_warnings(location: Location) -> list[dict[str, Any]]:
+    if build_smtp_settings(location):
+        return []
+    affected_extensions = list(
+        location.extensions.filter(is_active=True, voicemail_enabled=True)
+        .exclude(email="")
+        .order_by("number")
+        .values_list("number", flat=True)
+    )
+    if not affected_extensions:
+        return []
+    return [
+        {
+            "code": "smtp_not_configured",
+            "affected_extensions": affected_extensions,
+            "message": "SMTP is optional but not configured; voicemail email delivery is disabled.",
+        }
+    ]
+
+
+def fallback_destination_warnings(location: Location) -> list[dict[str, Any]]:
+    warnings: list[dict[str, Any]] = []
+    for did in location.dids.filter(is_active=True).order_by("number"):
+        if did.direct_extension_id or did.default_destination_id or location.default_inbound_destination_id:
+            continue
+        warnings.append(
+            {
+                "code": "did_missing_fallback_destination",
+                "did": did.number,
+                "message": f"DID {did.number} has no direct extension, DID fallback, or location fallback.",
+            }
+        )
+
+    for ivr in location.ivrs.filter(is_active=True).order_by("name"):
+        missing = [
+            field_name
+            for field_name in (
+                "business_hours_destination",
+                "after_hours_destination",
+                "timeout_destination",
+                "invalid_destination",
+            )
+            if getattr(ivr, f"{field_name}_id") is None
+        ]
+        if missing:
+            warnings.append(
+                {
+                    "code": "ivr_incomplete_fallback_destinations",
+                    "ivr": ivr.name,
+                    "missing": missing,
+                    "message": f"IVR {ivr.name} has incomplete fallback destinations.",
+                }
+            )
+
+    for queue in location.queues.filter(is_active=True).order_by("name"):
+        if queue.overflow_destination_id:
+            continue
+        warnings.append(
+            {
+                "code": "queue_missing_overflow_destination",
+                "queue": queue.name,
+                "message": f"Queue {queue.name} has no overflow destination.",
+            }
+        )
+
+    for feature_code in location.feature_codes.filter(is_active=True).order_by("code"):
+        if feature_code.destination_id:
+            continue
+        warnings.append(
+            {
+                "code": "feature_code_missing_destination",
+                "feature_code": feature_code.code,
+                "message": f"Feature code {feature_code.code} has no destination.",
+            }
+        )
+    return warnings
+
+
+def disabled_emergency_extension_warnings(location: Location) -> list[dict[str, Any]]:
+    warnings: list[dict[str, Any]] = []
+    for extension in location.extensions.filter(is_active=True, emergency_calling_enabled=False).order_by("number"):
+        warnings.append(
+            {
+                "code": "extension_911_disabled",
+                "extension": extension.number,
+                "message": (
+                    f"911 calling is disabled for extension {extension.number} by Admin override; "
+                    "emergency export hard-block excludes this extension."
+                ),
+            }
+        )
     return warnings
 
 

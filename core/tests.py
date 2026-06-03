@@ -10,6 +10,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.db import IntegrityError, transaction
 from django.test import Client, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
@@ -282,6 +283,36 @@ def route_trunk_formset_data(*, trunk_rows=None):
             }
         )
     return data
+
+
+def add_emergency_route(location):
+    provider, _created = Provider.objects.get_or_create(
+        slug=f"{location.slug}-emergency-sip",
+        defaults={
+            "name": f"{location.name} Emergency SIP",
+            "provider_type": Provider.ProviderType.SIP,
+        },
+    )
+    trunk = Trunk.objects.create(
+        location=location,
+        provider=provider,
+        name="Emergency SIP",
+        trunk_type=Trunk.TrunkType.SIP,
+        host="sip.emergency.example.test",
+        username="emergency",
+        password="emergency-secret",
+        is_emergency_capable=True,
+    )
+    route = OutboundRoute.objects.create(
+        location=location,
+        name="Emergency",
+        dial_pattern="911",
+        priority=99,
+        is_emergency_route=True,
+        caller_id_source=OutboundRoute.CallerIdSource.EMERGENCY,
+    )
+    OutboundRouteTrunk.objects.create(outbound_route=route, trunk=trunk, priority=1)
+    return route
 
 
 def did_default_destination(location, extension):
@@ -1317,6 +1348,7 @@ class VoicemailRecordingConfigTests(TestCase):
             **location_model_data(name="Command HQ", slug="command-hq", recording_retention_days=90)
         )
         Extension.objects.create(location=location, number="3000", display_name="HQ Desk")
+        add_emergency_route(location)
         output = StringIO()
 
         call_command("export_pbx_config", location.slug, stdout=output)
@@ -1325,8 +1357,179 @@ class VoicemailRecordingConfigTests(TestCase):
         self.assertEqual(payload["location"]["slug"], "command-hq")
         self.assertEqual(payload["helper_scripts"]["recording_retention_days"], 90)
         self.assertEqual(payload["voicemail"]["mailboxes"][0]["number"], "3000")
-        
-        
+
+
+class ExportValidationEngineTests(TestCase):
+    def test_export_command_hard_blocks_missing_emergency_route_and_caller_id(self):
+        location = Location.objects.create(
+            **location_model_data(name="Blocked HQ", slug="blocked-hq", emergency_caller_id="")
+        )
+        Extension.objects.create(location=location, number="3000", display_name="HQ Desk")
+
+        with self.assertRaises(CommandError) as context:
+            call_command("export_pbx_config", location.slug, stdout=StringIO())
+
+        self.assertIn("missing_emergency_caller_id", str(context.exception))
+        self.assertIn("missing_emergency_route", str(context.exception))
+        audit_log = AuditLog.objects.get(target="locations/blocked-hq/config")
+        self.assertEqual(audit_log.action, AuditAction.CONFIG_EXPORT)
+        self.assertEqual(audit_log.outcome, AuditOutcome.FAILURE)
+        self.assertEqual(
+            {error["code"] for error in audit_log.details["validation"]["errors"]},
+            {"missing_emergency_caller_id", "missing_emergency_route"},
+        )
+        self.assertEqual(
+            audit_log.details["validation"]["errors"][0]["affected_extensions"],
+            ["3000"],
+        )
+
+    def test_disabled_911_override_excludes_extension_and_surfaces_dialplan_warning(self):
+        location = Location.objects.create(
+            **location_model_data(name="Disabled HQ", slug="disabled-hq", emergency_caller_id="")
+        )
+        Extension.objects.create(
+            location=location,
+            number="3000",
+            display_name="Disabled Desk",
+            emergency_calling_enabled=False,
+        )
+        output = StringIO()
+
+        call_command("export_pbx_config", location.slug, stdout=output)
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["routing_validation"]["errors"], [])
+        self.assertEqual(payload["dialplan_warnings"][0]["code"], "extension_911_disabled")
+        audit_log = AuditLog.objects.get(target="locations/disabled-hq/config")
+        self.assertEqual(audit_log.outcome, AuditOutcome.SUCCESS)
+        self.assertEqual(
+            audit_log.details["validation"]["warnings"][0]["code"],
+            "extension_911_disabled",
+        )
+
+        viewer = User.objects.create_user(username="disabled-viewer", password="portal-pass")
+        assign_role(viewer, PortalRole.VIEWER)
+        self.client.force_login(viewer)
+        response = self.client.get(reverse("dial-plan"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "911 calling is disabled for extension 3000 by Admin override")
+
+    def test_over_five_registration_warning(self):
+        location = Location.objects.create(**location_model_data(name="Phone HQ", slug="phone-hq"))
+        extension = Extension.objects.create(location=location, number="3000", display_name="HQ Desk")
+        for index in range(6):
+            phone = Phone.objects.create(
+                location=location,
+                mac_address=f"0011223344{index:02X}",
+                model=Phone.PhoneModel.CISCO_9971,
+                firmware_load_name="sip9971.9-4-2",
+            )
+            PhoneLineAppearance.objects.create(phone=phone, extension=extension, line_index=1)
+
+        validation = validate_location_routing(location)
+
+        warning = next(
+            warning
+            for warning in validation["warnings"]
+            if warning["code"] == "extension_over_phone_appearance_limit"
+        )
+        self.assertEqual(warning["extension"], "3000")
+        self.assertEqual(warning["appearance_count"], 6)
+        self.assertEqual(warning["limit"], 5)
+
+    def test_validation_warning_snapshot_covers_export_warning_categories(self):
+        location = Location.objects.create(
+            **location_model_data(
+                name="Warning HQ",
+                slug="warning-hq",
+                smtp_host="",
+                smtp_from_email="",
+                smtp_username="",
+                smtp_password="",
+            )
+        )
+        Extension.objects.create(
+            location=location,
+            number="3000",
+            display_name="Voicemail Desk",
+            email="desk@example.test",
+            voicemail_enabled=True,
+        )
+        disabled_extension = Extension.objects.create(
+            location=location,
+            number="3001",
+            display_name="No 911 Desk",
+            emergency_calling_enabled=False,
+        )
+        over_limit_extension = Extension.objects.create(
+            location=location,
+            number="3002",
+            display_name="Busy Desk",
+        )
+        provider = Provider.objects.create(
+            name="Warning SIP",
+            slug="warning-sip",
+            provider_type=Provider.ProviderType.SIP,
+        )
+        Trunk.objects.create(
+            location=location,
+            provider=provider,
+            name="Missing Secret",
+            trunk_type=Trunk.TrunkType.SIP,
+            host="sip.warning.example.test",
+            username="warning",
+            password="",
+        )
+        DID.objects.create(location=location, number="15551230001")
+        Phone.objects.create(
+            location=location,
+            mac_address="001122000000",
+            model=Phone.PhoneModel.CISCO_9971,
+        )
+        for index in range(6):
+            phone = Phone.objects.create(
+                location=location,
+                mac_address=f"0011224455{index:02X}",
+                model=Phone.PhoneModel.CISCO_9971,
+                firmware_load_name="sip9971.9-4-2",
+            )
+            PhoneLineAppearance.objects.create(phone=phone, extension=over_limit_extension, line_index=1)
+        IVR.objects.create(location=location, name="Main IVR")
+        CallQueue.objects.create(location=location, name="Support Queue")
+        FeatureCode.objects.create(
+            location=location,
+            code="*8",
+            name="Pickup",
+            feature_type=FeatureCode.FeatureType.CALL_PICKUP,
+        )
+
+        config = build_location_config(location)
+
+        self.assertEqual(config["routing_validation"]["errors"], [])
+        self.assertEqual(
+            [warning["code"] for warning in config["routing_validation"]["warnings"]],
+            [
+                "provider_trunk_missing_credentials",
+                "suspicious_did",
+                "phone_incomplete",
+                "phone_missing_firmware_load_name",
+                "extension_over_phone_appearance_limit",
+                "smtp_not_configured",
+                "did_missing_fallback_destination",
+                "ivr_incomplete_fallback_destinations",
+                "queue_missing_overflow_destination",
+                "feature_code_missing_destination",
+                "extension_911_disabled",
+            ],
+        )
+        self.assertEqual(config["routing_validation"]["warnings"][0]["missing"], ["password"])
+        self.assertEqual(config["routing_validation"]["warnings"][1]["reason"], "missing_plus_prefix")
+        self.assertEqual(config["routing_validation"]["warnings"][5]["affected_extensions"], ["3000"])
+        self.assertEqual(config["routing_validation"]["warnings"][-1]["extension"], disabled_extension.number)
+        self.assertEqual(config["dialplan_warnings"], config["routing_validation"]["warnings"])
+
+
 class AudioPromptConversionTests(TestCase):
     def setUp(self):
         self.location = Location.objects.create(**location_model_data(name="HQ", slug="hq"))

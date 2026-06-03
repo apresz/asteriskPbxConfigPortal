@@ -1114,14 +1114,14 @@ IVRMenuOptionFormSet = forms.inlineformset_factory(
 
 class PhoneForm(forms.ModelForm):
     FIELDSETS = (
-        ("Identity", ("location", "mac_address", "model", "label", "is_active")),
+        ("Identity", ("location", "mac_address", "model", "firmware_load_name", "label", "is_active")),
     )
 
     mac_address = forms.CharField(max_length=32, label="MAC address")
 
     class Meta:
         model = Phone
-        fields = ("location", "mac_address", "model", "label", "is_active")
+        fields = ("location", "mac_address", "model", "firmware_load_name", "label", "is_active")
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

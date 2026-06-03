@@ -614,6 +614,7 @@ class Phone(TimestampedModel):
         choices=PhoneModel.choices,
         default=PhoneModel.CISCO_9971,
     )
+    firmware_load_name = models.CharField(max_length=120, blank=True)
     label = models.CharField(max_length=120, blank=True)
     is_active = models.BooleanField(default=True)
 

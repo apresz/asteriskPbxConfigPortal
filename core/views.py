@@ -16,6 +16,7 @@ from .access import (
 )
 from .audit import record_audit
 from .audio_prompts import AudioPromptConversionError, create_audio_prompt_from_upload
+from .config_export import validate_location_routing
 from .extension_csv import (
     ExtensionCSVError,
     export_extensions_csv,
@@ -32,14 +33,14 @@ from .forms import (
     IVRForm,
     IVRMenuOptionFormSet,
     LocationForm,
-    PhoneForm,
-    PhoneLineAppearanceFormSet,
-    PhoneSpeedDialFormSet,
     PagingGroupForm,
     RingGroupForm,
     OutboundRouteForm,
     OutboundRouteTrunkFormSet,
     ProviderForm,
+    PhoneForm,
+    PhoneLineAppearanceFormSet,
+    PhoneSpeedDialFormSet,
     TrunkForm,
 )
 from .models import (
@@ -232,7 +233,7 @@ def outbound_route_list(request):
     routes = OutboundRoute.objects.select_related("location").prefetch_related(
         "route_trunks__trunk__provider",
     ).order_by("location__name", "priority", "name")
-    context = _dial_plan_context(request, {"routes": routes})
+    context = _dial_plan_context(request, {"routes": routes, "dial_plan_validation": _dial_plan_validation()})
     return render(request, _template(request, "core/dial_plan/list.html", "core/partials/dial_plan/list_content.html"), context)
 
 
@@ -1708,6 +1709,21 @@ def _dial_plan_context(request, context):
         }
     )
     return context
+
+
+def _dial_plan_validation():
+    validation_by_location = []
+    for location in Location.objects.filter(is_active=True).order_by("name"):
+        validation = validate_location_routing(location, require_emergency=True)
+        if validation["warnings"] or validation["errors"]:
+            validation_by_location.append(
+                {
+                    "location": location,
+                    "warnings": validation["warnings"],
+                    "errors": validation["errors"],
+                }
+            )
+    return validation_by_location
 
 
 def _phone_formset_location(request, phone):
