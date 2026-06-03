@@ -1,11 +1,27 @@
 from __future__ import annotations
 
+from io import BytesIO
 from typing import Any
+import xml.etree.ElementTree as ET
 
-from .models import AudioPrompt, Extension, Location, OutboundRoute
+from .models import AudioPrompt, Extension, Location, OutboundRoute, Phone, normalize_mac_address
 
 
 PHONE_APPEARANCE_WARNING_LIMIT = 5
+CISCO_DIRECTORY_FILENAME = "company-directory.xml"
+CISCO_FIRMWARE_CHECKLIST_FILENAME = "firmware/CISCO-FIRMWARE-CHECKLIST.txt"
+CISCO_FIRMWARE_PLACEHOLDER_FILENAME = "firmware/README-no-firmware-bundled.txt"
+CISCO_TRANSPORT_LAYER_PROTOCOL = "TCP"
+CISCO_PHONE_MODELS = {
+    Phone.PhoneModel.CISCO_9971,
+    Phone.PhoneModel.CISCO_9951,
+    Phone.PhoneModel.CISCO_8961,
+}
+CISCO_MODEL_PRODUCTS = {
+    Phone.PhoneModel.CISCO_9971: "Cisco CP-9971",
+    Phone.PhoneModel.CISCO_9951: "Cisco CP-9951",
+    Phone.PhoneModel.CISCO_8961: "Cisco CP-8961",
+}
 
 
 def build_location_config(
@@ -72,8 +88,60 @@ def build_location_config(
             ],
         },
         "inbound": build_inbound_config(location),
+        "tftp": build_cisco_tftp_output(location),
         "helper_scripts": {
             "recording_retention_days": location.recording_retention_days,
+        },
+    }
+
+
+def mac_to_sep_filename(mac_address: str) -> str:
+    return f"SEP{normalize_mac_address(mac_address)}.cnf.xml"
+
+
+def build_cisco_tftp_output(location: Location) -> dict[str, Any]:
+    """Return Cisco TFTP artifacts for the location export snapshot."""
+    directory_url = _cisco_directory_url(location)
+    phones = list(
+        location.phones.filter(is_active=True, model__in=CISCO_PHONE_MODELS)
+        .select_related("location")
+        .prefetch_related("line_appearances__extension", "speed_dials")
+        .order_by("mac_address")
+    )
+    phone_files = [
+        _tftp_file(
+            mac_to_sep_filename(phone.mac_address),
+            _cisco_phone_config_xml(phone, directory_url),
+            "application/xml",
+        )
+        for phone in phones
+    ]
+    directory_file = _tftp_file(
+        CISCO_DIRECTORY_FILENAME,
+        _company_directory_xml(),
+        "application/xml",
+    )
+    firmware_files = _firmware_files(phones)
+    files = [*phone_files, directory_file, *firmware_files]
+
+    return {
+        "directory_url": directory_url,
+        "files": sorted(files, key=lambda file: file["path"]),
+        "phone_files": [
+            {
+                "mac_address": phone.mac_address,
+                "model": phone.model,
+                "filename": mac_to_sep_filename(phone.mac_address),
+                "firmware_load_name": phone.firmware_load_name,
+                "line_count": len(_active_line_appearances(phone)),
+                "speed_dial_count": len(list(phone.speed_dials.all())),
+            }
+            for phone in phones
+        ],
+        "firmware": {
+            "checklist": CISCO_FIRMWARE_CHECKLIST_FILENAME,
+            "placeholder": CISCO_FIRMWARE_PLACEHOLDER_FILENAME,
+            "bundled": False,
         },
     }
 
@@ -415,6 +483,186 @@ def build_smtp_settings(location: Location) -> dict[str, Any] | None:
         "username": location.smtp_username,
         "password": location.smtp_password,
     }
+
+
+def _cisco_directory_url(location: Location) -> str:
+    host = f"[{location.pbx_lan_ip}]" if ":" in location.pbx_lan_ip else location.pbx_lan_ip
+    return f"http://{host}/cisco/{CISCO_DIRECTORY_FILENAME}"
+
+
+def _cisco_phone_config_xml(phone: Phone, directory_url: str) -> str:
+    root = ET.Element("device")
+    _xml_text(root, "deviceProtocol", "SIP")
+    _xml_text(root, "product", CISCO_MODEL_PRODUCTS[phone.model])
+    _xml_text(root, "model", phone.model)
+    _xml_text(root, "phoneLabel", phone.label or phone.sep_identifier)
+    _xml_text(root, "transportLayerProtocol", CISCO_TRANSPORT_LAYER_PROTOCOL)
+    _xml_text(root, "directoryURL", directory_url)
+    _xml_text(root, "loadInformation", phone.firmware_load_name)
+
+    device_pool = ET.SubElement(root, "devicePool")
+    date_time = ET.SubElement(device_pool, "dateTimeSetting")
+    _xml_text(date_time, "dateTemplate", "M/D/Ya")
+    _xml_text(date_time, "timeZone", phone.location.timezone)
+    call_manager_group = ET.SubElement(device_pool, "callManagerGroup")
+    members = ET.SubElement(call_manager_group, "members")
+    member = ET.SubElement(members, "member", {"priority": "0"})
+    call_manager = ET.SubElement(member, "callManager")
+    ports = ET.SubElement(call_manager, "ports")
+    _xml_text(ports, "ethernetPhonePort", "2000")
+    _xml_text(ports, "sipPort", str(phone.location.sip_port))
+    _xml_text(ports, "securedSipPort", "5061")
+    _xml_text(call_manager, "processNodeName", phone.location.pbx_lan_ip)
+
+    sip_profile = ET.SubElement(root, "sipProfile")
+    sip_proxies = ET.SubElement(sip_profile, "sipProxies")
+    _xml_text(sip_proxies, "backupProxy", "")
+    _xml_text(sip_proxies, "backupProxyPort", "")
+    _xml_text(sip_proxies, "emergencyProxy", "")
+    _xml_text(sip_proxies, "emergencyProxyPort", "")
+    _xml_text(sip_proxies, "outboundProxy", "")
+    _xml_text(sip_proxies, "outboundProxyPort", "")
+    _xml_text(sip_proxies, "registerWithProxy", "true")
+    _xml_text(sip_profile, "sipPort", str(phone.location.sip_port))
+    _xml_text(sip_profile, "transportLayerProtocol", CISCO_TRANSPORT_LAYER_PROTOCOL)
+    _xml_text(sip_profile, "phoneLabel", phone.label or phone.sep_identifier)
+    _xml_text(sip_profile, "dialTemplate", "dialplan.xml")
+
+    sip_lines = ET.SubElement(sip_profile, "sipLines")
+    active_lines = _active_line_appearances(phone)
+    for appearance in active_lines:
+        _cisco_line_xml(sip_lines, appearance)
+    line_button_offset = max((appearance.line_index for appearance in active_lines), default=0)
+    for speed_dial in phone.speed_dials.all():
+        _cisco_speed_dial_xml(sip_lines, speed_dial, line_button_offset + speed_dial.position)
+
+    services = ET.SubElement(root, "phoneServices")
+    _xml_text(services, "provisioning", "0")
+    service = ET.SubElement(services, "phoneService", {"type": "1", "category": "0"})
+    _xml_text(service, "name", "Company Directory")
+    _xml_text(service, "url", directory_url)
+    _xml_text(service, "vendor", "Local PBX")
+    _xml_text(service, "version", "1")
+    return _xml_string(root)
+
+
+def _cisco_line_xml(parent: ET.Element, appearance) -> None:
+    extension = appearance.extension
+    line = ET.SubElement(parent, "line", {"button": str(appearance.line_index)})
+    label = appearance.label or extension.display_name or extension.number
+    auth_name = extension.sip_username or extension.number
+    _xml_text(line, "featureID", "9")
+    _xml_text(line, "featureLabel", label)
+    _xml_text(line, "proxy", "USECALLMANAGER")
+    _xml_text(line, "port", str(extension.location.sip_port))
+    _xml_text(line, "name", extension.number)
+    _xml_text(line, "displayName", extension.display_name)
+    _xml_text(line, "authName", auth_name)
+    _xml_text(line, "authPassword", extension.sip_password)
+    _xml_text(line, "contact", extension.number)
+    _xml_text(line, "messagesNumber", "*97")
+
+
+def _cisco_speed_dial_xml(parent: ET.Element, speed_dial, button: int) -> None:
+    line = ET.SubElement(parent, "line", {"button": str(button)})
+    _xml_text(line, "featureID", "2")
+    _xml_text(line, "featureLabel", speed_dial.label)
+    _xml_text(line, "speedDialNumber", speed_dial.destination)
+
+
+def _company_directory_xml() -> str:
+    root = ET.Element("CiscoIPPhoneDirectory")
+    _xml_text(root, "Title", "Company Directory")
+    _xml_text(root, "Prompt", "Extensions grouped by location")
+    locations = (
+        Location.objects.filter(is_active=True)
+        .prefetch_related("extensions")
+        .order_by("name")
+    )
+    for location in locations:
+        active_extensions = [
+            extension
+            for extension in location.extensions.all()
+            if extension.is_active
+        ]
+        for extension in sorted(active_extensions, key=lambda item: item.number):
+            entry = ET.SubElement(root, "DirectoryEntry")
+            _xml_text(entry, "Name", f"{location.name} - {extension.display_name}")
+            _xml_text(entry, "Telephone", extension.number)
+            _xml_text(entry, "Location", location.name)
+    return _xml_string(root)
+
+
+def _firmware_files(phones: list[Phone]) -> list[dict[str, str]]:
+    phone_rows = [
+        f"- {phone.sep_identifier} ({phone.model}): {phone.firmware_load_name or 'MISSING firmware_load_name'}"
+        for phone in phones
+    ]
+    models = sorted({phone.model for phone in phones})
+    model_rows = [
+        f"- {model}: confirm the matching Cisco SIP load files are staged in the TFTP root."
+        for model in models
+    ]
+    checklist = "\n".join(
+        [
+            "Cisco firmware/load checklist",
+            "",
+            "This export does not bundle Cisco firmware.",
+            "Before provisioning phones:",
+            "- Obtain licensed Cisco SIP firmware from the authorized source.",
+            "- Stage the referenced load files in the TFTP root.",
+            "- Confirm each phone has the expected loadInformation value.",
+            "- Reboot or reset phones only after XML and firmware files are present.",
+            "",
+            "Phones:",
+            *(phone_rows or ["- No active Cisco phones in this location."]),
+            "",
+            "Models:",
+            *(model_rows or ["- No Cisco model loads required."]),
+            "",
+        ]
+    )
+    placeholder = "\n".join(
+        [
+            "No firmware binaries are included in this export.",
+            "Place Cisco SIP load files beside the generated SEP<MAC>.cnf.xml files when firmware updates are required.",
+            "",
+        ]
+    )
+    return [
+        _tftp_file(CISCO_FIRMWARE_CHECKLIST_FILENAME, checklist, "text/plain"),
+        _tftp_file(CISCO_FIRMWARE_PLACEHOLDER_FILENAME, placeholder, "text/plain"),
+    ]
+
+
+def _active_line_appearances(phone: Phone):
+    return [
+        appearance
+        for appearance in phone.line_appearances.all()
+        if appearance.extension.is_active
+    ]
+
+
+def _tftp_file(path: str, content: str, content_type: str) -> dict[str, str]:
+    return {
+        "path": path,
+        "content_type": content_type,
+        "content": content,
+    }
+
+
+def _xml_text(parent: ET.Element, tag: str, text: Any) -> ET.Element:
+    child = ET.SubElement(parent, tag)
+    child.text = "" if text is None else str(text)
+    return child
+
+
+def _xml_string(root: ET.Element) -> str:
+    tree = ET.ElementTree(root)
+    ET.indent(tree, space="  ")
+    output = BytesIO()
+    tree.write(output, encoding="utf-8", xml_declaration=True, short_empty_elements=True)
+    return output.getvalue().decode("utf-8")
 
 
 def build_inbound_config(location: Location) -> dict[str, Any]:
