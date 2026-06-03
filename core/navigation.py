@@ -3,6 +3,12 @@ from .models import PortalPermission
 
 
 PORTAL_AREAS = {
+    "locations": {
+        "label": "Locations",
+        "summary": "Site network, deployment, emergency, and PBX service settings.",
+        "status": "Manage location records",
+        "permission": PortalPermission.VIEW,
+    },
     "extensions": {
         "label": "Extensions",
         "summary": "Internal users, devices, and extension assignments.",

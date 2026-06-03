@@ -1,11 +1,29 @@
 import hashlib
+import ipaddress
 import secrets
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.core.validators import MinValueValidator, RegexValidator
+from django.core.validators import MaxValueValidator, MinValueValidator, RegexValidator
 from django.db import models
 from django.utils import timezone
+
+
+def cidr_network_validator(value):
+    try:
+        ipaddress.ip_network(value, strict=False)
+    except ValueError as exc:
+        raise ValidationError("Enter a valid IPv4 or IPv6 CIDR network.") from exc
+
+
+def ip_address_validator(value):
+    try:
+        ipaddress.ip_address(value)
+    except ValueError as exc:
+        raise ValidationError("Enter a valid IPv4 or IPv6 address.") from exc
+
+
+port_validators = [MinValueValidator(1), MaxValueValidator(65535)]
 
 
 extension_number_validator = RegexValidator(
@@ -297,14 +315,154 @@ class APIKey(TimestampedModel):
 
 
 class Location(TimestampedModel):
+    class DeploymentStatus(models.TextChoices):
+        NOT_DEPLOYED = "not_deployed", "Not deployed"
+        READY = "ready", "Ready"
+        DEPLOYED = "deployed", "Deployed"
+        FAILED = "failed", "Failed"
+
     name = models.CharField(max_length=120, unique=True)
     slug = models.SlugField(max_length=80, unique=True)
     description = models.TextField(blank=True)
     timezone = models.CharField(max_length=64, default="UTC")
+    lan_subnet = models.CharField(
+        "LAN subnet",
+        max_length=43,
+        validators=[cidr_network_validator],
+    )
+    pbx_lan_ip = models.CharField(
+        "PBX LAN IP",
+        max_length=39,
+        validators=[ip_address_validator],
+    )
+    pbx_warp_ip = models.CharField(
+        "PBX WARP IP",
+        max_length=39,
+        validators=[ip_address_validator],
+    )
+    deployment_ssh_host = models.CharField("deployment SSH host", max_length=255, blank=True)
+    deployment_ssh_port = models.PositiveIntegerField(
+        "deployment SSH port",
+        default=22,
+        validators=port_validators,
+    )
+    deployment_ssh_username = models.CharField(
+        "deployment SSH username",
+        max_length=80,
+        blank=True,
+    )
+    deployment_ssh_private_key = models.TextField(
+        "deployment SSH private key",
+        blank=True,
+    )
+    deployment_ssh_known_hosts = models.TextField(
+        "deployment SSH known hosts",
+        blank=True,
+    )
+    sip_bind_ip = models.CharField(
+        "SIP bind IP",
+        max_length=39,
+        validators=[ip_address_validator],
+    )
+    sip_port = models.PositiveIntegerField(
+        "SIP port",
+        default=5060,
+        validators=port_validators,
+    )
+    rtp_port_start = models.PositiveIntegerField(
+        "RTP port start",
+        default=10000,
+        validators=port_validators,
+    )
+    rtp_port_end = models.PositiveIntegerField(
+        "RTP port end",
+        default=20000,
+        validators=port_validators,
+    )
+    iax_bind_ip = models.CharField(
+        "IAX bind IP",
+        max_length=39,
+        validators=[ip_address_validator],
+    )
+    iax_port = models.PositiveIntegerField(
+        "IAX port",
+        default=4569,
+        validators=port_validators,
+    )
+    default_did = models.CharField(
+        "default DID",
+        max_length=16,
+        validators=[did_number_validator],
+    )
+    emergency_caller_id = models.CharField(
+        "emergency caller ID",
+        max_length=16,
+        validators=[did_number_validator],
+    )
+    emergency_trunk = models.CharField("emergency trunk", max_length=120)
+    recording_retention_days = models.PositiveIntegerField(
+        "recording retention days",
+        default=365,
+        validators=[MinValueValidator(1)],
+    )
+    smtp_host = models.CharField("SMTP host", max_length=255)
+    smtp_port = models.PositiveIntegerField(
+        "SMTP port",
+        default=587,
+        validators=port_validators,
+    )
+    smtp_from_email = models.EmailField("SMTP from email")
+    smtp_use_tls = models.BooleanField("SMTP use TLS", default=True)
+    smtp_use_ssl = models.BooleanField("SMTP use SSL", default=False)
+    smtp_username = models.CharField("SMTP username", max_length=120, blank=True)
+    smtp_password = models.CharField("SMTP password", max_length=255, blank=True)
+    ami_host = models.CharField("AMI host", max_length=255)
+    ami_port = models.PositiveIntegerField(
+        "AMI port",
+        default=5038,
+        validators=port_validators,
+    )
+    ami_username = models.CharField("AMI username", max_length=120, blank=True)
+    ami_secret = models.CharField("AMI secret", max_length=255, blank=True)
+    agent_secret = models.CharField("agent secret", max_length=255, blank=True)
     is_active = models.BooleanField(default=True)
+    last_deployed_at = models.DateTimeField("last deployed", null=True, blank=True)
+    deployment_status = models.CharField(
+        max_length=24,
+        choices=DeploymentStatus.choices,
+        default=DeploymentStatus.NOT_DEPLOYED,
+    )
 
     class Meta:
         ordering = ["name"]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        network = None
+        if self.lan_subnet:
+            try:
+                network = ipaddress.ip_network(self.lan_subnet, strict=False)
+            except ValueError:
+                errors["lan_subnet"] = "Enter a valid IPv4 or IPv6 CIDR network."
+
+        if network and self.pbx_lan_ip:
+            try:
+                pbx_lan_ip = ipaddress.ip_address(self.pbx_lan_ip)
+            except ValueError:
+                pass
+            else:
+                if pbx_lan_ip not in network:
+                    errors["pbx_lan_ip"] = "PBX LAN IP must be inside the LAN subnet."
+
+        if self.rtp_port_start and self.rtp_port_end and self.rtp_port_start > self.rtp_port_end:
+            errors["rtp_port_end"] = "RTP port end must be greater than or equal to RTP port start."
+
+        if self.smtp_use_tls and self.smtp_use_ssl:
+            errors["smtp_use_ssl"] = "SMTP TLS and SSL cannot both be enabled."
+
+        if errors:
+            raise ValidationError(errors)
 
     def __str__(self):
         return self.name

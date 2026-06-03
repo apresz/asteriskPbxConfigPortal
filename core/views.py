@@ -2,16 +2,16 @@ import json
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
-from django.core.exceptions import PermissionDenied
-from django.core.exceptions import ValidationError
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import IntegrityError, transaction
 from django.http import Http404, JsonResponse
-from django.shortcuts import get_object_or_404, render
+from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from .access import assign_role, get_user_role, permission_required, user_has_permission
 from .audit import record_audit
-from .models import APIKey, AuditAction, AuditOutcome, PortalPermission, PortalRole, ServiceIdentity
+from .forms import LocationForm
+from .models import APIKey, AuditAction, AuditOutcome, Location, PortalPermission, PortalRole, ServiceIdentity
 from .navigation import PORTAL_AREAS, visible_portal_areas
 
 
@@ -256,6 +256,86 @@ def admin_api_key_revoke(request, api_key_id: int):
     return JsonResponse({"api_key": _serialize_api_key(api_key)})
 
 
+@permission_required(PortalPermission.VIEW)
+def location_list(request):
+    locations = Location.objects.all()
+    context = _location_context(request, {"locations": locations})
+    return render(request, _template(request, "core/locations/list.html", "core/partials/location_list.html"), context)
+
+
+@permission_required(PortalPermission.VIEW)
+def location_detail(request, slug: str):
+    location = get_object_or_404(Location, slug=slug)
+    context = _location_context(request, {"location": location})
+    return render(request, _template(request, "core/locations/detail.html", "core/partials/location_detail.html"), context)
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def location_create(request):
+    include_sensitive_fields = _can_manage_location_secrets(request)
+    if request.method == "POST":
+        form = LocationForm(request.POST, include_sensitive_fields=include_sensitive_fields)
+        if form.is_valid():
+            location = form.save()
+            return redirect("location-detail", slug=location.slug)
+    else:
+        form = LocationForm(include_sensitive_fields=include_sensitive_fields)
+
+    context = _location_context(
+        request,
+        {
+            "form": form,
+            "form_title": "New Location",
+            "form_action": "Create",
+            "location": None,
+        },
+    )
+    return render(request, _template(request, "core/locations/form.html", "core/partials/location_form.html"), context)
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def location_update(request, slug: str):
+    location = get_object_or_404(Location, slug=slug)
+    include_sensitive_fields = _can_manage_location_secrets(request)
+    if request.method == "POST":
+        form = LocationForm(
+            request.POST,
+            instance=location,
+            include_sensitive_fields=include_sensitive_fields,
+        )
+        if form.is_valid():
+            location = form.save()
+            return redirect("location-detail", slug=location.slug)
+    else:
+        form = LocationForm(instance=location, include_sensitive_fields=include_sensitive_fields)
+
+    context = _location_context(
+        request,
+        {
+            "form": form,
+            "form_title": f"Edit {location.name}",
+            "form_action": "Save",
+            "location": location,
+        },
+    )
+    return render(request, _template(request, "core/locations/form.html", "core/partials/location_form.html"), context)
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def location_delete(request, slug: str):
+    location = get_object_or_404(Location, slug=slug)
+    if request.method == "POST":
+        location.delete()
+        return redirect("locations")
+
+    context = _location_context(request, {"location": location})
+    return render(
+        request,
+        _template(request, "core/locations/confirm_delete.html", "core/partials/location_confirm_delete.html"),
+        context,
+    )
+
+
 def _template(request, full_template: str, partial_template: str) -> str:
     if request.headers.get("HX-Request") == "true":
         return partial_template
@@ -371,3 +451,18 @@ def _record_api_key_audit(actor, action: AuditAction, api_key: APIKey, *, detail
         outcome=AuditOutcome.SUCCESS,
         details=audit_details,
     )
+
+
+def _location_context(request, context):
+    context.update(
+        {
+            "areas": visible_portal_areas(request.user),
+            "can_edit_locations": user_has_permission(request.user, PortalPermission.EDIT_CONFIG),
+            "can_manage_location_secrets": _can_manage_location_secrets(request),
+        }
+    )
+    return context
+
+
+def _can_manage_location_secrets(request) -> bool:
+    return user_has_permission(request.user, PortalPermission.ADMINISTER)
