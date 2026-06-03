@@ -1,0 +1,53 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Asterisk PBX Config Portal{% endblock %}</title>
+    <link rel="stylesheet" href="{% static 'css/site.css' %}">
+    <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+  </head>
+  <body>
+    <div class="portal-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <p class="brand__title">PBX Config Portal</p>
+          <p class="brand__meta">LAN/WARP access</p>
+        </div>
+        <nav class="nav" aria-label="Portal">
+          <a class="nav__link" href="{% url 'home' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
+            <span class="nav__icon" aria-hidden="true"></span>
+            Overview
+          </a>
+          <a class="nav__link" href="{% url 'extensions' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
+            <span class="nav__icon" aria-hidden="true"></span>
+            Extensions
+          </a>
+          <a class="nav__link" href="{% url 'trunks' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
+            <span class="nav__icon" aria-hidden="true"></span>
+            Trunks
+          </a>
+          <a class="nav__link" href="{% url 'dial-plan' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
+            <span class="nav__icon" aria-hidden="true"></span>
+            Dial Plan
+          </a>
+          <a class="nav__link" href="{% url 'settings' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
+            <span class="nav__icon" aria-hidden="true"></span>
+            Settings
+          </a>
+        </nav>
+      </aside>
+      <div class="shell-main">
+        <header class="topbar">
+          <p class="topbar__title">Asterisk Configuration</p>
+          <span class="status-pill">Private network</span>
+        </header>
+        <main id="portal-main" class="content">
+          {% block content %}{% endblock %}
+        </main>
+      </div>
+    </div>
+  </body>
+</html>
+

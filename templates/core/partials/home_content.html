@@ -1,0 +1,18 @@
+<section class="page-heading" data-area="overview">
+  <p class="eyebrow">Portal foundation</p>
+  <h1>Asterisk PBX Config Portal</h1>
+  <p>Central configuration workspace for PBX administration across private LAN and WARP access paths.</p>
+</section>
+
+<section class="area-grid" aria-label="Portal areas">
+  {% for slug, area in areas.items %}
+    <a class="area-card" href="{% url slug %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
+      <span>
+        <h2>{{ area.label }}</h2>
+        <p>{{ area.summary }}</p>
+      </span>
+      <span class="area-card__status">{{ area.status }}</span>
+    </a>
+  {% endfor %}
+</section>
+
