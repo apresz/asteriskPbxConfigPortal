@@ -113,6 +113,14 @@ a {
   gap: 16px;
 }
 
+.topbar__session {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .topbar__title {
   margin: 0;
   font-size: 1rem;
@@ -140,6 +148,25 @@ a {
   height: 9px;
   border-radius: 50%;
   background: var(--success);
+}
+
+.link-button {
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--accent-strong);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.link-button:hover,
+.link-button:focus {
+  border-color: rgba(8, 127, 140, 0.55);
+  outline: none;
 }
 
 .content {
@@ -239,6 +266,68 @@ a {
   font-weight: 800;
 }
 
+.auth-panel {
+  max-width: 420px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.auth-panel h1 {
+  margin: 0 0 18px;
+  font-size: 2rem;
+}
+
+.auth-form {
+  display: grid;
+  gap: 10px;
+}
+
+.auth-form label {
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.auth-form input {
+  width: 100%;
+  min-height: 42px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  font: inherit;
+}
+
+.auth-form input:focus {
+  border-color: rgba(8, 127, 140, 0.65);
+  outline: none;
+}
+
+.auth-form button {
+  min-height: 42px;
+  margin-top: 6px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #ffffff;
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.errorlist {
+  margin: 0;
+  padding: 10px 12px;
+  border-left: 4px solid var(--warn);
+  background: var(--surface-muted);
+  color: var(--warn);
+  font-weight: 700;
+  list-style-position: inside;
+}
+
 @media (max-width: 760px) {
   .portal-shell {
     grid-template-columns: 1fr;
@@ -262,5 +351,8 @@ a {
     align-items: flex-start;
     flex-direction: column;
   }
-}
 
+  .topbar__session {
+    justify-content: flex-start;
+  }
+}

@@ -15,33 +15,35 @@
           <p class="brand__title">PBX Config Portal</p>
           <p class="brand__meta">LAN/WARP access</p>
         </div>
-        <nav class="nav" aria-label="Portal">
-          <a class="nav__link" href="{% url 'home' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
-            <span class="nav__icon" aria-hidden="true"></span>
-            Overview
-          </a>
-          <a class="nav__link" href="{% url 'extensions' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
-            <span class="nav__icon" aria-hidden="true"></span>
-            Extensions
-          </a>
-          <a class="nav__link" href="{% url 'trunks' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
-            <span class="nav__icon" aria-hidden="true"></span>
-            Trunks
-          </a>
-          <a class="nav__link" href="{% url 'dial-plan' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
-            <span class="nav__icon" aria-hidden="true"></span>
-            Dial Plan
-          </a>
-          <a class="nav__link" href="{% url 'settings' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
-            <span class="nav__icon" aria-hidden="true"></span>
-            Settings
-          </a>
-        </nav>
+        {% if user.is_authenticated %}
+          <nav class="nav" aria-label="Portal">
+            <a class="nav__link" href="{% url 'home' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
+              <span class="nav__icon" aria-hidden="true"></span>
+              Overview
+            </a>
+            {% for slug, area in portal_nav_areas.items %}
+              <a class="nav__link" href="{% url slug %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
+                <span class="nav__icon" aria-hidden="true"></span>
+                {{ area.label }}
+              </a>
+            {% endfor %}
+          </nav>
+        {% endif %}
       </aside>
       <div class="shell-main">
         <header class="topbar">
           <p class="topbar__title">Asterisk Configuration</p>
-          <span class="status-pill">Private network</span>
+          <div class="topbar__session">
+            {% if user.is_authenticated %}
+              <span class="status-pill">{{ user.get_username }} - {{ portal_user_role_label }}</span>
+              <form method="post" action="{% url 'logout' %}">
+                {% csrf_token %}
+                <button class="link-button" type="submit">Sign out</button>
+              </form>
+            {% else %}
+              <span class="status-pill">Private network</span>
+            {% endif %}
+          </div>
         </header>
         <main id="portal-main" class="content">
           {% block content %}{% endblock %}
@@ -50,4 +52,3 @@
     </div>
   </body>
 </html>
-
