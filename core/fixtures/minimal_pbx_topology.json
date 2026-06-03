@@ -1,0 +1,459 @@
+[
+  {
+    "model": "core.location",
+    "pk": 1,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "name": "Headquarters",
+      "slug": "headquarters",
+      "description": "Primary office PBX.",
+      "timezone": "America/Los_Angeles",
+      "is_active": true
+    }
+  },
+  {
+    "model": "core.location",
+    "pk": 2,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "name": "Warehouse",
+      "slug": "warehouse",
+      "description": "Secondary warehouse PBX.",
+      "timezone": "America/Los_Angeles",
+      "is_active": true
+    }
+  },
+  {
+    "model": "core.provider",
+    "pk": 1,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "name": "Example SIP Provider",
+      "slug": "example-sip-provider",
+      "provider_type": "sip",
+      "notes": "Development-only carrier fixture.",
+      "is_active": true
+    }
+  },
+  {
+    "model": "core.extension",
+    "pk": 1,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "location": 1,
+      "number": "1000",
+      "display_name": "HQ Reception",
+      "email": "reception@example.test",
+      "sip_username": "1000",
+      "voicemail_enabled": true,
+      "emergency_calling_enabled": true,
+      "is_active": true
+    }
+  },
+  {
+    "model": "core.extension",
+    "pk": 2,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "location": 1,
+      "number": "1001",
+      "display_name": "HQ Sales",
+      "email": "sales@example.test",
+      "sip_username": "1001",
+      "voicemail_enabled": true,
+      "emergency_calling_enabled": true,
+      "is_active": true
+    }
+  },
+  {
+    "model": "core.extension",
+    "pk": 3,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "location": 2,
+      "number": "2000",
+      "display_name": "Warehouse Desk",
+      "email": "warehouse@example.test",
+      "sip_username": "2000",
+      "voicemail_enabled": true,
+      "emergency_calling_enabled": true,
+      "is_active": true
+    }
+  },
+  {
+    "model": "core.phone",
+    "pk": 1,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "location": 1,
+      "mac_address": "001122334455",
+      "model": "CP-9971",
+      "label": "HQ Reception 9971",
+      "is_active": true
+    }
+  },
+  {
+    "model": "core.phone",
+    "pk": 2,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "location": 2,
+      "mac_address": "AABBCCDDEEFF",
+      "model": "CP-9951",
+      "label": "Warehouse Desk 9951",
+      "is_active": true
+    }
+  },
+  {
+    "model": "core.phonelineappearance",
+    "pk": 1,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "phone": 1,
+      "extension": 1,
+      "line_index": 1,
+      "label": "Reception"
+    }
+  },
+  {
+    "model": "core.phonelineappearance",
+    "pk": 2,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "phone": 2,
+      "extension": 3,
+      "line_index": 1,
+      "label": "Warehouse"
+    }
+  },
+  {
+    "model": "core.ivr",
+    "pk": 1,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "location": 1,
+      "name": "Main IVR",
+      "prompt_name": "main-menu",
+      "is_active": true
+    }
+  },
+  {
+    "model": "core.ringgroup",
+    "pk": 1,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "location": 1,
+      "name": "HQ Ring Group",
+      "strategy": "ring_all",
+      "timeout_seconds": 20,
+      "is_active": true
+    }
+  },
+  {
+    "model": "core.callqueue",
+    "pk": 1,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "location": 1,
+      "name": "Sales Queue",
+      "strategy": "round_robin",
+      "timeout_seconds": 30,
+      "retry_seconds": 5,
+      "music_on_hold": "default",
+      "is_active": true
+    }
+  },
+  {
+    "model": "core.paginggroup",
+    "pk": 1,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "location": 1,
+      "name": "HQ Page",
+      "page_code": "7000",
+      "is_active": true
+    }
+  },
+  {
+    "model": "core.ringgroupmember",
+    "pk": 1,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "ring_group": 1,
+      "extension": 1,
+      "priority": 1
+    }
+  },
+  {
+    "model": "core.ringgroupmember",
+    "pk": 2,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "ring_group": 1,
+      "extension": 2,
+      "priority": 2
+    }
+  },
+  {
+    "model": "core.queuemember",
+    "pk": 1,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "queue": 1,
+      "extension": 2,
+      "penalty": 0
+    }
+  },
+  {
+    "model": "core.paginggroupmember",
+    "pk": 1,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "paging_group": 1,
+      "extension": 1
+    }
+  },
+  {
+    "model": "core.paginggroupmember",
+    "pk": 2,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "paging_group": 1,
+      "extension": 2
+    }
+  },
+  {
+    "model": "core.inbounddestination",
+    "pk": 1,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "location": 1,
+      "name": "HQ Reception",
+      "destination_type": "extension",
+      "extension": 1,
+      "ivr": null,
+      "ring_group": null,
+      "queue": null
+    }
+  },
+  {
+    "model": "core.inbounddestination",
+    "pk": 2,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "location": 1,
+      "name": "HQ Main IVR",
+      "destination_type": "ivr",
+      "extension": null,
+      "ivr": 1,
+      "ring_group": null,
+      "queue": null
+    }
+  },
+  {
+    "model": "core.inbounddestination",
+    "pk": 3,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "location": 1,
+      "name": "HQ Ring Group",
+      "destination_type": "ring_group",
+      "extension": null,
+      "ivr": null,
+      "ring_group": 1,
+      "queue": null
+    }
+  },
+  {
+    "model": "core.inbounddestination",
+    "pk": 4,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "location": 1,
+      "name": "Sales Queue",
+      "destination_type": "queue",
+      "extension": null,
+      "ivr": null,
+      "ring_group": null,
+      "queue": 1
+    }
+  },
+  {
+    "model": "core.inbounddestination",
+    "pk": 5,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "location": 2,
+      "name": "Warehouse Desk",
+      "destination_type": "extension",
+      "extension": 3,
+      "ivr": null,
+      "ring_group": null,
+      "queue": null
+    }
+  },
+  {
+    "model": "core.ivrmenuoption",
+    "pk": 1,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "ivr": 1,
+      "digit": "1",
+      "destination": 3,
+      "label": "Ring group"
+    }
+  },
+  {
+    "model": "core.ivrmenuoption",
+    "pk": 2,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "ivr": 1,
+      "digit": "2",
+      "destination": 4,
+      "label": "Sales queue"
+    }
+  },
+  {
+    "model": "core.trunk",
+    "pk": 1,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "location": 1,
+      "provider": 1,
+      "name": "HQ SIP",
+      "trunk_type": "sip",
+      "host": "sip.example.test",
+      "username": "hq-sip",
+      "is_emergency_capable": true,
+      "is_active": true
+    }
+  },
+  {
+    "model": "core.trunk",
+    "pk": 2,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "location": 2,
+      "provider": 1,
+      "name": "Warehouse SIP",
+      "trunk_type": "sip",
+      "host": "sip.example.test",
+      "username": "warehouse-sip",
+      "is_emergency_capable": true,
+      "is_active": true
+    }
+  },
+  {
+    "model": "core.outboundroute",
+    "pk": 1,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "location": 1,
+      "name": "HQ Local Outbound",
+      "dial_pattern": "NXXNXXXXXX",
+      "priority": 1,
+      "is_emergency_route": false,
+      "caller_id_number": "+15551201000",
+      "is_active": true
+    }
+  },
+  {
+    "model": "core.outboundroute",
+    "pk": 2,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "location": 2,
+      "name": "Warehouse Local Outbound",
+      "dial_pattern": "NXXNXXXXXX",
+      "priority": 1,
+      "is_emergency_route": false,
+      "caller_id_number": "+15551202000",
+      "is_active": true
+    }
+  },
+  {
+    "model": "core.outboundroutetrunk",
+    "pk": 1,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "outbound_route": 1,
+      "trunk": 1,
+      "priority": 1
+    }
+  },
+  {
+    "model": "core.outboundroutetrunk",
+    "pk": 2,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "outbound_route": 2,
+      "trunk": 2,
+      "priority": 1
+    }
+  },
+  {
+    "model": "core.did",
+    "pk": 1,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "location": 1,
+      "number": "+15551201000",
+      "provider": 1,
+      "trunk": 1,
+      "direct_extension": 1,
+      "default_destination": 2,
+      "label": "HQ main number",
+      "is_active": true
+    }
+  },
+  {
+    "model": "core.did",
+    "pk": 2,
+    "fields": {
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "location": 2,
+      "number": "+15551202000",
+      "provider": 1,
+      "trunk": 2,
+      "direct_extension": 3,
+      "default_destination": 5,
+      "label": "Warehouse main number",
+      "is_active": true
+    }
+  }
+]
