@@ -1,4 +1,5 @@
 import csv
+from datetime import datetime, timezone as datetime_timezone
 import hashlib
 from io import BytesIO, StringIO
 import json
@@ -29,12 +30,14 @@ from .audio_prompts import AudioPromptConversionError, create_audio_prompt_from_
 from .config_export import (
     ASTERISK_CONFIG_FILENAMES,
     build_asterisk_config_files,
+    build_config_export_archive,
     create_config_version,
     build_location_config,
     build_route_generation_choices,
     mac_to_sep_filename,
     select_route_caller_id,
     validate_location_routing,
+    write_config_version_directory,
 )
 from .extension_csv import ExtensionCSVError, export_extensions_csv, extension_template_csv, import_extensions_csv
 from .extension_management import sync_extension_relationships
@@ -1804,6 +1807,98 @@ class ConfigVersionExportTests(TestCase):
         return {service: "\n".join(lines) for service, lines in services.items()}
 
 
+class ConfigExportGoldenFileTests(TestCase):
+    maxDiff = None
+
+    def test_export_archive_manifest_checksum_zip_and_staging_golden_files(self):
+        archive = self._build_golden_archive()
+
+        with zipfile.ZipFile(BytesIO(archive.archive_bytes)) as zip_archive:
+            manifest_content = zip_archive.read("manifest.json").decode("utf-8")
+            checksum_content = zip_archive.read("SHA256SUMS").decode("utf-8")
+
+        self.assertEqual(manifest_content, self._golden("manifest.json"))
+        self.assertEqual(json.loads(manifest_content), archive.manifest)
+        self.assertEqual(checksum_content, self._golden("SHA256SUMS"))
+        self.assertEqual(self._zip_layout(archive.archive_bytes), self._golden("zip-layout.txt"))
+
+        with tempfile.TemporaryDirectory() as output_dir:
+            write_config_version_directory(ConfigVersion(archive=archive.archive_bytes), output_dir)
+
+            self.assertEqual(self._staging_layout(output_dir), self._golden("staging-layout.txt"))
+
+        self.assertEqual(archive.checksum, hashlib.sha256(archive.archive_bytes).hexdigest())
+
+    def _build_golden_archive(self):
+        user = User.objects.create_user(username="exporter", password="portal-pass")
+        location = Location.objects.create(
+            id=101,
+            **location_model_data(
+                name="Golden HQ",
+                slug="golden-hq",
+                lan_subnet="10.60.0.0/24",
+                pbx_lan_ip="10.60.0.10",
+                pbx_warp_ip="100.64.60.10",
+                sip_bind_ip="10.60.0.10",
+                iax_bind_ip="10.60.0.10",
+                default_did="+15551206000",
+                emergency_caller_id="+15551206999",
+                recording_retention_days=30,
+                ami_username="ami-golden",
+                ami_secret="ami-golden-secret",
+                agent_secret="golden-agent-secret",
+            ),
+        )
+        Extension.objects.create(
+            location=location,
+            number="6200",
+            display_name="Golden Desk",
+            sip_username="6200",
+            sip_password="sip-secret-6200",
+            voicemail_pin="2468",
+            emergency_calling_enabled=True,
+        )
+        add_emergency_route(location)
+        return build_config_export_archive(
+            location,
+            version_number=1,
+            exported_at=datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime_timezone.utc),
+            exported_by=user,
+            require_emergency=True,
+        )
+
+    def _zip_layout(self, archive_bytes):
+        lines = []
+        with zipfile.ZipFile(BytesIO(archive_bytes)) as zip_archive:
+            for zip_info in zip_archive.infolist():
+                content = zip_archive.read(zip_info.filename)
+                lines.append(
+                    (
+                        f"{zip_info.filename}|size={len(content)}|"
+                        f"sha256={hashlib.sha256(content).hexdigest()}|"
+                        f"date={zip_info.date_time}|mode={oct(zip_info.external_attr >> 16)}"
+                    )
+                )
+        return "\n".join(lines) + "\n"
+
+    def _staging_layout(self, output_dir):
+        lines = []
+        root = Path(output_dir)
+        for path in sorted(root.rglob("*")):
+            if path.is_file():
+                content = path.read_bytes()
+                lines.append(
+                    (
+                        f"{path.relative_to(root).as_posix()}|size={len(content)}|"
+                        f"sha256={hashlib.sha256(content).hexdigest()}"
+                    )
+                )
+        return "\n".join(lines) + "\n"
+
+    def _golden(self, filename):
+        return (Path(__file__).with_name("testdata") / "export_archive" / filename).read_text(encoding="utf-8")
+
+
 class ExportValidationEngineTests(TestCase):
     def test_export_command_hard_blocks_missing_emergency_route_and_caller_id(self):
         location = Location.objects.create(
@@ -2124,6 +2219,8 @@ class AudioPromptIVRIntegrationTests(TestCase):
 
 
 class CiscoTFTPProvisioningTests(TestCase):
+    maxDiff = None
+
     def test_mac_to_sep_filename_normalizes_supported_formats(self):
         self.assertEqual(mac_to_sep_filename("sep00:11:22:aa:bb:cc"), "SEP001122AABBCC.cnf.xml")
         self.assertEqual(mac_to_sep_filename("0011.2233.4455"), "SEP001122334455.cnf.xml")
@@ -2177,27 +2274,12 @@ class CiscoTFTPProvisioningTests(TestCase):
                 "SEP001122334403.cnf.xml",
             ],
         )
-        for model, product, mac_address, load_name, extension_number in model_cases:
+        for model, _product, mac_address, _load_name, _extension_number in model_cases:
             with self.subTest(model=model):
                 filename = mac_to_sep_filename(mac_address)
                 self.assertEqual(
                     files[filename]["content"],
-                    self._expected_phone_xml(
-                        model=model,
-                        product=product,
-                        label=f"{model} Phone",
-                        load_name=load_name,
-                        lines=[
-                            {
-                                "button": "1",
-                                "label": "Primary",
-                                "number": extension_number,
-                                "display": f"Desk {extension_number}",
-                                "auth": f"sip{extension_number}",
-                                "password": f"secret{extension_number}",
-                            }
-                        ],
-                    ),
+                    self._cisco_golden("supported_models", filename),
                 )
 
     def test_multiline_and_speed_dial_golden_config(self):
@@ -2230,37 +2312,7 @@ class CiscoTFTPProvisioningTests(TestCase):
 
         self.assertEqual(
             files["SEP001122334455.cnf.xml"]["content"],
-            self._expected_phone_xml(
-                model=Phone.PhoneModel.CISCO_9971,
-                product="Cisco CP-9971",
-                label="Reception Phone",
-                load_name="sip9971.9-4-2",
-                lines=[
-                    {
-                        "button": "1",
-                        "label": "Primary",
-                        "number": "5100",
-                        "display": "Reception",
-                        "auth": "sip5100",
-                        "password": "secret5100",
-                    },
-                    {
-                        "button": "2",
-                        "label": "Sales",
-                        "number": "5101",
-                        "display": "Sales",
-                        "auth": "5101",
-                        "password": "secret5101",
-                    },
-                ],
-                speed_dials=[
-                    {
-                        "button": "3",
-                        "label": "Support",
-                        "destination": "5101",
-                    }
-                ],
-            ),
+            self._cisco_golden("multiline_speed_dial.xml"),
         )
 
     def test_company_directory_golden_xml_groups_active_extensions_by_location(self):
@@ -2281,26 +2333,7 @@ class CiscoTFTPProvisioningTests(TestCase):
 
         self.assertEqual(
             files["company-directory.xml"]["content"],
-            """<?xml version='1.0' encoding='utf-8'?>
-<CiscoIPPhoneDirectory>
-  <Title>Company Directory</Title>
-  <Prompt>Extensions grouped by location</Prompt>
-  <DirectoryEntry>
-    <Name>Provision HQ - Reception</Name>
-    <Telephone>5100</Telephone>
-    <Location>Provision HQ</Location>
-  </DirectoryEntry>
-  <DirectoryEntry>
-    <Name>Provision HQ - Sales</Name>
-    <Telephone>5101</Telephone>
-    <Location>Provision HQ</Location>
-  </DirectoryEntry>
-  <DirectoryEntry>
-    <Name>Provision Warehouse - Warehouse Desk</Name>
-    <Telephone>6100</Telephone>
-    <Location>Provision Warehouse</Location>
-  </DirectoryEntry>
-</CiscoIPPhoneDirectory>""",
+            self._cisco_golden("company-directory.xml"),
         )
 
     def test_firmware_placeholder_and_checklist_files_are_in_tftp_output(self):
@@ -2345,90 +2378,10 @@ class CiscoTFTPProvisioningTests(TestCase):
     def _file_map(self, tftp):
         return {file["path"]: file for file in tftp["files"]}
 
-    def _expected_phone_xml(self, *, model, product, label, load_name, lines, speed_dials=None):
-        speed_dials = speed_dials or []
-        line_xml = "\n".join(
-            [
-                f"""      <line button="{line['button']}">
-        <featureID>9</featureID>
-        <featureLabel>{line['label']}</featureLabel>
-        <proxy>USECALLMANAGER</proxy>
-        <port>5060</port>
-        <name>{line['number']}</name>
-        <displayName>{line['display']}</displayName>
-        <authName>{line['auth']}</authName>
-        <authPassword>{line['password']}</authPassword>
-        <contact>{line['number']}</contact>
-        <messagesNumber>*97</messagesNumber>
-      </line>"""
-                for line in lines
-            ]
-            + [
-                f"""      <line button="{speed_dial['button']}">
-        <featureID>2</featureID>
-        <featureLabel>{speed_dial['label']}</featureLabel>
-        <speedDialNumber>{speed_dial['destination']}</speedDialNumber>
-      </line>"""
-                for speed_dial in speed_dials
-            ]
-        )
-        return f"""<?xml version='1.0' encoding='utf-8'?>
-<device>
-  <deviceProtocol>SIP</deviceProtocol>
-  <product>{product}</product>
-  <model>{model}</model>
-  <phoneLabel>{label}</phoneLabel>
-  <transportLayerProtocol>TCP</transportLayerProtocol>
-  <directoryURL>http://10.50.0.10/cisco/company-directory.xml</directoryURL>
-  <loadInformation>{load_name}</loadInformation>
-  <devicePool>
-    <dateTimeSetting>
-      <dateTemplate>M/D/Ya</dateTemplate>
-      <timeZone>America/Los_Angeles</timeZone>
-    </dateTimeSetting>
-    <callManagerGroup>
-      <members>
-        <member priority="0">
-          <callManager>
-            <ports>
-              <ethernetPhonePort>2000</ethernetPhonePort>
-              <sipPort>5060</sipPort>
-              <securedSipPort>5061</securedSipPort>
-            </ports>
-            <processNodeName>10.50.0.10</processNodeName>
-          </callManager>
-        </member>
-      </members>
-    </callManagerGroup>
-  </devicePool>
-  <sipProfile>
-    <sipProxies>
-      <backupProxy />
-      <backupProxyPort />
-      <emergencyProxy />
-      <emergencyProxyPort />
-      <outboundProxy />
-      <outboundProxyPort />
-      <registerWithProxy>true</registerWithProxy>
-    </sipProxies>
-    <sipPort>5060</sipPort>
-    <transportLayerProtocol>TCP</transportLayerProtocol>
-    <phoneLabel>{label}</phoneLabel>
-    <dialTemplate>dialplan.xml</dialTemplate>
-    <sipLines>
-{line_xml}
-    </sipLines>
-  </sipProfile>
-  <phoneServices>
-    <provisioning>0</provisioning>
-    <phoneService type="1" category="0">
-      <name>Company Directory</name>
-      <url>http://10.50.0.10/cisco/company-directory.xml</url>
-      <vendor>Local PBX</vendor>
-      <version>1</version>
-    </phoneService>
-  </phoneServices>
-</device>"""
+    def _cisco_golden(self, *parts):
+        return (
+            Path(__file__).with_name("testdata") / "cisco_tftp" / Path(*parts)
+        ).read_text(encoding="utf-8").removesuffix("\n")
 
 
 class PhoneMACValidationTests(TestCase):
@@ -2930,6 +2883,25 @@ class AdminManagementAPITests(TestCase):
         self.assertIn(PortalRole.ADMIN, roles)
         self.assertIn(PortalPermission.ADMINISTER, roles[PortalRole.ADMIN]["permissions"])
         self.assertNotIn(PortalPermission.ADMINISTER, roles[PortalRole.VIEWER]["permissions"])
+
+    def test_admin_user_list_requires_admin_and_serializes_user_info(self):
+        self.client.force_login(self.viewer)
+
+        viewer_response = self.client.get(reverse("admin-users"))
+
+        self.assertEqual(viewer_response.status_code, 403)
+
+        self.client.force_login(self.admin)
+
+        admin_response = self.client.get(reverse("admin-users"))
+        users = {user["username"]: user for user in admin_response.json()["users"]}
+
+        self.assertEqual(admin_response.status_code, 200)
+        self.assertEqual(users["admin-api"]["role"], PortalRole.ADMIN)
+        self.assertEqual(users["viewer-api"]["role"], PortalRole.VIEWER)
+        self.assertTrue(users["admin-api"]["is_active"])
+        self.assertEqual(users["viewer-api"]["email"], "")
+        self.assertNotIn("password", users["admin-api"])
 
     def test_admin_can_create_and_update_users_with_roles(self):
         self.client.force_login(self.admin)

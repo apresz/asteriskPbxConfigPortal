@@ -1,0 +1,20 @@
+<?xml version='1.0' encoding='utf-8'?>
+<CiscoIPPhoneDirectory>
+  <Title>Company Directory</Title>
+  <Prompt>Extensions grouped by location</Prompt>
+  <DirectoryEntry>
+    <Name>Provision HQ - Reception</Name>
+    <Telephone>5100</Telephone>
+    <Location>Provision HQ</Location>
+  </DirectoryEntry>
+  <DirectoryEntry>
+    <Name>Provision HQ - Sales</Name>
+    <Telephone>5101</Telephone>
+    <Location>Provision HQ</Location>
+  </DirectoryEntry>
+  <DirectoryEntry>
+    <Name>Provision Warehouse - Warehouse Desk</Name>
+    <Telephone>6100</Telephone>
+    <Location>Provision Warehouse</Location>
+  </DirectoryEntry>
+</CiscoIPPhoneDirectory>
