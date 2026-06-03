@@ -24,13 +24,13 @@ PORTAL_AREAS = {
     "trunks": {
         "label": "Trunks",
         "summary": "Carrier trunks, SIP endpoints, and upstream routing.",
-        "status": "Ready for provider configuration work",
+        "status": "Manage provider trunks and credentials",
         "permission": PortalPermission.VIEW,
     },
     "dial-plan": {
         "label": "Dial Plan",
         "summary": "Inbound, outbound, and emergency call routing.",
-        "status": "Ready for rule builder work",
+        "status": "Manage outbound route fallback",
         "permission": PortalPermission.VIEW,
     },
     "settings": {

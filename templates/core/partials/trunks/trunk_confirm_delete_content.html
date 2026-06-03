@@ -1,0 +1,10 @@
+<section class="detail-panel" data-area="trunks">
+  <p class="eyebrow">Provider Trunk</p>
+  <h1>Delete {{ trunk.name }}</h1>
+  <p>This removes the trunk from provider routing when no DIDs or outbound routes depend on it.</p>
+  <form class="confirm-actions" method="post">
+    {% csrf_token %}
+    <button class="button button--danger" type="submit">Delete</button>
+    <a class="button button--secondary" href="{% url 'trunks' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Cancel</a>
+  </form>
+</section>
