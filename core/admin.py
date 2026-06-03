@@ -2,6 +2,7 @@ from django.contrib import admin
 
 from .models import (
     AuditLog,
+    APIKey,
     DID,
     IVR,
     IVRMenuOption,
@@ -20,6 +21,7 @@ from .models import (
     QueueMember,
     RingGroup,
     RingGroupMember,
+    ServiceIdentity,
     Trunk,
 )
 
@@ -37,6 +39,36 @@ class AuditLogAdmin(admin.ModelAdmin):
     list_filter = ("action", "outcome")
     readonly_fields = ("actor", "action", "target", "timestamp", "outcome", "details")
     search_fields = ("actor__username", "target")
+
+
+@admin.register(ServiceIdentity)
+class ServiceIdentityAdmin(admin.ModelAdmin):
+    list_display = ("name", "slug", "is_active", "created_by", "updated_at")
+    list_filter = ("is_active",)
+    search_fields = ("name", "slug", "description")
+
+
+@admin.register(APIKey)
+class APIKeyAdmin(admin.ModelAdmin):
+    list_display = ("name", "scope_label", "prefix", "is_active", "created_by", "created_at", "revoked_at")
+    list_filter = ("revoked_at", "service_identity")
+    readonly_fields = (
+        "prefix",
+        "key_hash",
+        "created_by",
+        "last_rotated_at",
+        "last_rotated_by",
+        "revoked_at",
+        "revoked_by",
+        "last_used_at",
+        "created_at",
+        "updated_at",
+    )
+    search_fields = ("name", "prefix", "user__username", "service_identity__name", "service_identity__slug")
+
+    @admin.display(boolean=True)
+    def is_active(self, obj):
+        return obj.is_active
 
 
 @admin.register(Location)

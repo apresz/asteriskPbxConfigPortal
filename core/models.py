@@ -1,9 +1,12 @@
+import hashlib
 import ipaddress
+import secrets
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator, RegexValidator
 from django.db import models
+from django.utils import timezone
 
 
 def cidr_network_validator(value):
@@ -66,6 +69,9 @@ class AuditAction(models.TextChoices):
     CONFIG_EXPORT = "config_export", "Config export"
     DEPLOYMENT = "deployment", "Deployment"
     LIVE_PBX_ACTION = "live_pbx_action", "Live PBX action"
+    API_KEY_CREATE = "api_key_create", "API key create"
+    API_KEY_ROTATE = "api_key_rotate", "API key rotate"
+    API_KEY_REVOKE = "api_key_revoke", "API key revoke"
 
 
 class AuditOutcome(models.TextChoices):
@@ -110,6 +116,202 @@ class AuditLog(models.Model):
     def __str__(self) -> str:
         actor = self.actor.get_username() if self.actor_id else "system"
         return f"{self.get_action_display()} on {self.target} by {actor}: {self.get_outcome_display()}"
+
+
+class ServiceIdentity(TimestampedModel):
+    name = models.CharField(max_length=120, unique=True)
+    slug = models.SlugField(max_length=80, unique=True)
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_service_identities",
+    )
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class APIKey(TimestampedModel):
+    SECRET_PREFIX = "pbx"
+    PREFIX_LENGTH = 12
+
+    name = models.CharField(max_length=120)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="api_keys",
+    )
+    service_identity = models.ForeignKey(
+        ServiceIdentity,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="api_keys",
+    )
+    prefix = models.CharField(max_length=16, unique=True)
+    key_hash = models.CharField(max_length=64, unique=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_api_keys",
+    )
+    last_rotated_at = models.DateTimeField(null=True, blank=True)
+    last_rotated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="rotated_api_keys",
+    )
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="revoked_api_keys",
+    )
+    last_used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["name", "id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(user__isnull=False, service_identity__isnull=True)
+                    | models.Q(user__isnull=True, service_identity__isnull=False)
+                ),
+                name="api_key_exactly_one_scope",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.scope_label})"
+
+    @property
+    def is_active(self) -> bool:
+        return self.revoked_at is None
+
+    @property
+    def scope_type(self) -> str:
+        return "user" if self.user_id else "service_identity"
+
+    @property
+    def scope_label(self) -> str:
+        if self.user_id:
+            return self.user.get_username()
+        if self.service_identity_id:
+            return self.service_identity.name
+        return "unscoped"
+
+    def clean(self):
+        super().clean()
+        if bool(self.user_id) == bool(self.service_identity_id):
+            raise ValidationError("API keys must be scoped to exactly one user or service identity.")
+
+    @classmethod
+    def issue(
+        cls,
+        *,
+        name: str,
+        created_by,
+        user=None,
+        service_identity: ServiceIdentity | None = None,
+    ) -> tuple["APIKey", str]:
+        raw_secret = cls._unused_secret()
+        api_key = cls(
+            name=name,
+            user=user,
+            service_identity=service_identity,
+            created_by=cls._audit_user(created_by),
+        )
+        api_key._set_secret(raw_secret)
+        api_key.full_clean()
+        api_key.save()
+        return api_key, raw_secret
+
+    def rotate(self, actor) -> str:
+        if self.revoked_at is not None:
+            raise ValidationError("Revoked API keys cannot be rotated.")
+
+        raw_secret = self._unused_secret(exclude_pk=self.pk)
+        self._set_secret(raw_secret)
+        self.last_rotated_at = timezone.now()
+        self.last_rotated_by = self._audit_user(actor)
+        self.full_clean()
+        self.save(update_fields=["prefix", "key_hash", "last_rotated_at", "last_rotated_by", "updated_at"])
+        return raw_secret
+
+    def revoke(self, actor) -> None:
+        if self.revoked_at is not None:
+            raise ValidationError("API key is already revoked.")
+
+        self.revoked_at = timezone.now()
+        self.revoked_by = self._audit_user(actor)
+        self.save(update_fields=["revoked_at", "revoked_by", "updated_at"])
+
+    @classmethod
+    def find_by_secret(cls, raw_secret: str) -> "APIKey | None":
+        if not raw_secret:
+            return None
+
+        api_key = (
+            cls.objects.select_related("user", "service_identity")
+            .filter(
+                prefix=raw_secret[: cls.PREFIX_LENGTH],
+                key_hash=cls.hash_secret(raw_secret),
+                revoked_at__isnull=True,
+            )
+            .first()
+        )
+        if api_key is None:
+            return None
+        if api_key.user_id and not api_key.user.is_active:
+            return None
+        if api_key.service_identity_id and not api_key.service_identity.is_active:
+            return None
+
+        api_key.last_used_at = timezone.now()
+        api_key.save(update_fields=["last_used_at", "updated_at"])
+        return api_key
+
+    @classmethod
+    def hash_secret(cls, raw_secret: str) -> str:
+        return hashlib.sha256(raw_secret.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _generate_secret(cls) -> str:
+        return f"{cls.SECRET_PREFIX}_{secrets.token_urlsafe(32)}"
+
+    @classmethod
+    def _unused_secret(cls, *, exclude_pk=None) -> str:
+        for _attempt in range(20):
+            raw_secret = cls._generate_secret()
+            existing = cls.objects.filter(prefix=raw_secret[: cls.PREFIX_LENGTH])
+            if exclude_pk is not None:
+                existing = existing.exclude(pk=exclude_pk)
+            if not existing.exists():
+                return raw_secret
+        raise RuntimeError("Could not generate a unique API key prefix.")
+
+    @classmethod
+    def _audit_user(cls, user):
+        return user if getattr(user, "is_authenticated", False) else None
+
+    def _set_secret(self, raw_secret: str) -> None:
+        self.prefix = raw_secret[: self.PREFIX_LENGTH]
+        self.key_hash = self.hash_secret(raw_secret)
 
 
 class Location(TimestampedModel):
