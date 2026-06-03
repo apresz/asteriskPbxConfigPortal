@@ -1,0 +1,57 @@
+services:
+  asterisk:
+    image: ${PBX_ASTERISK_IMAGE:-ghcr.io/apresz/asterisk:22-lts}
+    container_name: pbx-${PBX_LOCATION_SLUG:-version-hq}-asterisk
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      TZ: ${TZ:-America/Los_Angeles}
+      ASTERISK_UID: ${ASTERISK_UID:-1000}
+      ASTERISK_GID: ${ASTERISK_GID:-1000}
+    volumes:
+      - ./asterisk:/etc/asterisk:ro
+      - asterisk-lib:/var/lib/asterisk
+      - asterisk-log:/var/log/asterisk
+      - asterisk-spool:/var/spool/asterisk
+
+  tftp:
+    image: ${PBX_TFTP_IMAGE:-ghcr.io/apresz/tftp:1.0.0}
+    container_name: pbx-${PBX_LOCATION_SLUG:-version-hq}-tftp
+    restart: unless-stopped
+    ports:
+      - "${PROVISIONING_TFTP_PORT:-69}:69/udp"
+    volumes:
+      - ./tftp:/srv/tftp:ro
+
+  provisioning-http:
+    image: ${PBX_HTTP_IMAGE:-docker.io/nginx:1.27-alpine}
+    container_name: pbx-${PBX_LOCATION_SLUG:-version-hq}-http
+    restart: unless-stopped
+    ports:
+      - "${PROVISIONING_HTTP_PORT:-80}:80/tcp"
+    volumes:
+      - ./tftp:/usr/share/nginx/html/cisco:ro
+
+  pbx-agent:
+    image: ${PBX_AGENT_IMAGE:-ghcr.io/apresz/pbx-agent:0.1.0}
+    container_name: pbx-${PBX_LOCATION_SLUG:-version-hq}-agent
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      PBX_LOCATION_SLUG: ${PBX_LOCATION_SLUG:-version-hq}
+      PBX_LAN_IP: ${PBX_LAN_IP:-10.30.0.10}
+      PBX_WARP_IP: ${PBX_WARP_IP:-100.64.30.10}
+      TZ: ${TZ:-America/Los_Angeles}
+      PBX_AGENT_SECRET: "${PBX_AGENT_SECRET:?PBX_AGENT_SECRET is required}"
+      ASTERISK_AMI_HOST: ${ASTERISK_AMI_HOST:-127.0.0.1}
+      ASTERISK_AMI_PORT: ${ASTERISK_AMI_PORT:-5038}
+      ASTERISK_AMI_USERNAME: "${ASTERISK_AMI_USERNAME:?ASTERISK_AMI_USERNAME is required}"
+      ASTERISK_AMI_SECRET: "${ASTERISK_AMI_SECRET:?ASTERISK_AMI_SECRET is required}"
+      PORTAL_API_BASE_URL: ${PORTAL_API_BASE_URL:-}
+    depends_on:
+      - asterisk
+
+volumes:
+  asterisk-lib:
+  asterisk-log:
+  asterisk-spool:
