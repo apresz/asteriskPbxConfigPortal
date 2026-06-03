@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
 
@@ -12,6 +13,10 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("location_slug")
+        parser.add_argument(
+            "--output-dir",
+            help="Write rendered Asterisk config files to this directory in addition to JSON stdout.",
+        )
 
     def handle(self, *args, **options):
         location = Location.objects.get(slug=options["location_slug"])
@@ -33,6 +38,12 @@ class Command(BaseCommand):
             raise CommandError(f"Export blocked by validation errors: {error_codes}")
 
         config = build_location_config(location, require_emergency=True, validation=validation)
+        if options["output_dir"]:
+            output_dir = Path(options["output_dir"])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            for filename, content in config["asterisk_configs"].items():
+                (output_dir / filename).write_text(content, encoding="utf-8")
+
         record_audit(
             actor=None,
             action=AuditAction.CONFIG_EXPORT,
