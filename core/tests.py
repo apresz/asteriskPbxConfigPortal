@@ -1751,6 +1751,56 @@ class ConfigVersionExportTests(TestCase):
             set(names),
         )
 
+    def test_runtime_bundle_files_match_golden_templates(self):
+        version = create_config_version(self.location, exported_by=self.user)
+
+        with zipfile.ZipFile(BytesIO(bytes(version.archive))) as archive:
+            docker_compose = archive.read("docker-compose.yml").decode("utf-8")
+            env_example = archive.read(".env.example").decode("utf-8")
+
+        self.assertEqual(docker_compose, self._runtime_golden("docker-compose.yml"))
+        self.assertEqual(env_example, self._runtime_golden(".env.example"))
+
+    def test_runtime_bundle_compose_services_and_volume_paths(self):
+        version = create_config_version(self.location, exported_by=self.user)
+
+        with zipfile.ZipFile(BytesIO(bytes(version.archive))) as archive:
+            services = self._compose_service_blocks(archive.read("docker-compose.yml").decode("utf-8"))
+
+        self.assertEqual(set(services), {"asterisk", "tftp", "provisioning-http", "pbx-agent"})
+        self.assertIn("    image: ${PBX_ASTERISK_IMAGE:-ghcr.io/apresz/asterisk:22-lts}", services["asterisk"])
+        self.assertIn("    network_mode: host", services["asterisk"])
+        self.assertIn("      - ./asterisk:/etc/asterisk:ro", services["asterisk"])
+        self.assertIn("      - ./tftp:/srv/tftp:ro", services["tftp"])
+        self.assertIn('      - "${PROVISIONING_TFTP_PORT:-69}:69/udp"', services["tftp"])
+        self.assertIn("      - ./tftp:/usr/share/nginx/html/cisco:ro", services["provisioning-http"])
+        self.assertIn('      - "${PROVISIONING_HTTP_PORT:-80}:80/tcp"', services["provisioning-http"])
+        self.assertIn("    network_mode: host", services["pbx-agent"])
+        self.assertIn('      PBX_AGENT_SECRET: "${PBX_AGENT_SECRET:?PBX_AGENT_SECRET is required}"', services["pbx-agent"])
+
+    def _runtime_golden(self, filename):
+        return (Path(__file__).with_name("testdata") / "runtime_bundle" / filename).read_text(encoding="utf-8")
+
+    def _compose_service_blocks(self, compose_text):
+        services = {}
+        current_service = None
+        in_services = False
+        for line in compose_text.splitlines():
+            if line == "services:":
+                in_services = True
+                continue
+            if not in_services:
+                continue
+            if line and not line.startswith(" "):
+                break
+            if line.startswith("  ") and not line.startswith("    ") and line.endswith(":"):
+                current_service = line.strip()[:-1]
+                services[current_service] = []
+                continue
+            if current_service:
+                services[current_service].append(line)
+        return {service: "\n".join(lines) for service, lines in services.items()}
+
 
 class ExportValidationEngineTests(TestCase):
     def test_export_command_hard_blocks_missing_emergency_route_and_caller_id(self):

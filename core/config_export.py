@@ -48,6 +48,10 @@ CISCO_DIRECTORY_FILENAME = "company-directory.xml"
 CISCO_FIRMWARE_CHECKLIST_FILENAME = "firmware/CISCO-FIRMWARE-CHECKLIST.txt"
 CISCO_FIRMWARE_PLACEHOLDER_FILENAME = "firmware/README-no-firmware-bundled.txt"
 CISCO_TRANSPORT_LAYER_PROTOCOL = "TCP"
+ASTERISK_22_LTS_IMAGE = "ghcr.io/apresz/asterisk:22-lts"
+TFTP_SERVICE_IMAGE = "ghcr.io/apresz/tftp:1.0.0"
+HTTP_STATIC_SERVICE_IMAGE = "docker.io/nginx:1.27-alpine"
+PBX_AGENT_IMAGE = "ghcr.io/apresz/pbx-agent:0.1.0"
 
 CISCO_PHONE_MODELS = {
     Phone.PhoneModel.CISCO_9971,
@@ -407,29 +411,92 @@ def _docker_compose_yml(location: Location) -> str:
         [
             "services:",
             "  asterisk:",
-            "    image: asterisk:latest",
-            f"    container_name: pbx-{location.slug}",
+            f"    image: ${{PBX_ASTERISK_IMAGE:-{ASTERISK_22_LTS_IMAGE}}}",
+            f"    container_name: pbx-${{PBX_LOCATION_SLUG:-{location.slug}}}-asterisk",
             "    restart: unless-stopped",
-            "    env_file:",
-            "      - .env",
             "    network_mode: host",
+            "    environment:",
+            f"      TZ: ${{TZ:-{location.timezone}}}",
+            "      ASTERISK_UID: ${ASTERISK_UID:-1000}",
+            "      ASTERISK_GID: ${ASTERISK_GID:-1000}",
             "    volumes:",
             "      - ./asterisk:/etc/asterisk:ro",
+            "      - asterisk-lib:/var/lib/asterisk",
+            "      - asterisk-log:/var/log/asterisk",
+            "      - asterisk-spool:/var/spool/asterisk",
+            "",
+            "  tftp:",
+            f"    image: ${{PBX_TFTP_IMAGE:-{TFTP_SERVICE_IMAGE}}}",
+            f"    container_name: pbx-${{PBX_LOCATION_SLUG:-{location.slug}}}-tftp",
+            "    restart: unless-stopped",
+            "    ports:",
+            '      - "${PROVISIONING_TFTP_PORT:-69}:69/udp"',
+            "    volumes:",
             "      - ./tftp:/srv/tftp:ro",
+            "",
+            "  provisioning-http:",
+            f"    image: ${{PBX_HTTP_IMAGE:-{HTTP_STATIC_SERVICE_IMAGE}}}",
+            f"    container_name: pbx-${{PBX_LOCATION_SLUG:-{location.slug}}}-http",
+            "    restart: unless-stopped",
+            "    ports:",
+            '      - "${PROVISIONING_HTTP_PORT:-80}:80/tcp"',
+            "    volumes:",
+            "      - ./tftp:/usr/share/nginx/html/cisco:ro",
+            "",
+            "  pbx-agent:",
+            f"    image: ${{PBX_AGENT_IMAGE:-{PBX_AGENT_IMAGE}}}",
+            f"    container_name: pbx-${{PBX_LOCATION_SLUG:-{location.slug}}}-agent",
+            "    restart: unless-stopped",
+            "    network_mode: host",
+            "    environment:",
+            f"      PBX_LOCATION_SLUG: ${{PBX_LOCATION_SLUG:-{location.slug}}}",
+            f"      PBX_LAN_IP: ${{PBX_LAN_IP:-{location.pbx_lan_ip}}}",
+            f"      PBX_WARP_IP: ${{PBX_WARP_IP:-{location.pbx_warp_ip}}}",
+            f"      TZ: ${{TZ:-{location.timezone}}}",
+            '      PBX_AGENT_SECRET: "${PBX_AGENT_SECRET:?PBX_AGENT_SECRET is required}"',
+            f"      ASTERISK_AMI_HOST: ${{ASTERISK_AMI_HOST:-{location.ami_host}}}",
+            f"      ASTERISK_AMI_PORT: ${{ASTERISK_AMI_PORT:-{location.ami_port}}}",
+            '      ASTERISK_AMI_USERNAME: "${ASTERISK_AMI_USERNAME:?ASTERISK_AMI_USERNAME is required}"',
+            '      ASTERISK_AMI_SECRET: "${ASTERISK_AMI_SECRET:?ASTERISK_AMI_SECRET is required}"',
+            "      PORTAL_API_BASE_URL: ${PORTAL_API_BASE_URL:-}",
+            "    depends_on:",
+            "      - asterisk",
+            "",
+            "volumes:",
+            "  asterisk-lib:",
+            "  asterisk-log:",
+            "  asterisk-spool:",
             "",
         ]
     )
 
 
 def _env_example(location: Location) -> str:
+    ami_username = location.ami_username or f"ami-{location.slug}"
     return "\n".join(
         [
             f"PBX_LOCATION_SLUG={location.slug}",
             f"PBX_LAN_IP={location.pbx_lan_ip}",
             f"PBX_WARP_IP={location.pbx_warp_ip}",
             f"TZ={location.timezone}",
+            "",
+            f"PBX_ASTERISK_IMAGE={ASTERISK_22_LTS_IMAGE}",
+            f"PBX_TFTP_IMAGE={TFTP_SERVICE_IMAGE}",
+            f"PBX_HTTP_IMAGE={HTTP_STATIC_SERVICE_IMAGE}",
+            f"PBX_AGENT_IMAGE={PBX_AGENT_IMAGE}",
+            "",
+            "PROVISIONING_TFTP_PORT=69",
+            "PROVISIONING_HTTP_PORT=80",
+            "",
             "ASTERISK_UID=1000",
             "ASTERISK_GID=1000",
+            f"ASTERISK_AMI_HOST={location.ami_host}",
+            f"ASTERISK_AMI_PORT={location.ami_port}",
+            f"ASTERISK_AMI_USERNAME={ami_username}",
+            f"ASTERISK_AMI_SECRET={location.ami_secret or 'change-me'}",
+            "",
+            f"PBX_AGENT_SECRET={location.agent_secret or 'change-me'}",
+            "PORTAL_API_BASE_URL=",
             "",
         ]
     )
