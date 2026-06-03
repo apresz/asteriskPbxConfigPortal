@@ -23,7 +23,14 @@ from .access import (
 )
 from .audit import record_audit
 from .audio_prompts import AudioPromptConversionError, create_audio_prompt_from_upload
-from .config_export import build_location_config, select_route_caller_id, validate_location_routing
+from .config_export import (
+    ASTERISK_CONFIG_FILENAMES,
+    build_asterisk_config_files,
+    build_location_config,
+    build_route_generation_choices,
+    select_route_caller_id,
+    validate_location_routing,
+)
 from .extension_csv import ExtensionCSVError, export_extensions_csv, extension_template_csv, import_extensions_csv
 from .extension_management import sync_extension_relationships
 from .forms import ExtensionForm, IVRForm, LocationForm, PhoneForm
@@ -1357,6 +1364,189 @@ class VoicemailRecordingConfigTests(TestCase):
         self.assertEqual(payload["location"]["slug"], "command-hq")
         self.assertEqual(payload["helper_scripts"]["recording_retention_days"], 90)
         self.assertEqual(payload["voicemail"]["mailboxes"][0]["number"], "3000")
+
+
+class AsteriskConfigGenerationTests(TestCase):
+    maxDiff = None
+
+    def setUp(self):
+        self.hq = Location.objects.create(
+            **location_model_data(
+                name="HQ",
+                slug="hq",
+                lan_subnet="10.30.0.0/24",
+                pbx_lan_ip="10.30.0.10",
+                pbx_warp_ip="100.64.30.10",
+                sip_bind_ip="10.30.0.10",
+                iax_bind_ip="10.30.0.10",
+                default_did="+15551203000",
+                emergency_caller_id="+15551203999",
+                recording_retention_days=45,
+                ami_username="ami-hq",
+                ami_secret="ami-secret",
+                agent_secret="hq-agent-secret",
+            )
+        )
+        self.warehouse = Location.objects.create(
+            **location_model_data(
+                name="Warehouse",
+                slug="warehouse",
+                lan_subnet="10.40.0.0/24",
+                pbx_lan_ip="10.40.0.10",
+                pbx_warp_ip="100.64.40.10",
+                sip_bind_ip="10.40.0.10",
+                iax_bind_ip="10.40.0.10",
+                default_did="+15551204000",
+                emergency_caller_id="+15551204999",
+                ami_username="ami-warehouse",
+                agent_secret="warehouse-agent-secret",
+            )
+        )
+        self.reception = Extension.objects.create(
+            location=self.hq,
+            number="3000",
+            display_name="HQ Reception",
+            email="reception@example.test",
+            sip_username="3000",
+            sip_password="sip-secret-3000",
+            voicemail_pin="1234",
+            caller_id_name="HQ Reception",
+            caller_id_number="+15551203000",
+            emergency_calling_enabled=True,
+            recording_policy=Extension.RecordingPolicy.ALWAYS,
+        )
+        self.disabled_extension = Extension.objects.create(
+            location=self.hq,
+            number="3001",
+            display_name="Lab Phone",
+            sip_username="3001",
+            sip_password="sip-secret-3001",
+            voicemail_enabled=False,
+            emergency_calling_enabled=False,
+        )
+        self.remote_extension = Extension.objects.create(
+            location=self.warehouse,
+            number="4000",
+            display_name="Warehouse Desk",
+            sip_username="4000",
+            sip_password="sip-secret-4000",
+            voicemail_pin="4321",
+        )
+        self.provider = Provider.objects.create(
+            name="Example SIP",
+            slug="example-sip",
+            provider_type=Provider.ProviderType.SIP,
+        )
+        self.primary_trunk = Trunk.objects.create(
+            location=self.hq,
+            provider=self.provider,
+            name="Primary SIP",
+            trunk_type=Trunk.TrunkType.SIP,
+            host="sip.primary.example.test",
+            username="primary-user",
+            password="primary-secret",
+            is_emergency_capable=True,
+        )
+        local_route = OutboundRoute.objects.create(
+            location=self.hq,
+            name="Local Outbound",
+            dial_pattern="NXXNXXXXXX",
+            priority=1,
+            caller_id_source=OutboundRoute.CallerIdSource.LOCATION_DEFAULT,
+        )
+        OutboundRouteTrunk.objects.create(outbound_route=local_route, trunk=self.primary_trunk, priority=1)
+        add_emergency_route(self.hq)
+        self.reception_destination = did_default_destination(self.hq, self.reception)
+        DID.objects.create(
+            location=self.hq,
+            number="+15551203000",
+            provider=self.provider,
+            trunk=self.primary_trunk,
+            direct_extension=self.reception,
+            default_destination=self.reception_destination,
+            label="HQ main",
+        )
+        queue = CallQueue.objects.create(
+            location=self.hq,
+            name="Support Queue",
+            strategy=CallQueue.Strategy.ROUND_ROBIN,
+            timeout_seconds=45,
+            retry_seconds=7,
+            music_on_hold="default",
+            overflow_destination=self.reception_destination,
+            recording_policy=CallQueue.RecordingPolicy.ON_DEMAND,
+        )
+        QueueMember.objects.create(queue=queue, extension=self.reception, penalty=0)
+        paging_group = PagingGroup.objects.create(location=self.hq, name="HQ Page", page_code="7100")
+        PagingGroupMember.objects.create(paging_group=paging_group, extension=self.reception)
+        FeatureCode.objects.create(
+            location=self.hq,
+            code="*98",
+            name="Voicemail",
+            feature_type=FeatureCode.FeatureType.VOICEMAIL_MAIN,
+            destination=self.reception_destination,
+        )
+
+    def test_generates_required_asterisk_files_for_location_export(self):
+        configs = build_location_config(self.hq)["asterisk_configs"]
+
+        self.assertEqual(set(configs), set(ASTERISK_CONFIG_FILENAMES))
+        self.assertIn("[transport-tcp]", configs["pjsip.conf"])
+        self.assertIn("protocol=tcp", configs["pjsip.conf"])
+        self.assertIn("hook=/usr/local/sbin/pbx-recording-retention", configs["retention.conf"])
+
+    def test_pjsip_iax_dialplan_queue_and_voicemail_golden_files(self):
+        configs = build_asterisk_config_files(self.hq)
+
+        for filename in ("pjsip.conf", "iax.conf", "extensions.conf", "queues.conf", "voicemail.conf"):
+            with self.subTest(filename=filename):
+                self.assertEqual(configs[filename], self._golden(filename))
+
+    def test_route_generation_choices_use_iax2_for_remote_and_block_disabled_emergency(self):
+        choices = build_route_generation_choices(self.hq)
+
+        self.assertEqual(
+            choices["remote_extensions"],
+            [
+                {
+                    "number": "4000",
+                    "owner_location": "warehouse",
+                    "transport": "iax2",
+                    "peer": "warehouse",
+                    "target": "IAX2/warehouse/${EXTEN}",
+                }
+            ],
+        )
+        self.assertEqual(
+            choices["emergency_blocks"],
+            [
+                {
+                    "extension": "3001",
+                    "patterns": ["911"],
+                }
+            ],
+        )
+
+    def test_export_command_writes_asterisk_files_to_output_dir(self):
+        output = StringIO()
+        with tempfile.TemporaryDirectory() as output_dir:
+            call_command("export_pbx_config", self.hq.slug, "--output-dir", output_dir, stdout=output)
+            payload = json.loads(output.getvalue())
+            output_path = Path(output_dir)
+
+            self.assertEqual(
+                (output_path / "extensions.conf").read_text(encoding="utf-8"),
+                payload["asterisk_configs"]["extensions.conf"],
+            )
+            self.assertEqual(
+                (output_path / "pjsip.conf").read_text(encoding="utf-8"),
+                self._golden("pjsip.conf"),
+            )
+
+    def _golden(self, filename):
+        return (
+            Path(__file__).with_name("testdata") / "asterisk_configs" / filename
+        ).read_text(encoding="utf-8")
 
 
 class ExportValidationEngineTests(TestCase):
