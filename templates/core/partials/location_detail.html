@@ -1,0 +1,114 @@
+<section class="record-header" data-area="locations">
+  <span>
+    <p class="eyebrow">Location</p>
+    <h1>{{ location.name }}</h1>
+    <p>{{ location.description|default:"No description" }}</p>
+  </span>
+  <span class="button-row">
+    <a class="button button--secondary" href="{% url 'locations' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Locations</a>
+    {% if can_edit_locations %}
+      <a class="button" href="{% url 'location-edit' location.slug %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Edit</a>
+    {% endif %}
+  </span>
+</section>
+
+<section class="summary-grid" aria-label="Location deployment status">
+  <div class="summary-tile">
+    <span>Active</span>
+    <strong>{{ location.is_active|yesno:"Active,Inactive" }}</strong>
+  </div>
+  <div class="summary-tile">
+    <span>Last Deployed</span>
+    <strong>{{ location.last_deployed_at|date:"Y-m-d H:i"|default:"Never" }}</strong>
+  </div>
+  <div class="summary-tile">
+    <span>Deployment Status</span>
+    <strong>{{ location.get_deployment_status_display }}</strong>
+  </div>
+</section>
+
+<section class="record-grid">
+  <article class="record-section">
+    <h2>Network</h2>
+    <dl>
+      <div><dt>LAN Subnet</dt><dd>{{ location.lan_subnet }}</dd></div>
+      <div><dt>PBX LAN IP</dt><dd>{{ location.pbx_lan_ip }}</dd></div>
+      <div><dt>PBX WARP IP</dt><dd>{{ location.pbx_warp_ip }}</dd></div>
+    </dl>
+  </article>
+
+  <article class="record-section">
+    <h2>SIP / RTP / IAX</h2>
+    <dl>
+      <div><dt>SIP Bind IP</dt><dd>{{ location.sip_bind_ip }}:{{ location.sip_port }}</dd></div>
+      <div><dt>RTP Ports</dt><dd>{{ location.rtp_port_start }}-{{ location.rtp_port_end }}</dd></div>
+      <div><dt>IAX Bind IP</dt><dd>{{ location.iax_bind_ip }}:{{ location.iax_port }}</dd></div>
+    </dl>
+  </article>
+
+  <article class="record-section">
+    <h2>Emergency</h2>
+    <dl>
+      <div><dt>Default DID</dt><dd>{{ location.default_did }}</dd></div>
+      <div><dt>Emergency Caller ID</dt><dd>{{ location.emergency_caller_id }}</dd></div>
+      <div><dt>Emergency Trunk</dt><dd>{{ location.emergency_trunk }}</dd></div>
+    </dl>
+  </article>
+
+  <article class="record-section">
+    <h2>Recording</h2>
+    <dl>
+      <div><dt>Retention</dt><dd>{{ location.recording_retention_days }} days</dd></div>
+    </dl>
+  </article>
+
+  <article class="record-section">
+    <h2>SMTP</h2>
+    <dl>
+      <div><dt>Host</dt><dd>{{ location.smtp_host }}:{{ location.smtp_port }}</dd></div>
+      <div><dt>From Email</dt><dd>{{ location.smtp_from_email }}</dd></div>
+      <div><dt>TLS</dt><dd>{{ location.smtp_use_tls|yesno:"Enabled,Disabled" }}</dd></div>
+      <div><dt>SSL</dt><dd>{{ location.smtp_use_ssl|yesno:"Enabled,Disabled" }}</dd></div>
+      {% if can_manage_location_secrets %}
+        <div><dt>SMTP Username</dt><dd>{{ location.smtp_username|default:"Missing" }}</dd></div>
+        <div><dt>SMTP Password</dt><dd>{{ location.smtp_password|yesno:"Configured,Missing" }}</dd></div>
+      {% endif %}
+    </dl>
+  </article>
+
+  <article class="record-section">
+    <h2>AMI</h2>
+    <dl>
+      <div><dt>Host</dt><dd>{{ location.ami_host }}:{{ location.ami_port }}</dd></div>
+      {% if can_manage_location_secrets %}
+        <div><dt>AMI Username</dt><dd>{{ location.ami_username|default:"Missing" }}</dd></div>
+        <div><dt>AMI Secret</dt><dd>{{ location.ami_secret|yesno:"Configured,Missing" }}</dd></div>
+      {% endif %}
+    </dl>
+  </article>
+
+  <article class="record-section">
+    <h2>Deployment SSH</h2>
+    {% if can_manage_location_secrets %}
+      <dl>
+        <div><dt>Host</dt><dd>{{ location.deployment_ssh_host }}:{{ location.deployment_ssh_port }}</dd></div>
+        <div><dt>Username</dt><dd>{{ location.deployment_ssh_username|default:"Missing" }}</dd></div>
+        <div><dt>Private Key</dt><dd>{{ location.deployment_ssh_private_key|yesno:"Configured,Missing" }}</dd></div>
+        <div><dt>Known Hosts</dt><dd>{{ location.deployment_ssh_known_hosts|yesno:"Configured,Missing" }}</dd></div>
+      </dl>
+    {% else %}
+      <p class="restricted-copy">Restricted</p>
+    {% endif %}
+  </article>
+
+  <article class="record-section">
+    <h2>Agent</h2>
+    {% if can_manage_location_secrets %}
+      <dl>
+        <div><dt>Agent Secret</dt><dd>{{ location.agent_secret|yesno:"Configured,Missing" }}</dd></div>
+      </dl>
+    {% else %}
+      <p class="restricted-copy">Restricted</p>
+    {% endif %}
+  </article>
+</section>

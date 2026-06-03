@@ -41,8 +41,38 @@ class AuditLogAdmin(admin.ModelAdmin):
 
 @admin.register(Location)
 class LocationAdmin(admin.ModelAdmin):
-    list_display = ("name", "slug", "timezone", "is_active")
+    list_display = ("name", "slug", "timezone", "is_active", "deployment_status", "last_deployed_at")
+    list_filter = ("is_active", "deployment_status", "timezone")
     search_fields = ("name", "slug")
+    fieldsets = (
+        ("Identity", {"fields": ("name", "slug", "description", "timezone", "is_active")}),
+        ("Network", {"fields": ("lan_subnet", "pbx_lan_ip", "pbx_warp_ip")}),
+        (
+            "Deployment SSH",
+            {
+                "fields": (
+                    "deployment_ssh_host",
+                    "deployment_ssh_port",
+                    "deployment_ssh_username",
+                    "deployment_ssh_private_key",
+                    "deployment_ssh_known_hosts",
+                )
+            },
+        ),
+        (
+            "SIP / RTP / IAX",
+            {"fields": ("sip_bind_ip", "sip_port", "rtp_port_start", "rtp_port_end", "iax_bind_ip", "iax_port")},
+        ),
+        ("Emergency", {"fields": ("default_did", "emergency_caller_id", "emergency_trunk")}),
+        ("Recording", {"fields": ("recording_retention_days",)}),
+        (
+            "SMTP",
+            {"fields": ("smtp_host", "smtp_port", "smtp_from_email", "smtp_use_tls", "smtp_use_ssl", "smtp_username", "smtp_password")},
+        ),
+        ("AMI", {"fields": ("ami_host", "ami_port", "ami_username", "ami_secret")}),
+        ("Agent", {"fields": ("agent_secret",)}),
+        ("Deployment Status", {"fields": ("deployment_status", "last_deployed_at")}),
+    )
 
 
 @admin.register(Extension)
