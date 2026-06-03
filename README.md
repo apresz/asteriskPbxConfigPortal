@@ -31,8 +31,18 @@ Key settings:
 - `/extensions/`
 - `/trunks/`
 - `/dial-plan/`
-- `/settings/`
+- `/settings/` Admin backups and portal settings
 - `/health/`
+
+## Admin Backups
+
+Admins can generate and download full portal backups from `/settings/`.
+The ZIP archive includes database data, uploaded media/audio, export metadata, generated configuration data, and audit logs.
+PostgreSQL deployments use `pg_dump` when the command is available; local SQLite/test runs use a Django fixture dump fallback.
+
+Downloaded backups are suitable for off-host storage.
+Treat each archive as sensitive because it can contain PBX credentials, deployment secrets, uploaded prompts, and audit history.
+Retained copies should be stored outside the application host on encrypted storage.
 
 ## Validation
 

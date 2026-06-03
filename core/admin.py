@@ -1,6 +1,7 @@
 from django.contrib import admin
 
 from .models import (
+    AdminBackup,
     AuditLog,
     APIKey,
     AudioPrompt,
@@ -165,6 +166,25 @@ class ConfigVersionAdmin(admin.ModelAdmin):
         "archive",
         "archive_size_bytes",
         "rollback_of",
+        "created_at",
+        "updated_at",
+    )
+
+
+@admin.register(AdminBackup)
+class AdminBackupAdmin(admin.ModelAdmin):
+    list_display = ("filename", "generated_at", "generated_by", "archive_size_bytes", "checksum")
+    list_filter = ("generated_at", "database_dump_method")
+    search_fields = ("filename", "checksum", "generated_by__username")
+    readonly_fields = (
+        "generated_by",
+        "generated_at",
+        "filename",
+        "checksum",
+        "archive",
+        "archive_size_bytes",
+        "manifest",
+        "database_dump_method",
         "created_at",
         "updated_at",
     )

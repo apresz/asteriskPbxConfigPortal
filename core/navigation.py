@@ -77,8 +77,8 @@ PORTAL_AREAS = {
     },
     "settings": {
         "label": "Settings",
-        "summary": "Portal environment, deployment, and access controls.",
-        "status": "Ready for administrative settings work",
+        "summary": "Admin backups, portal environment, deployment, and access controls.",
+        "status": "Generate off-host backup archives",
         "permission": PortalPermission.ADMINISTER,
     },
 }

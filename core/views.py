@@ -16,6 +16,7 @@ from .access import (
 )
 from .audit import record_audit
 from .audio_prompts import AudioPromptConversionError, create_audio_prompt_from_upload
+from .backups import create_admin_backup
 from .config_export import ConfigExportValidationError, create_config_version, validate_location_routing
 from .extension_csv import (
     ExtensionCSVError,
@@ -45,6 +46,7 @@ from .forms import (
 )
 from .models import (
     APIKey,
+    AdminBackup,
     AuditAction,
     AuditOutcome,
     CallQueue,
@@ -551,6 +553,41 @@ def admin_api_key_revoke(request, api_key_id: int):
         return _json_error(str(exc))
 
     return JsonResponse({"api_key": _serialize_api_key(api_key)})
+
+
+@permission_required(PortalPermission.ADMINISTER)
+@require_GET
+def settings(request):
+    backups = AdminBackup.objects.select_related("generated_by").order_by("-generated_at", "-id")[:20]
+    context = {
+        "area": PORTAL_AREAS["settings"],
+        "slug": "settings",
+        "areas": visible_portal_areas(request.user),
+        "backups": backups,
+    }
+    return render(request, _template(request, "core/settings.html", "core/partials/settings_content.html"), context)
+
+
+@permission_required(PortalPermission.ADMINISTER)
+@require_POST
+def admin_backup_create(request):
+    backup = create_admin_backup(generated_by=request.user)
+    _record_backup_audit(request.user, AuditAction.BACKUP_CREATE, backup)
+    if request.headers.get("Accept") == "application/json":
+        return JsonResponse({"backup": _serialize_admin_backup(backup)}, status=201)
+    return redirect("settings")
+
+
+@permission_required(PortalPermission.ADMINISTER)
+@require_GET
+def admin_backup_download(request, backup_id: int):
+    backup = get_object_or_404(AdminBackup.objects.select_related("generated_by"), pk=backup_id)
+    _record_backup_audit(request.user, AuditAction.BACKUP_DOWNLOAD, backup)
+    response = HttpResponse(bytes(backup.archive), content_type="application/zip")
+    response["Content-Disposition"] = f'attachment; filename="{backup.filename}"'
+    response["Content-Length"] = str(backup.archive_size_bytes)
+    response["X-Checksum-SHA256"] = backup.checksum
+    return response
 
 
 @permission_required(PortalPermission.VIEW)
@@ -1694,6 +1731,18 @@ def _serialize_api_key(api_key: APIKey) -> dict:
     }
 
 
+def _serialize_admin_backup(backup: AdminBackup) -> dict:
+    return {
+        "id": backup.id,
+        "filename": backup.filename,
+        "checksum": backup.checksum,
+        "archive_size_bytes": backup.archive_size_bytes,
+        "generated_at": backup.generated_at.isoformat(),
+        "generated_by": backup.generated_by.get_username() if backup.generated_by_id else None,
+        "database_dump_method": backup.database_dump_method,
+    }
+
+
 def _record_api_key_audit(actor, action: AuditAction, api_key: APIKey, *, details: dict | None = None) -> None:
     audit_details = {
         "api_key_id": api_key.id,
@@ -1710,6 +1759,22 @@ def _record_api_key_audit(actor, action: AuditAction, api_key: APIKey, *, detail
         target=f"api_keys/{api_key.id}",
         outcome=AuditOutcome.SUCCESS,
         details=audit_details,
+    )
+
+
+def _record_backup_audit(actor, action: AuditAction, backup: AdminBackup) -> None:
+    record_audit(
+        actor=actor,
+        action=action,
+        target=f"admin_backups/{backup.id}",
+        outcome=AuditOutcome.SUCCESS,
+        details={
+            "backup_id": backup.id,
+            "filename": backup.filename,
+            "checksum": backup.checksum,
+            "archive_size_bytes": backup.archive_size_bytes,
+            "database_dump_method": backup.database_dump_method,
+        },
     )
 
 
