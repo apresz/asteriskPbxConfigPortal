@@ -1,0 +1,115 @@
+<section class="record-header" data-area="phones">
+  <span>
+    <p class="eyebrow">Phone</p>
+    <h1>{{ form_title }}</h1>
+    {% if phone %}
+      <p>{{ phone.location.name }} - {{ phone.sep_identifier }}</p>
+    {% endif %}
+  </span>
+  <a class="button button--secondary" href="{% url 'phones' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Cancel</a>
+</section>
+
+<form class="phone-form" method="post" novalidate>
+  {% csrf_token %}
+  {{ form.non_field_errors }}
+
+  {% for fieldset in form.fieldsets %}
+    <fieldset class="form-section">
+      <legend>{{ fieldset.legend }}</legend>
+      <div class="form-grid">
+        {% for field in fieldset.fields %}
+          {% if field.field.widget.input_type == "checkbox" %}
+            <label class="form-check" for="{{ field.id_for_label }}">
+              {{ field }}
+              <span>{{ field.label }}</span>
+            </label>
+            {{ field.errors }}
+          {% else %}
+            <label class="form-field" for="{{ field.id_for_label }}">
+              <span>{{ field.label }}{% if field.field.required %} <strong aria-hidden="true">*</strong>{% endif %}</span>
+              {{ field }}
+              {{ field.errors }}
+            </label>
+          {% endif %}
+        {% endfor %}
+      </div>
+    </fieldset>
+  {% endfor %}
+
+  <fieldset class="form-section">
+    <legend>Line Appearances</legend>
+    {{ line_formset.management_form }}
+    {{ line_formset.non_form_errors }}
+    <div class="inline-formset">
+      {% for line_form in line_formset.forms %}
+        <div class="inline-formset__row">
+          {% for hidden in line_form.hidden_fields %}{{ hidden }}{% endfor %}
+          {{ line_form.non_field_errors }}
+          <label class="form-field" for="{{ line_form.line_index.id_for_label }}">
+            <span>Line</span>
+            {{ line_form.line_index }}
+            {{ line_form.line_index.errors }}
+          </label>
+          <label class="form-field" for="{{ line_form.extension.id_for_label }}">
+            <span>Extension</span>
+            {{ line_form.extension }}
+            {{ line_form.extension.errors }}
+          </label>
+          <label class="form-field" for="{{ line_form.label.id_for_label }}">
+            <span>Label</span>
+            {{ line_form.label }}
+            {{ line_form.label.errors }}
+          </label>
+          {% if line_form.DELETE %}
+            <label class="form-check inline-formset__delete" for="{{ line_form.DELETE.id_for_label }}">
+              {{ line_form.DELETE }}
+              <span>Delete</span>
+            </label>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  </fieldset>
+
+  <fieldset class="form-section">
+    <legend>Speed Dials</legend>
+    {{ speed_dial_formset.management_form }}
+    {{ speed_dial_formset.non_form_errors }}
+    <div class="inline-formset">
+      {% for speed_form in speed_dial_formset.forms %}
+        <div class="inline-formset__row">
+          {% for hidden in speed_form.hidden_fields %}{{ hidden }}{% endfor %}
+          {{ speed_form.non_field_errors }}
+          <label class="form-field" for="{{ speed_form.position.id_for_label }}">
+            <span>Position</span>
+            {{ speed_form.position }}
+            {{ speed_form.position.errors }}
+          </label>
+          <label class="form-field" for="{{ speed_form.label.id_for_label }}">
+            <span>Label</span>
+            {{ speed_form.label }}
+            {{ speed_form.label.errors }}
+          </label>
+          <label class="form-field" for="{{ speed_form.destination.id_for_label }}">
+            <span>Destination</span>
+            {{ speed_form.destination }}
+            {{ speed_form.destination.errors }}
+          </label>
+          {% if speed_form.DELETE %}
+            <label class="form-check inline-formset__delete" for="{{ speed_form.DELETE.id_for_label }}">
+              {{ speed_form.DELETE }}
+              <span>Delete</span>
+            </label>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  </fieldset>
+
+  <div class="form-actions">
+    <button class="button" type="submit">{{ form_action }}</button>
+    {% if phone %}
+      <a class="button button--danger" href="{% url 'phone-delete' phone.mac_address %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Delete</a>
+    {% endif %}
+  </div>
+</form>

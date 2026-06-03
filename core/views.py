@@ -22,18 +22,27 @@ from .extension_csv import (
     import_extensions_csv,
 )
 from .extension_management import clear_extension_relationships, is_911_disable_change
-from .forms import ExtensionForm, LocationForm
+from .forms import ExtensionForm, LocationForm, PhoneForm, PhoneLineAppearanceFormSet, PhoneSpeedDialFormSet
 from .models import (
     APIKey,
     AuditAction,
     AuditOutcome,
     Extension,
     Location,
+    Phone,
+    PhoneSpeedDial,
     PortalPermission,
     PortalRole,
     ServiceIdentity,
 )
 from .navigation import PORTAL_AREAS, visible_portal_areas
+from .phone_csv import (
+    did_template_csv,
+    export_phones_csv,
+    export_speed_dials_csv,
+    phone_template_csv,
+    speed_dial_template_csv,
+)
 
 
 User = get_user_model()
@@ -478,6 +487,153 @@ def extension_template(request):
     return _csv_response(extension_template_csv(), "extensions-template.csv")
 
 
+@permission_required(PortalPermission.VIEW)
+def phone_list(request):
+    phones = _phone_queryset()
+    context = _phone_context(request, {"phones": phones})
+    return render(request, _template(request, "core/phones/list.html", "core/partials/phones/list_content.html"), context)
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def phone_create(request):
+    phone = Phone()
+    if request.method == "POST":
+        form = PhoneForm(request.POST, instance=phone)
+        location = _phone_formset_location(request, phone)
+        line_formset = PhoneLineAppearanceFormSet(
+            request.POST,
+            instance=phone,
+            prefix="lines",
+            form_kwargs={"location": location},
+        )
+        speed_dial_formset = PhoneSpeedDialFormSet(request.POST, instance=phone, prefix="speed_dials")
+        if form.is_valid() and line_formset.is_valid() and speed_dial_formset.is_valid():
+            with transaction.atomic():
+                phone = form.save()
+                line_formset.instance = phone
+                speed_dial_formset.instance = phone
+                line_formset.save()
+                speed_dial_formset.save()
+            return redirect("phones")
+    else:
+        form = PhoneForm(instance=phone)
+        line_formset = PhoneLineAppearanceFormSet(
+            instance=phone,
+            prefix="lines",
+            form_kwargs={"location": None},
+        )
+        speed_dial_formset = PhoneSpeedDialFormSet(instance=phone, prefix="speed_dials")
+
+    context = _phone_context(
+        request,
+        {
+            "form": form,
+            "line_formset": line_formset,
+            "speed_dial_formset": speed_dial_formset,
+            "form_title": "New Phone",
+            "form_action": "Create",
+            "phone": None,
+        },
+    )
+    return render(request, _template(request, "core/phones/form.html", "core/partials/phones/form_content.html"), context)
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def phone_update(request, mac_address: str):
+    phone = get_object_or_404(Phone, mac_address=mac_address)
+    if request.method == "POST":
+        form = PhoneForm(request.POST, instance=phone)
+        location = _phone_formset_location(request, phone)
+        line_formset = PhoneLineAppearanceFormSet(
+            request.POST,
+            instance=phone,
+            prefix="lines",
+            form_kwargs={"location": location},
+        )
+        speed_dial_formset = PhoneSpeedDialFormSet(request.POST, instance=phone, prefix="speed_dials")
+        if form.is_valid() and line_formset.is_valid() and speed_dial_formset.is_valid():
+            with transaction.atomic():
+                phone = form.save()
+                line_formset.instance = phone
+                speed_dial_formset.instance = phone
+                line_formset.save()
+                speed_dial_formset.save()
+            return redirect("phones")
+    else:
+        form = PhoneForm(instance=phone)
+        line_formset = PhoneLineAppearanceFormSet(
+            instance=phone,
+            prefix="lines",
+            form_kwargs={"location": phone.location},
+        )
+        speed_dial_formset = PhoneSpeedDialFormSet(instance=phone, prefix="speed_dials")
+
+    context = _phone_context(
+        request,
+        {
+            "form": form,
+            "line_formset": line_formset,
+            "speed_dial_formset": speed_dial_formset,
+            "form_title": f"Edit {phone.mac_address}",
+            "form_action": "Save",
+            "phone": phone,
+        },
+    )
+    return render(request, _template(request, "core/phones/form.html", "core/partials/phones/form_content.html"), context)
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def phone_delete(request, mac_address: str):
+    phone = get_object_or_404(Phone, mac_address=mac_address)
+    if request.method == "POST":
+        phone.delete()
+        return redirect("phones")
+
+    context = _phone_context(request, {"phone": phone})
+    return render(
+        request,
+        _template(request, "core/phones/confirm_delete.html", "core/partials/phones/confirm_delete_content.html"),
+        context,
+    )
+
+
+@permission_required(PortalPermission.VIEW)
+def phone_export(request):
+    record_audit(
+        actor=request.user,
+        action=AuditAction.CONFIG_EXPORT,
+        target="phones/csv",
+        outcome=AuditOutcome.SUCCESS,
+    )
+    return _csv_response(export_phones_csv(_phone_queryset()), "phones.csv")
+
+
+@permission_required(PortalPermission.VIEW)
+def phone_template(request):
+    return _csv_response(phone_template_csv(), "phones-template.csv")
+
+
+@permission_required(PortalPermission.VIEW)
+def did_template(request):
+    return _csv_response(did_template_csv(), "dids-template.csv")
+
+
+@permission_required(PortalPermission.VIEW)
+def speed_dial_export(request):
+    record_audit(
+        actor=request.user,
+        action=AuditAction.CONFIG_EXPORT,
+        target="speed-dials/csv",
+        outcome=AuditOutcome.SUCCESS,
+    )
+    return _csv_response(export_speed_dials_csv(PhoneSpeedDial.objects.select_related("phone")), "speed-dials.csv")
+
+
+@permission_required(PortalPermission.VIEW)
+def speed_dial_template(request):
+    return _csv_response(speed_dial_template_csv(), "speed-dials-template.csv")
+
+
 def _template(request, full_template: str, partial_template: str) -> str:
     if request.headers.get("HX-Request") == "true":
         return partial_template
@@ -632,6 +788,37 @@ def _extension_context(request, context):
 
 def _can_disable_911(request) -> bool:
     return user_has_permission(request.user, PortalPermission.ADMINISTER)
+
+
+def _phone_queryset():
+    return Phone.objects.select_related("location").prefetch_related(
+        "line_appearances__extension",
+        "speed_dials",
+    )
+
+
+def _phone_context(request, context):
+    context.update(
+        {
+            "areas": visible_portal_areas(request.user),
+            "can_edit_phones": user_has_permission(request.user, PortalPermission.EDIT_CONFIG),
+        }
+    )
+    return context
+
+
+def _phone_formset_location(request, phone):
+    if request.method == "POST":
+        location_id = request.POST.get("location")
+        if location_id:
+            try:
+                return Location.objects.get(pk=location_id)
+            except (Location.DoesNotExist, ValueError):
+                return None
+        return None
+    if phone and phone.pk:
+        return phone.location
+    return None
 
 
 def _record_denied_911_if_needed(request, form, extension_number):
