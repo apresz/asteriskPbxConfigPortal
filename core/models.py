@@ -65,6 +65,10 @@ def normalize_mac_address(value):
     return normalized
 
 
+def generate_agent_token() -> str:
+    return secrets.token_urlsafe(24)
+
+
 class TimestampedModel(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -455,7 +459,34 @@ class Location(TimestampedModel):
     )
     ami_username = models.CharField("AMI username", max_length=120, blank=True)
     ami_secret = models.CharField("AMI secret", max_length=255, blank=True)
+    agent_token = models.CharField(
+        "agent token",
+        max_length=64,
+        unique=True,
+        default=generate_agent_token,
+        editable=False,
+    )
     agent_secret = models.CharField("agent secret", max_length=255, blank=True)
+    active_config_version_number = models.PositiveIntegerField(
+        "PBX active config version",
+        null=True,
+        blank=True,
+    )
+    active_config_checksum = models.CharField(
+        "PBX active config checksum",
+        max_length=64,
+        blank=True,
+    )
+    active_config_timestamp = models.DateTimeField(
+        "PBX active config timestamp",
+        null=True,
+        blank=True,
+    )
+    active_config_reported_at = models.DateTimeField(
+        "PBX active config reported at",
+        null=True,
+        blank=True,
+    )
     is_active = models.BooleanField(default=True)
     last_deployed_at = models.DateTimeField("last deployed", null=True, blank=True)
     deployment_status = models.CharField(

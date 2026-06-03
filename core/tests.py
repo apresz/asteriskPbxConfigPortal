@@ -1,4 +1,5 @@
 import csv
+import asyncio
 from datetime import datetime, timezone as datetime_timezone
 import hashlib
 from io import BytesIO, StringIO
@@ -16,7 +17,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import IntegrityError, transaction
-from django.test import Client, SimpleTestCase, TestCase, override_settings
+from django.test import Client, SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 
 from .access import (
@@ -27,6 +28,7 @@ from .access import (
 )
 from .audit import record_audit
 from .audio_prompts import AudioPromptConversionError, create_audio_prompt_from_upload
+from .agent_client import AgentConfig, portal_url_to_websocket_url, read_active_config_marker, report_active_config_once
 from .config_export import (
     ASTERISK_CONFIG_FILENAMES,
     build_asterisk_config_files,
@@ -529,6 +531,8 @@ class LocationManagementViewTests(TestCase):
         self.assertContains(response, "Active")
         self.assertContains(response, "Last Deployed")
         self.assertContains(response, "Deployment Status")
+        self.assertContains(response, "PBX Active Version")
+        self.assertContains(response, "Not reported")
         self.assertContains(response, "Branch Office")
 
     def test_viewer_cannot_create_location(self):
@@ -1667,12 +1671,163 @@ class AsteriskConfigGenerationTests(TestCase):
         ).read_text(encoding="utf-8")
 
 
+class AgentWebSocketTests(TransactionTestCase):
+    def test_authenticated_agent_reports_active_config_version(self):
+        location = Location.objects.create(
+            **location_model_data(name="Agent HQ", slug="agent-hq", agent_secret="agent-secret")
+        )
+        checksum = "a" * 64
+
+        events = asyncio.run(
+            self._run_agent_websocket(
+                query_string=f"token={location.agent_token}&secret=agent-secret".encode("utf-8"),
+                messages=[
+                    {
+                        "type": "websocket.receive",
+                        "text": json.dumps(
+                            {
+                                "type": "active_config",
+                                "version": 7,
+                                "checksum": checksum,
+                                "timestamp": "2026-06-03T20:00:00Z",
+                            }
+                        ),
+                    }
+                ],
+            )
+        )
+
+        location.refresh_from_db()
+        self.assertEqual(events[0], {"type": "websocket.accept"})
+        self.assertEqual(json.loads(events[1]["text"]), {"type": "agent_authenticated", "location": "agent-hq"})
+        self.assertEqual(json.loads(events[2]["text"])["type"], "active_config_ack")
+        self.assertEqual(location.active_config_version_number, 7)
+        self.assertEqual(location.active_config_checksum, checksum)
+        self.assertEqual(location.active_config_timestamp.isoformat(), "2026-06-03T20:00:00+00:00")
+        self.assertIsNotNone(location.active_config_reported_at)
+
+    def test_invalid_agent_credentials_are_rejected_without_location_update(self):
+        location = Location.objects.create(
+            **location_model_data(name="Rejected Agent HQ", slug="rejected-agent-hq", agent_secret="agent-secret")
+        )
+
+        events = asyncio.run(
+            self._run_agent_websocket(
+                headers=[
+                    (b"x-pbx-agent-token", location.agent_token.encode("ascii")),
+                    (b"x-pbx-agent-secret", b"wrong-secret"),
+                ],
+                messages=[
+                    {
+                        "type": "websocket.receive",
+                        "text": json.dumps(
+                            {
+                                "type": "active_config",
+                                "version": 9,
+                                "checksum": "b" * 64,
+                                "timestamp": "2026-06-03T20:00:00Z",
+                            }
+                        ),
+                    }
+                ],
+            )
+        )
+
+        location.refresh_from_db()
+        self.assertEqual(events, [{"type": "websocket.close", "code": 4401}])
+        self.assertIsNone(location.active_config_version_number)
+        self.assertEqual(location.active_config_checksum, "")
+        self.assertIsNone(location.active_config_timestamp)
+        self.assertIsNone(location.active_config_reported_at)
+
+    async def _run_agent_websocket(self, *, query_string=b"", headers=None, messages=None):
+        from portal.asgi import application
+
+        events = []
+        inbound = [{"type": "websocket.connect"}, *(messages or []), {"type": "websocket.disconnect"}]
+
+        async def receive():
+            return inbound.pop(0)
+
+        async def send(message):
+            events.append(message)
+
+        await application(
+            {
+                "type": "websocket",
+                "path": "/api/agent/ws/",
+                "query_string": query_string,
+                "headers": headers or [],
+            },
+            receive,
+            send,
+        )
+        return events
+
+
+class AgentActiveConfigMarkerTests(TestCase):
+    def test_agent_reads_active_marker_and_sends_outbound_websocket_report(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            marker_path = Path(temp_dir) / "pbx-active-config.json"
+            marker_path.write_text(
+                json.dumps(
+                    {
+                        "version": 3,
+                        "checksum": "c" * 64,
+                        "timestamp": "2026-06-03T20:00:00Z",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            marker = read_active_config_marker(marker_path)
+            self.assertEqual(marker.version, 3)
+            self.assertEqual(marker.checksum, "c" * 64)
+            self.assertEqual(marker.timestamp, "2026-06-03T20:00:00Z")
+
+            websocket_exchange = mock.AsyncMock(return_value={"type": "active_config_ack"})
+            with mock.patch("core.agent_client.websocket_json_exchange", websocket_exchange):
+                response = asyncio.run(
+                    report_active_config_once(
+                        AgentConfig(
+                            websocket_url="wss://portal.warp.test/api/agent/ws/",
+                            token="agent-token",
+                            secret="agent-secret",
+                            marker_path=marker_path,
+                        )
+                    )
+                )
+
+        self.assertEqual(response, {"type": "active_config_ack"})
+        websocket_exchange.assert_awaited_once_with(
+            "wss://portal.warp.test/api/agent/ws/",
+            {
+                "type": "active_config",
+                "version": 3,
+                "checksum": "c" * 64,
+                "timestamp": "2026-06-03T20:00:00Z",
+            },
+            {
+                "X-PBX-Agent-Token": "agent-token",
+                "X-PBX-Agent-Secret": "agent-secret",
+            },
+        )
+
+    def test_agent_websocket_url_defaults_to_warp_reachable_portal_path(self):
+        self.assertEqual(
+            portal_url_to_websocket_url("https://portal.warp.test"),
+            "wss://portal.warp.test/api/agent/ws/",
+        )
+
+
 class ConfigVersionExportTests(TestCase):
     maxDiff = None
 
     def setUp(self):
         self.user = User.objects.create_user(username="exporter", password="portal-pass")
-        self.location = Location.objects.create(**location_model_data(name="Version HQ", slug="version-hq"))
+        self.location = Location.objects.create(
+            **location_model_data(name="Version HQ", slug="version-hq", agent_token="agent-token")
+        )
         self.extension = Extension.objects.create(
             location=self.location,
             number="3000",
@@ -1700,11 +1855,16 @@ class ConfigVersionExportTests(TestCase):
         first.refresh_from_db()
         self.assertEqual(first.checksum, first_checksum)
 
+    @override_settings(
+        PBX_AGENT_PORTAL_URL="https://portal.warp.test",
+        PBX_ACTIVE_CONFIG_MARKER="/var/lib/pbx/active.json",
+    )
     def test_export_zip_structure_manifest_and_checksum_snapshot(self):
         version = create_config_version(self.location, exported_by=self.user)
 
         with zipfile.ZipFile(BytesIO(bytes(version.archive))) as archive:
             names = sorted(archive.namelist())
+            env_example = archive.read(".env.example").decode("utf-8")
             manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
             checksums = archive.read("SHA256SUMS").decode("utf-8").splitlines()
 
@@ -1739,6 +1899,10 @@ class ConfigVersionExportTests(TestCase):
         self.assertEqual(manifest["version"]["number"], 1)
         self.assertEqual(manifest["version"]["exported_by"], "exporter")
         self.assertFalse(manifest["emergency_status"]["blocked"])
+        self.assertIn("PBX_AGENT_WS_URL=wss://portal.warp.test/api/agent/ws/", env_example)
+        self.assertIn(f"PBX_AGENT_TOKEN={self.location.agent_token}", env_example)
+        self.assertIn("PBX_AGENT_SECRET=agent-secret", env_example)
+        self.assertIn("PBX_ACTIVE_CONFIG_MARKER=/var/lib/pbx/active.json", env_example)
         self.assertIn(
             {
                 "path": "docker-compose.yml",
@@ -1781,7 +1945,10 @@ class ConfigVersionExportTests(TestCase):
         self.assertIn("      - ./tftp:/usr/share/nginx/html/cisco:ro", services["provisioning-http"])
         self.assertIn('      - "${PROVISIONING_HTTP_PORT:-80}:80/tcp"', services["provisioning-http"])
         self.assertIn("    network_mode: host", services["pbx-agent"])
+        self.assertIn('      PBX_AGENT_WS_URL: "${PBX_AGENT_WS_URL:?PBX_AGENT_WS_URL is required}"', services["pbx-agent"])
+        self.assertIn('      PBX_AGENT_TOKEN: "${PBX_AGENT_TOKEN:?PBX_AGENT_TOKEN is required}"', services["pbx-agent"])
         self.assertIn('      PBX_AGENT_SECRET: "${PBX_AGENT_SECRET:?PBX_AGENT_SECRET is required}"', services["pbx-agent"])
+        self.assertIn("      PBX_ACTIVE_CONFIG_MARKER: ${PBX_ACTIVE_CONFIG_MARKER:-/etc/asterisk/pbx-active-config.json}", services["pbx-agent"])
 
     def _runtime_golden(self, filename):
         return (Path(__file__).with_name("testdata") / "runtime_bundle" / filename).read_text(encoding="utf-8")
