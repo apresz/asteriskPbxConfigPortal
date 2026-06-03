@@ -1,0 +1,85 @@
+<?xml version='1.0' encoding='utf-8'?>
+<device>
+  <deviceProtocol>SIP</deviceProtocol>
+  <product>Cisco CP-9971</product>
+  <model>CP-9971</model>
+  <phoneLabel>Reception Phone</phoneLabel>
+  <transportLayerProtocol>TCP</transportLayerProtocol>
+  <directoryURL>http://10.50.0.10/cisco/company-directory.xml</directoryURL>
+  <loadInformation>sip9971.9-4-2</loadInformation>
+  <devicePool>
+    <dateTimeSetting>
+      <dateTemplate>M/D/Ya</dateTemplate>
+      <timeZone>America/Los_Angeles</timeZone>
+    </dateTimeSetting>
+    <callManagerGroup>
+      <members>
+        <member priority="0">
+          <callManager>
+            <ports>
+              <ethernetPhonePort>2000</ethernetPhonePort>
+              <sipPort>5060</sipPort>
+              <securedSipPort>5061</securedSipPort>
+            </ports>
+            <processNodeName>10.50.0.10</processNodeName>
+          </callManager>
+        </member>
+      </members>
+    </callManagerGroup>
+  </devicePool>
+  <sipProfile>
+    <sipProxies>
+      <backupProxy />
+      <backupProxyPort />
+      <emergencyProxy />
+      <emergencyProxyPort />
+      <outboundProxy />
+      <outboundProxyPort />
+      <registerWithProxy>true</registerWithProxy>
+    </sipProxies>
+    <sipPort>5060</sipPort>
+    <transportLayerProtocol>TCP</transportLayerProtocol>
+    <phoneLabel>Reception Phone</phoneLabel>
+    <dialTemplate>dialplan.xml</dialTemplate>
+    <sipLines>
+      <line button="1">
+        <featureID>9</featureID>
+        <featureLabel>Primary</featureLabel>
+        <proxy>USECALLMANAGER</proxy>
+        <port>5060</port>
+        <name>5100</name>
+        <displayName>Reception</displayName>
+        <authName>sip5100</authName>
+        <authPassword>secret5100</authPassword>
+        <contact>5100</contact>
+        <messagesNumber>*97</messagesNumber>
+      </line>
+      <line button="2">
+        <featureID>9</featureID>
+        <featureLabel>Sales</featureLabel>
+        <proxy>USECALLMANAGER</proxy>
+        <port>5060</port>
+        <name>5101</name>
+        <displayName>Sales</displayName>
+        <authName>5101</authName>
+        <authPassword>secret5101</authPassword>
+        <contact>5101</contact>
+        <messagesNumber>*97</messagesNumber>
+      </line>
+      <line button="3">
+        <featureID>2</featureID>
+        <featureLabel>Support</featureLabel>
+        <speedDialNumber>5101</speedDialNumber>
+      </line>
+    </sipLines>
+  </sipProfile>
+  <phoneServices>
+    <provisioning>0</provisioning>
+    <phoneService type="1" category="0">
+      <name>Company Directory</name>
+      <url>http://10.50.0.10/cisco/company-directory.xml</url>
+      <vendor>Local PBX</vendor>
+      <version>1</version>
+    </phoneService>
+  </phoneServices>
+</device>
