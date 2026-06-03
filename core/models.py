@@ -101,6 +101,8 @@ class AuditAction(models.TextChoices):
     API_KEY_CREATE = "api_key_create", "API key create"
     API_KEY_ROTATE = "api_key_rotate", "API key rotate"
     API_KEY_REVOKE = "api_key_revoke", "API key revoke"
+    BACKUP_CREATE = "backup_create", "Backup create"
+    BACKUP_DOWNLOAD = "backup_download", "Backup download"
 
 
 class AuditOutcome(models.TextChoices):
@@ -640,6 +642,29 @@ class ConfigVersion(TimestampedModel):
 
     def __str__(self):
         return f"{self.location.slug} config v{self.version_number}"
+
+
+class AdminBackup(TimestampedModel):
+    generated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="generated_admin_backups",
+    )
+    generated_at = models.DateTimeField(default=timezone.now, db_index=True)
+    filename = models.CharField(max_length=180)
+    checksum = models.CharField(max_length=64, db_index=True)
+    archive = models.BinaryField(editable=False)
+    archive_size_bytes = models.PositiveBigIntegerField(default=0)
+    manifest = models.JSONField(default=dict, blank=True)
+    database_dump_method = models.CharField(max_length=80, blank=True)
+
+    class Meta:
+        ordering = ["-generated_at", "-id"]
+
+    def __str__(self):
+        return self.filename
 
 
 class Extension(TimestampedModel):

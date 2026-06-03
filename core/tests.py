@@ -9,6 +9,7 @@ from unittest import mock
 import zipfile
 
 from django.contrib.auth import get_user_model
+from django.core.files.base import ContentFile
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
@@ -47,6 +48,7 @@ from .phone_csv import (
 )
 from .models import (
     APIKey,
+    AdminBackup,
     AudioPrompt,
     AuditAction,
     AuditLog,
@@ -2990,6 +2992,151 @@ class AdminManagementAPITests(TestCase):
 
     def _patch_json(self, url, payload):
         return self.client.patch(url, data=json.dumps(payload), content_type="application/json")
+
+
+class AdminBackupWorkflowTests(TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.settings_override = override_settings(MEDIA_ROOT=self.temp_dir.name)
+        self.settings_override.enable()
+        self.addCleanup(self.settings_override.disable)
+        self.addCleanup(self.temp_dir.cleanup)
+
+        self.admin = User.objects.create_user(username="backup-admin", password="portal-pass")
+        self.viewer = User.objects.create_user(username="backup-viewer", password="portal-pass")
+        assign_role(self.admin, PortalRole.ADMIN)
+        assign_role(self.viewer, PortalRole.VIEWER)
+        self.location = Location.objects.create(**location_model_data(name="Backup HQ", slug="backup-hq"))
+        self.extension = Extension.objects.create(
+            location=self.location,
+            number="3000",
+            display_name="Backup Desk",
+            emergency_calling_enabled=True,
+        )
+        add_emergency_route(self.location)
+        self.prompt = self._create_audio_prompt()
+        self.config_version = create_config_version(self.location, exported_by=self.admin)
+        record_audit(
+            actor=self.admin,
+            action=AuditAction.CONFIG_CHANGE,
+            target="locations/backup-hq",
+            outcome=AuditOutcome.SUCCESS,
+            details={"field": "name"},
+        )
+
+    def test_admin_can_generate_backup_archive_with_required_categories(self):
+        self.client.force_login(self.admin)
+
+        settings_response = self.client.get(reverse("settings"))
+        create_response = self.client.post(reverse("admin-backup-create"))
+
+        self.assertEqual(settings_response.status_code, 200)
+        self.assertContains(settings_response, 'data-area="settings"')
+        self.assertContains(settings_response, "Generate backup")
+        self.assertContains(settings_response, "Suitable for off-host storage")
+        self.assertEqual(create_response.status_code, 302)
+
+        backup = AdminBackup.objects.get()
+        download_response = self.client.get(reverse("admin-backup-download", args=[backup.id]))
+
+        self.assertEqual(download_response.status_code, 200)
+        self.assertEqual(download_response["Content-Type"], "application/zip")
+        self.assertEqual(download_response["X-Checksum-SHA256"], backup.checksum)
+
+        with zipfile.ZipFile(BytesIO(download_response.content)) as archive:
+            names = set(archive.namelist())
+            media_archive_path = f"media/files/{self.prompt.original_file.name}"
+
+            self.assertIn("manifest.json", names)
+            self.assertIn("README.txt", names)
+            self.assertIn("database/django-dumpdata.json", names)
+            self.assertIn("media/manifest.json", names)
+            self.assertIn(media_archive_path, names)
+            self.assertIn("exports/config_versions.json", names)
+            self.assertIn("config/portal-config-data.json", names)
+            self.assertIn("config/locations/backup-hq.json", names)
+            self.assertIn("audit/audit_logs.json", names)
+            self.assertIn("backups/admin_backups.json", names)
+            self.assertIn("SHA256SUMS", names)
+
+            manifest = json.loads(archive.read("manifest.json"))
+            self.assertEqual(manifest["format"], "pbx-admin-backup/v1")
+            self.assertEqual(manifest["contents"]["database_dump"], "database/django-dumpdata.json")
+            self.assertEqual(manifest["contents"]["media"]["file_count"], 2)
+            self.assertIn("off-host storage", manifest["off_host_storage"])
+
+            export_metadata = json.loads(archive.read("exports/config_versions.json"))
+            self.assertEqual(export_metadata[0]["checksum"], self.config_version.checksum)
+            self.assertEqual(export_metadata[0]["location_slug"], "backup-hq")
+
+            location_config = json.loads(archive.read("config/locations/backup-hq.json"))
+            self.assertEqual(location_config["location"]["slug"], "backup-hq")
+            self.assertIn("asterisk_configs", location_config)
+
+            config_dump = json.loads(archive.read("config/portal-config-data.json"))
+            self.assertIn("core.location", {row["model"] for row in config_dump})
+            self.assertIn("core.audioprompt", {row["model"] for row in config_dump})
+
+            audit_logs = json.loads(archive.read("audit/audit_logs.json"))
+            self.assertIn("config_change", {row["action"] for row in audit_logs})
+            self.assertIn(b"suitable for off-host storage", archive.read("README.txt").lower())
+
+    def test_backup_generate_and_download_require_admin(self):
+        self.client.force_login(self.viewer)
+
+        viewer_settings_response = self.client.get(reverse("settings"))
+        viewer_create_response = self.client.post(reverse("admin-backup-create"))
+
+        self.assertEqual(viewer_settings_response.status_code, 403)
+        self.assertEqual(viewer_create_response.status_code, 403)
+        self.assertEqual(AdminBackup.objects.count(), 0)
+
+        self.client.force_login(self.admin)
+        self.client.post(reverse("admin-backup-create"))
+        backup = AdminBackup.objects.get()
+
+        self.client.force_login(self.viewer)
+        viewer_download_response = self.client.get(reverse("admin-backup-download", args=[backup.id]))
+
+        self.assertEqual(viewer_download_response.status_code, 403)
+        self.assertEqual(AuditLog.objects.filter(action=AuditAction.BACKUP_DOWNLOAD).count(), 0)
+
+    def test_backup_generation_and_download_are_audit_logged(self):
+        self.client.force_login(self.admin)
+
+        self.client.post(reverse("admin-backup-create"))
+        backup = AdminBackup.objects.get()
+
+        create_audit = AuditLog.objects.get(action=AuditAction.BACKUP_CREATE)
+        self.assertEqual(create_audit.actor, self.admin)
+        self.assertEqual(create_audit.target, f"admin_backups/{backup.id}")
+        self.assertEqual(create_audit.outcome, AuditOutcome.SUCCESS)
+        self.assertEqual(create_audit.details["checksum"], backup.checksum)
+        self.assertEqual(create_audit.details["database_dump_method"], "django_dumpdata")
+
+        download_response = self.client.get(reverse("admin-backup-download", args=[backup.id]))
+
+        self.assertEqual(download_response.status_code, 200)
+        download_audit = AuditLog.objects.get(action=AuditAction.BACKUP_DOWNLOAD)
+        self.assertEqual(download_audit.actor, self.admin)
+        self.assertEqual(download_audit.target, f"admin_backups/{backup.id}")
+        self.assertEqual(download_audit.outcome, AuditOutcome.SUCCESS)
+        self.assertEqual(download_audit.details["archive_size_bytes"], backup.archive_size_bytes)
+
+    def _create_audio_prompt(self):
+        prompt = AudioPrompt(
+            location=self.location,
+            name="Main Menu",
+            original_filename="main-menu.wav",
+            source_format=AudioPrompt.SourceFormat.WAV,
+            content_type="audio/wav",
+            size_bytes=len(b"source-audio"),
+            asterisk_path="/var/lib/asterisk/sounds/custom/ivr/main-menu.wav",
+        )
+        prompt.original_file.save("main-menu.wav", ContentFile(b"source-audio"), save=False)
+        prompt.converted_file.save("main-menu-converted.wav", ContentFile(b"converted-audio"), save=False)
+        prompt.save()
+        return prompt
 
 
 class APIKeyLifecycleAPITests(TestCase):
