@@ -42,6 +42,11 @@ did_number_validator = RegexValidator(
     message="DIDs must be 7 to 15 digits, optionally prefixed with '+'.",
 )
 
+feature_code_validator = RegexValidator(
+    regex=r"^[0-9*#]{1,8}$",
+    message="Feature codes must be 1 to 8 dialable digits, '*', or '#'.",
+)
+
 mac_address_validator = RegexValidator(
     regex=r"^[0-9A-F]{12}$",
     message="MAC addresses must be 12 uppercase hexadecimal characters.",
@@ -456,6 +461,14 @@ class Location(TimestampedModel):
         choices=DeploymentStatus.choices,
         default=DeploymentStatus.NOT_DEPLOYED,
     )
+    default_inbound_destination = models.ForeignKey(
+        "InboundDestination",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="default_for_locations",
+        verbose_name="default inbound destination",
+    )
 
     class Meta:
         ordering = ["name"]
@@ -491,6 +504,13 @@ class Location(TimestampedModel):
                 errors["smtp_host"] = message
             if not self.smtp_from_email:
                 errors["smtp_from_email"] = message
+
+        if (
+            self.default_inbound_destination_id
+            and self.pk
+            and self.default_inbound_destination.location_id != self.pk
+        ):
+            errors["default_inbound_destination"] = "Default inbound destination must belong to this location."
 
         if errors:
             raise ValidationError(errors)
@@ -707,6 +727,35 @@ class IVR(TimestampedModel):
     )
     name = models.CharField(max_length=120)
     prompt_name = models.CharField(max_length=160, blank=True)
+    timeout_seconds = models.PositiveSmallIntegerField(default=10, validators=[MinValueValidator(1)])
+    business_hours_destination = models.ForeignKey(
+        "InboundDestination",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="business_hours_ivrs",
+    )
+    after_hours_destination = models.ForeignKey(
+        "InboundDestination",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="after_hours_ivrs",
+    )
+    timeout_destination = models.ForeignKey(
+        "InboundDestination",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="timeout_ivrs",
+    )
+    invalid_destination = models.ForeignKey(
+        "InboundDestination",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="invalid_input_ivrs",
+    )
     is_active = models.BooleanField(default=True)
 
     class Meta:
@@ -717,6 +766,18 @@ class IVR(TimestampedModel):
 
     def __str__(self):
         return f"{self.location}: {self.name}"
+
+    def clean(self):
+        super().clean()
+        self._validate_destination_location("business_hours_destination")
+        self._validate_destination_location("after_hours_destination")
+        self._validate_destination_location("timeout_destination")
+        self._validate_destination_location("invalid_destination")
+
+    def _validate_destination_location(self, field_name):
+        destination = getattr(self, field_name)
+        if destination and self.location_id and destination.location_id != self.location_id:
+            raise ValidationError({field_name: "IVR destinations must belong to the IVR location."})
 
 
 class RingGroup(TimestampedModel):
@@ -774,6 +835,13 @@ class CallQueue(TimestampedModel):
     timeout_seconds = models.PositiveSmallIntegerField(default=30)
     retry_seconds = models.PositiveSmallIntegerField(default=5)
     music_on_hold = models.CharField(max_length=80, blank=True)
+    overflow_destination = models.ForeignKey(
+        "InboundDestination",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="overflow_queues",
+    )
     recording_policy = models.CharField(
         max_length=16,
         choices=PBXRecordingPolicy.choices,
@@ -792,6 +860,15 @@ class CallQueue(TimestampedModel):
 
     def __str__(self):
         return f"{self.location}: {self.name}"
+
+    def clean(self):
+        super().clean()
+        if (
+            self.overflow_destination_id
+            and self.location_id
+            and self.overflow_destination.location_id != self.location_id
+        ):
+            raise ValidationError({"overflow_destination": "Queue overflow destination must belong to the queue location."})
 
 
 class PagingGroup(TimestampedModel):
@@ -1113,6 +1190,8 @@ class DID(TimestampedModel):
     default_destination = models.ForeignKey(
         InboundDestination,
         on_delete=models.PROTECT,
+        null=True,
+        blank=True,
         related_name="dids",
     )
     label = models.CharField(max_length=120, blank=True)
@@ -1144,11 +1223,81 @@ class DID(TimestampedModel):
             errors["default_destination"] = "Default destination must belong to the DID location."
         if self.trunk_id and self.location_id and self.trunk.location_id != self.location_id:
             errors["trunk"] = "Trunk must belong to the DID location."
+        if (
+            not self.direct_extension_id
+            and not self.default_destination_id
+            and not self._location_default_destination_id()
+        ):
+            errors["default_destination"] = "Choose a DID default destination or configure a location default inbound destination."
         if errors:
             raise ValidationError(errors)
 
+    @property
+    def effective_destination(self):
+        if self.direct_extension_id:
+            return self.direct_extension
+        return self.location_default_destination or self.default_destination
+
+    @property
+    def location_default_destination(self):
+        if not self.location_id:
+            return None
+        return self.location.default_inbound_destination
+
+    def _location_default_destination_id(self):
+        if not self.location_id:
+            return None
+        return self.location.default_inbound_destination_id
+
     def __str__(self):
         return self.number
+
+
+class FeatureCode(TimestampedModel):
+    class FeatureType(models.TextChoices):
+        VOICEMAIL_MAIN = "voicemail_main", "Voicemail main"
+        VOICEMAIL_DIRECT = "voicemail_direct", "Direct voicemail"
+        CALL_PICKUP = "call_pickup", "Call pickup"
+        DIRECTED_PICKUP = "directed_pickup", "Directed pickup"
+        PARK = "park", "Call park"
+        PAGING_PREFIX = "paging_prefix", "Paging prefix"
+        CUSTOM = "custom", "Custom"
+
+    location = models.ForeignKey(Location, on_delete=models.CASCADE, related_name="feature_codes")
+    code = models.CharField(max_length=8, validators=[feature_code_validator])
+    name = models.CharField(max_length=120)
+    feature_type = models.CharField(
+        max_length=24,
+        choices=FeatureType.choices,
+        default=FeatureType.CUSTOM,
+    )
+    destination = models.ForeignKey(
+        InboundDestination,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="feature_codes",
+    )
+    notes = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["location", "code"]
+        constraints = [
+            models.UniqueConstraint(fields=["location", "code"], name="unique_feature_code_per_location"),
+            models.CheckConstraint(
+                condition=models.Q(code__regex=r"^[0-9*#]{1,8}$"),
+                name="feature_code_dialable",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.destination_id and self.location_id and self.destination.location_id != self.location_id:
+            raise ValidationError({"destination": "Feature code destinations must belong to the feature code location."})
+
+    def __str__(self):
+        return f"{self.location}: {self.code} {self.name}"
 
 
 class Trunk(TimestampedModel):

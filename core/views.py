@@ -23,27 +23,38 @@ from .extension_csv import (
 )
 from .extension_management import clear_extension_relationships, is_911_disable_change
 from .forms import (
-    ExtensionForm,
+    CallQueueForm,
+    DIDForm,
+    FeatureCodeForm,
+    InboundDestinationForm,
+    IVRForm,
+    IVRMenuOptionFormSet,
     LocationForm,
+    PagingGroupForm,
+    RingGroupForm,
     OutboundRouteForm,
     OutboundRouteTrunkFormSet,
-    PhoneForm,
-    PhoneLineAppearanceFormSet,
-    PhoneSpeedDialFormSet,
     ProviderForm,
-    TrunkForm,
+    TrunkForm
 )
 from .models import (
     APIKey,
     AuditAction,
     AuditOutcome,
+    CallQueue,
+    DID,
     Extension,
+    FeatureCode,
+    InboundDestination,
+    IVR,
     Location,
+    PagingGroup,
     OutboundRoute,
     Phone,
     PhoneSpeedDial,
     PortalPermission,
     PortalRole,
+    RingGroup,
     Provider,
     ServiceIdentity,
     Trunk,
@@ -881,6 +892,605 @@ def speed_dial_export(request):
 @permission_required(PortalPermission.VIEW)
 def speed_dial_template(request):
     return _csv_response(speed_dial_template_csv(), "speed-dials-template.csv")
+
+
+@permission_required(PortalPermission.VIEW)
+def inbound_destination_list(request):
+    destinations = InboundDestination.objects.select_related(
+        "location",
+        "extension",
+        "ivr",
+        "ring_group",
+        "queue",
+    )
+    return _routing_list_response(
+        request,
+        kind="inbound-destinations",
+        title="Inbound Destinations",
+        description="Reusable targets for DID fallback, IVR, queue overflow, and feature-code routing.",
+        records=destinations,
+        create_url="inbound-destination-create",
+        edit_url="inbound-destination-edit",
+        empty_label="No inbound destinations configured",
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def inbound_destination_create(request):
+    form = InboundDestinationForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        return redirect("inbound-destinations")
+    return _routing_form_response(
+        request,
+        form=form,
+        area_slug="inbound-destinations",
+        eyebrow="Inbound Destination",
+        title="New Inbound Destination",
+        cancel_url="inbound-destinations",
+        delete_url=None,
+        object_instance=None,
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def inbound_destination_update(request, destination_id: int):
+    destination = get_object_or_404(InboundDestination, pk=destination_id)
+    form = InboundDestinationForm(request.POST or None, instance=destination)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        return redirect("inbound-destinations")
+    return _routing_form_response(
+        request,
+        form=form,
+        area_slug="inbound-destinations",
+        eyebrow="Inbound Destination",
+        title=f"Edit {destination.name}",
+        cancel_url="inbound-destinations",
+        delete_url="inbound-destination-delete",
+        object_instance=destination,
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def inbound_destination_delete(request, destination_id: int):
+    destination = get_object_or_404(InboundDestination, pk=destination_id)
+    return _routing_delete_response(
+        request,
+        record=destination,
+        area_slug="inbound-destinations",
+        eyebrow="Inbound Destination",
+        title=f"Delete {destination.name}",
+        cancel_url="inbound-destinations",
+    )
+
+
+@permission_required(PortalPermission.VIEW)
+def did_list(request):
+    dids = DID.objects.select_related(
+        "location",
+        "provider",
+        "trunk",
+        "direct_extension",
+        "default_destination",
+        "location__default_inbound_destination",
+    )
+    return _routing_list_response(
+        request,
+        kind="dids",
+        title="DID Routing",
+        description="Inbound DID routing with direct extension assignment and location default fallback.",
+        records=dids,
+        create_url="did-create",
+        edit_url="did-edit",
+        empty_label="No DIDs configured",
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def did_create(request):
+    form = DIDForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        return redirect("dids")
+    return _routing_form_response(
+        request,
+        form=form,
+        area_slug="dids",
+        eyebrow="DID",
+        title="New DID",
+        cancel_url="dids",
+        delete_url=None,
+        object_instance=None,
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def did_update(request, did_id: int):
+    did = get_object_or_404(DID, pk=did_id)
+    form = DIDForm(request.POST or None, instance=did)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        return redirect("dids")
+    return _routing_form_response(
+        request,
+        form=form,
+        area_slug="dids",
+        eyebrow="DID",
+        title=f"Edit {did.number}",
+        cancel_url="dids",
+        delete_url="did-delete",
+        object_instance=did,
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def did_delete(request, did_id: int):
+    did = get_object_or_404(DID, pk=did_id)
+    return _routing_delete_response(
+        request,
+        record=did,
+        area_slug="dids",
+        eyebrow="DID",
+        title=f"Delete {did.number}",
+        cancel_url="dids",
+    )
+
+
+@permission_required(PortalPermission.VIEW)
+def ivr_list(request):
+    ivrs = IVR.objects.select_related(
+        "location",
+        "business_hours_destination",
+        "after_hours_destination",
+        "timeout_destination",
+        "invalid_destination",
+    ).prefetch_related("menu_options__destination")
+    return _routing_list_response(
+        request,
+        kind="ivrs",
+        title="IVRs",
+        description="Business-hours, after-hours, timeout, invalid-input, and menu-option routing.",
+        records=ivrs,
+        create_url="ivr-create",
+        edit_url="ivr-edit",
+        empty_label="No IVRs configured",
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def ivr_create(request):
+    ivr = IVR()
+    form = IVRForm(request.POST or None, instance=ivr)
+    formset = IVRMenuOptionFormSet(
+        request.POST or None,
+        instance=ivr,
+        prefix="menu_options",
+        form_kwargs={"location": _ivr_formset_location(request, ivr)},
+    )
+    if request.method == "POST" and form.is_valid() and formset.is_valid():
+        with transaction.atomic():
+            ivr = form.save()
+            formset.instance = ivr
+            formset.save()
+        return redirect("ivrs")
+    return _routing_form_response(
+        request,
+        form=form,
+        area_slug="ivrs",
+        eyebrow="IVR",
+        title="New IVR",
+        cancel_url="ivrs",
+        delete_url=None,
+        object_instance=None,
+        formset=formset,
+        formset_title="Menu Options",
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def ivr_update(request, ivr_id: int):
+    ivr = get_object_or_404(IVR, pk=ivr_id)
+    form = IVRForm(request.POST or None, instance=ivr)
+    formset = IVRMenuOptionFormSet(
+        request.POST or None,
+        instance=ivr,
+        prefix="menu_options",
+        form_kwargs={"location": _ivr_formset_location(request, ivr)},
+    )
+    if request.method == "POST" and form.is_valid() and formset.is_valid():
+        with transaction.atomic():
+            ivr = form.save()
+            formset.instance = ivr
+            formset.save()
+        return redirect("ivrs")
+    return _routing_form_response(
+        request,
+        form=form,
+        area_slug="ivrs",
+        eyebrow="IVR",
+        title=f"Edit {ivr.name}",
+        cancel_url="ivrs",
+        delete_url="ivr-delete",
+        object_instance=ivr,
+        formset=formset,
+        formset_title="Menu Options",
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def ivr_delete(request, ivr_id: int):
+    ivr = get_object_or_404(IVR, pk=ivr_id)
+    return _routing_delete_response(
+        request,
+        record=ivr,
+        area_slug="ivrs",
+        eyebrow="IVR",
+        title=f"Delete {ivr.name}",
+        cancel_url="ivrs",
+    )
+
+
+@permission_required(PortalPermission.VIEW)
+def ring_group_list(request):
+    ring_groups = RingGroup.objects.select_related("location").prefetch_related("members__extension")
+    return _routing_list_response(
+        request,
+        kind="ring-groups",
+        title="Ring Groups",
+        description="Static ring groups with strategy, timeout, and ordered member extensions.",
+        records=ring_groups,
+        create_url="ring-group-create",
+        edit_url="ring-group-edit",
+        empty_label="No ring groups configured",
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def ring_group_create(request):
+    form = RingGroupForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        return redirect("ring-groups")
+    return _routing_form_response(
+        request,
+        form=form,
+        area_slug="ring-groups",
+        eyebrow="Ring Group",
+        title="New Ring Group",
+        cancel_url="ring-groups",
+        delete_url=None,
+        object_instance=None,
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def ring_group_update(request, ring_group_id: int):
+    ring_group = get_object_or_404(RingGroup, pk=ring_group_id)
+    form = RingGroupForm(request.POST or None, instance=ring_group)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        return redirect("ring-groups")
+    return _routing_form_response(
+        request,
+        form=form,
+        area_slug="ring-groups",
+        eyebrow="Ring Group",
+        title=f"Edit {ring_group.name}",
+        cancel_url="ring-groups",
+        delete_url="ring-group-delete",
+        object_instance=ring_group,
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def ring_group_delete(request, ring_group_id: int):
+    ring_group = get_object_or_404(RingGroup, pk=ring_group_id)
+    return _routing_delete_response(
+        request,
+        record=ring_group,
+        area_slug="ring-groups",
+        eyebrow="Ring Group",
+        title=f"Delete {ring_group.name}",
+        cancel_url="ring-groups",
+    )
+
+
+@permission_required(PortalPermission.VIEW)
+def queue_list(request):
+    queues = CallQueue.objects.select_related("location", "overflow_destination").prefetch_related("members__extension")
+    return _routing_list_response(
+        request,
+        kind="queues",
+        title="Queues",
+        description="Static queues with strategy, retry, timeout, music on hold, and overflow destination.",
+        records=queues,
+        create_url="queue-create",
+        edit_url="queue-edit",
+        empty_label="No queues configured",
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def queue_create(request):
+    form = CallQueueForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        return redirect("queues")
+    return _routing_form_response(
+        request,
+        form=form,
+        area_slug="queues",
+        eyebrow="Queue",
+        title="New Queue",
+        cancel_url="queues",
+        delete_url=None,
+        object_instance=None,
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def queue_update(request, queue_id: int):
+    queue = get_object_or_404(CallQueue, pk=queue_id)
+    form = CallQueueForm(request.POST or None, instance=queue)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        return redirect("queues")
+    return _routing_form_response(
+        request,
+        form=form,
+        area_slug="queues",
+        eyebrow="Queue",
+        title=f"Edit {queue.name}",
+        cancel_url="queues",
+        delete_url="queue-delete",
+        object_instance=queue,
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def queue_delete(request, queue_id: int):
+    queue = get_object_or_404(CallQueue, pk=queue_id)
+    return _routing_delete_response(
+        request,
+        record=queue,
+        area_slug="queues",
+        eyebrow="Queue",
+        title=f"Delete {queue.name}",
+        cancel_url="queues",
+    )
+
+
+@permission_required(PortalPermission.VIEW)
+def paging_group_list(request):
+    paging_groups = PagingGroup.objects.select_related("location").prefetch_related("members__extension")
+    return _routing_list_response(
+        request,
+        kind="paging-groups",
+        title="Paging Groups",
+        description="Static paging groups with dialable page codes and member extensions.",
+        records=paging_groups,
+        create_url="paging-group-create",
+        edit_url="paging-group-edit",
+        empty_label="No paging groups configured",
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def paging_group_create(request):
+    form = PagingGroupForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        return redirect("paging-groups")
+    return _routing_form_response(
+        request,
+        form=form,
+        area_slug="paging-groups",
+        eyebrow="Paging Group",
+        title="New Paging Group",
+        cancel_url="paging-groups",
+        delete_url=None,
+        object_instance=None,
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def paging_group_update(request, paging_group_id: int):
+    paging_group = get_object_or_404(PagingGroup, pk=paging_group_id)
+    form = PagingGroupForm(request.POST or None, instance=paging_group)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        return redirect("paging-groups")
+    return _routing_form_response(
+        request,
+        form=form,
+        area_slug="paging-groups",
+        eyebrow="Paging Group",
+        title=f"Edit {paging_group.name}",
+        cancel_url="paging-groups",
+        delete_url="paging-group-delete",
+        object_instance=paging_group,
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def paging_group_delete(request, paging_group_id: int):
+    paging_group = get_object_or_404(PagingGroup, pk=paging_group_id)
+    return _routing_delete_response(
+        request,
+        record=paging_group,
+        area_slug="paging-groups",
+        eyebrow="Paging Group",
+        title=f"Delete {paging_group.name}",
+        cancel_url="paging-groups",
+    )
+
+
+@permission_required(PortalPermission.VIEW)
+def feature_code_list(request):
+    feature_codes = FeatureCode.objects.select_related("location", "destination")
+    return _routing_list_response(
+        request,
+        kind="feature-codes",
+        title="Feature Codes",
+        description="Dialable PBX feature codes for voicemail, pickup, park, paging, and custom actions.",
+        records=feature_codes,
+        create_url="feature-code-create",
+        edit_url="feature-code-edit",
+        empty_label="No feature codes configured",
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def feature_code_create(request):
+    form = FeatureCodeForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        return redirect("feature-codes")
+    return _routing_form_response(
+        request,
+        form=form,
+        area_slug="feature-codes",
+        eyebrow="Feature Code",
+        title="New Feature Code",
+        cancel_url="feature-codes",
+        delete_url=None,
+        object_instance=None,
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def feature_code_update(request, feature_code_id: int):
+    feature_code = get_object_or_404(FeatureCode, pk=feature_code_id)
+    form = FeatureCodeForm(request.POST or None, instance=feature_code)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        return redirect("feature-codes")
+    return _routing_form_response(
+        request,
+        form=form,
+        area_slug="feature-codes",
+        eyebrow="Feature Code",
+        title=f"Edit {feature_code.code}",
+        cancel_url="feature-codes",
+        delete_url="feature-code-delete",
+        object_instance=feature_code,
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def feature_code_delete(request, feature_code_id: int):
+    feature_code = get_object_or_404(FeatureCode, pk=feature_code_id)
+    return _routing_delete_response(
+        request,
+        record=feature_code,
+        area_slug="feature-codes",
+        eyebrow="Feature Code",
+        title=f"Delete {feature_code.code}",
+        cancel_url="feature-codes",
+    )
+
+
+def _routing_list_response(
+    request,
+    *,
+    kind,
+    title,
+    description,
+    records,
+    create_url,
+    edit_url,
+    empty_label,
+):
+    context = _routing_context(
+        request,
+        {
+            "kind": kind,
+            "page_title": title,
+            "page_description": description,
+            "records": records,
+            "create_url": create_url,
+            "edit_url": edit_url,
+            "empty_label": empty_label,
+        },
+    )
+    return render(request, _template(request, "core/routing/list.html", "core/partials/routing/list_content.html"), context)
+
+
+def _routing_form_response(
+    request,
+    *,
+    form,
+    area_slug,
+    eyebrow,
+    title,
+    cancel_url,
+    delete_url,
+    object_instance,
+    formset=None,
+    formset_title="",
+):
+    context = _routing_context(
+        request,
+        {
+            "form": form,
+            "area_slug": area_slug,
+            "eyebrow": eyebrow,
+            "form_title": title,
+            "cancel_url": cancel_url,
+            "delete_url": delete_url,
+            "object_instance": object_instance,
+            "formset": formset,
+            "formset_title": formset_title,
+        },
+    )
+    return render(request, _template(request, "core/routing/form.html", "core/partials/routing/form_content.html"), context)
+
+
+def _routing_delete_response(request, *, record, area_slug, eyebrow, title, cancel_url):
+    if request.method == "POST":
+        record.delete()
+        return redirect(cancel_url)
+
+    context = _routing_context(
+        request,
+        {
+            "record": record,
+            "area_slug": area_slug,
+            "eyebrow": eyebrow,
+            "confirm_title": title,
+            "cancel_url": cancel_url,
+        },
+    )
+    return render(
+        request,
+        _template(request, "core/routing/confirm_delete.html", "core/partials/routing/confirm_delete_content.html"),
+        context,
+    )
+
+
+def _routing_context(request, context):
+    context.update(
+        {
+            "areas": visible_portal_areas(request.user),
+            "can_edit_routing": user_has_permission(request.user, PortalPermission.EDIT_CONFIG),
+        }
+    )
+    return context
+
+
+def _ivr_formset_location(request, ivr):
+    if request.method == "POST":
+        location_id = request.POST.get("location")
+        if location_id:
+            try:
+                return Location.objects.get(pk=location_id)
+            except (Location.DoesNotExist, ValueError):
+                return None
+        return None
+    if ivr and ivr.pk:
+        return ivr.location
+    return None
 
 
 def _template(request, full_template: str, partial_template: str) -> str:

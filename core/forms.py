@@ -7,15 +7,22 @@ from .models import (
     CallQueue,
     DID,
     Extension,
+    FeatureCode,
+    InboundDestination,
+    IVR,
+    IVRMenuOption,
     Location,
     OutboundRoute,
     OutboundRouteTrunk,
     PagingGroup,
+    PagingGroupMember,
     Phone,
     PhoneLineAppearance,
     PhoneSpeedDial,
     Provider,
+    QueueMember,
     RingGroup,
+    RingGroupMember,
     Trunk,
     normalize_mac_address,
 )
@@ -27,8 +34,61 @@ def _configure_standard_widgets(fields):
             field.widget.attrs.setdefault("class", "checkbox-input")
         else:
             field.widget.attrs.setdefault("class", "form-control")
+        if field_name.endswith("_seconds") or field_name in {"timeout_seconds", "retry_seconds", "penalty", "priority"}:
+            field.widget.attrs.setdefault("min", "1")
         if field_name in {"priority", "deployment_ssh_port", "sip_port", "rtp_port_start", "rtp_port_end", "iax_port"}:
             field.widget.attrs.setdefault("min", "1")
+
+def _selected_location_from_form(form):
+    if form.is_bound:
+        location_id = form.data.get(form.add_prefix("location"))
+        if location_id:
+            try:
+                return Location.objects.get(pk=location_id)
+            except (Location.DoesNotExist, ValueError):
+                return None
+    if getattr(form.instance, "location_id", None):
+        return form.instance.location
+    return None
+
+
+def _destination_queryset(location):
+    queryset = InboundDestination.objects.select_related(
+        "location",
+        "extension",
+        "ivr",
+        "ring_group",
+        "queue",
+    ).order_by("location__name", "name")
+    if location is not None:
+        queryset = queryset.filter(location=location)
+    return queryset
+
+
+def _extension_queryset_for_location(location):
+    queryset = Extension.objects.select_related("location").order_by("location__name", "number")
+    if location is not None:
+        queryset = queryset.filter(location=location)
+    return queryset
+
+
+def _sync_extension_members(parent, selected_extensions, model, parent_field, defaults):
+    selected_ids = [extension.id for extension in selected_extensions]
+    model.objects.filter(**{parent_field: parent}).exclude(extension_id__in=selected_ids).delete()
+    for index, extension in enumerate(selected_extensions, start=1):
+        member, created = model.objects.get_or_create(
+            **{parent_field: parent},
+            extension=extension,
+            defaults=defaults(index),
+        )
+        if not created:
+            update_fields = []
+            for field_name, value in defaults(index).items():
+                if getattr(member, field_name) != value:
+                    setattr(member, field_name, value)
+                    update_fields.append(field_name)
+            if update_fields:
+                member.save(update_fields=update_fields)
 
 
 class LocationForm(forms.ModelForm):
@@ -76,6 +136,7 @@ class LocationForm(forms.ModelForm):
             ("sip_bind_ip", "sip_port", "rtp_port_start", "rtp_port_end", "iax_bind_ip", "iax_port"),
         ),
         ("Emergency", ("default_did", "emergency_caller_id", "emergency_trunk")),
+        ("Inbound Routing", ("default_inbound_destination",)),
         ("Recording", ("recording_retention_days",)),
         (
             "SMTP",
@@ -118,6 +179,7 @@ class LocationForm(forms.ModelForm):
             "default_did",
             "emergency_caller_id",
             "emergency_trunk",
+            "default_inbound_destination",
             "recording_retention_days",
             "smtp_host",
             "smtp_port",
@@ -184,6 +246,18 @@ class LocationForm(forms.ModelForm):
                 field.widget.attrs.setdefault("max", "65535")
             if field_name == "recording_retention_days":
                 field.widget.attrs.setdefault("min", "1")
+
+        if "default_inbound_destination" in self.fields:
+            destinations = InboundDestination.objects.select_related(
+                "location",
+                "extension",
+                "ivr",
+                "ring_group",
+                "queue",
+            ).order_by("location__name", "name")
+            if self.instance and self.instance.pk:
+                destinations = destinations.filter(location=self.instance)
+            self.fields["default_inbound_destination"].queryset = destinations
 
     @property
     def fieldsets(self):
@@ -568,6 +642,437 @@ class ExtensionForm(forms.ModelForm):
             records = cleaned_data.get(field_name) or []
             if any(record.location_id != location.id for record in records):
                 self.add_error(field_name, f"{label} must belong to the selected location.")
+
+
+class InboundDestinationForm(forms.ModelForm):
+    FIELDSETS = (
+        ("Identity", ("location", "name", "destination_type")),
+        ("Target", ("extension", "ivr", "ring_group", "queue")),
+    )
+    TARGET_FIELDS = {
+        InboundDestination.DestinationType.EXTENSION: "extension",
+        InboundDestination.DestinationType.IVR: "ivr",
+        InboundDestination.DestinationType.RING_GROUP: "ring_group",
+        InboundDestination.DestinationType.QUEUE: "queue",
+    }
+
+    class Meta:
+        model = InboundDestination
+        fields = ("location", "name", "destination_type", "extension", "ivr", "ring_group", "queue")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        location = _selected_location_from_form(self)
+        self.fields["extension"].queryset = _extension_queryset_for_location(location)
+        self.fields["ivr"].queryset = IVR.objects.select_related("location").order_by("location__name", "name")
+        self.fields["ring_group"].queryset = RingGroup.objects.select_related("location").order_by("location__name", "name")
+        self.fields["queue"].queryset = CallQueue.objects.select_related("location").order_by("location__name", "name")
+        if location is not None:
+            self.fields["ivr"].queryset = self.fields["ivr"].queryset.filter(location=location)
+            self.fields["ring_group"].queryset = self.fields["ring_group"].queryset.filter(location=location)
+            self.fields["queue"].queryset = self.fields["queue"].queryset.filter(location=location)
+        for field_name in self.TARGET_FIELDS.values():
+            self.fields[field_name].required = False
+        _configure_standard_widgets(self.fields)
+
+    @property
+    def fieldsets(self):
+        return [
+            {
+                "legend": legend,
+                "fields": [self[field_name] for field_name in field_names if field_name in self.fields],
+            }
+            for legend, field_names in self.FIELDSETS
+        ]
+
+    def clean(self):
+        cleaned_data = super().clean()
+        location = cleaned_data.get("location")
+        destination_type = cleaned_data.get("destination_type")
+        target_field = self.TARGET_FIELDS.get(destination_type)
+        if target_field is None:
+            return cleaned_data
+
+        for field_name in self.TARGET_FIELDS.values():
+            if field_name != target_field:
+                cleaned_data[field_name] = None
+
+        target = cleaned_data.get(target_field)
+        if target is None:
+            self.add_error(target_field, "Choose the target for this destination type.")
+            return cleaned_data
+        if location and target.location_id != location.id:
+            self.add_error(target_field, "Target must belong to the selected location.")
+        return cleaned_data
+
+
+class DIDForm(forms.ModelForm):
+    FIELDSETS = (
+        ("Identity", ("location", "number", "label", "is_active")),
+        ("Carrier", ("provider", "trunk")),
+        ("Routing", ("direct_extension", "default_destination")),
+    )
+
+    class Meta:
+        model = DID
+        fields = (
+            "location",
+            "number",
+            "label",
+            "provider",
+            "trunk",
+            "direct_extension",
+            "default_destination",
+            "is_active",
+        )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        location = _selected_location_from_form(self)
+        self.fields["direct_extension"].queryset = _extension_queryset_for_location(location)
+        self.fields["default_destination"].queryset = _destination_queryset(location)
+        self.fields["provider"].queryset = Provider.objects.order_by("name")
+        self.fields["trunk"].queryset = Trunk.objects.select_related("location").order_by("location__name", "name")
+        if location is not None:
+            self.fields["trunk"].queryset = self.fields["trunk"].queryset.filter(location=location)
+        self.fields["direct_extension"].required = False
+        self.fields["default_destination"].required = False
+        self.fields["provider"].required = False
+        self.fields["trunk"].required = False
+        self.fields["number"].widget.attrs.setdefault("placeholder", "+15551203000")
+        _configure_standard_widgets(self.fields)
+
+    @property
+    def fieldsets(self):
+        return [
+            {
+                "legend": legend,
+                "fields": [self[field_name] for field_name in field_names if field_name in self.fields],
+            }
+            for legend, field_names in self.FIELDSETS
+        ]
+
+    def clean_number(self):
+        number = self.cleaned_data["number"]
+        duplicate_query = DID.objects.filter(number=number)
+        if self.instance and self.instance.pk:
+            duplicate_query = duplicate_query.exclude(pk=self.instance.pk)
+        if duplicate_query.exists():
+            raise forms.ValidationError("DID number already exists.")
+        return number
+
+
+class IVRForm(forms.ModelForm):
+    DESTINATION_FIELDS = (
+        "business_hours_destination",
+        "after_hours_destination",
+        "timeout_destination",
+        "invalid_destination",
+    )
+    FIELDSETS = (
+        ("Identity", ("location", "name", "prompt_name", "is_active")),
+        (
+            "Routing",
+            (
+                "business_hours_destination",
+                "after_hours_destination",
+                "timeout_seconds",
+                "timeout_destination",
+                "invalid_destination",
+            ),
+        ),
+    )
+
+    class Meta:
+        model = IVR
+        fields = (
+            "location",
+            "name",
+            "prompt_name",
+            "business_hours_destination",
+            "after_hours_destination",
+            "timeout_seconds",
+            "timeout_destination",
+            "invalid_destination",
+            "is_active",
+        )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        location = _selected_location_from_form(self)
+        for field_name in self.DESTINATION_FIELDS:
+            self.fields[field_name].queryset = _destination_queryset(location)
+            self.fields[field_name].required = False
+        _configure_standard_widgets(self.fields)
+
+    @property
+    def fieldsets(self):
+        return [
+            {
+                "legend": legend,
+                "fields": [self[field_name] for field_name in field_names if field_name in self.fields],
+            }
+            for legend, field_names in self.FIELDSETS
+        ]
+
+
+class IVRMenuOptionForm(forms.ModelForm):
+    class Meta:
+        model = IVRMenuOption
+        fields = ("digit", "label", "destination")
+
+    def __init__(self, *args, location=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["destination"].queryset = _destination_queryset(location)
+        self.fields["digit"].widget.attrs.setdefault("maxlength", "1")
+        self.fields["digit"].widget.attrs.setdefault("inputmode", "numeric")
+        _configure_standard_widgets(self.fields)
+
+
+class BaseIVRMenuOptionFormSet(BaseInlineFormSet):
+    def clean(self):
+        super().clean()
+        if any(self.errors):
+            return
+        digits = set()
+        for form in self.forms:
+            if not getattr(form, "cleaned_data", None) or form.cleaned_data.get("DELETE"):
+                continue
+            digit = form.cleaned_data.get("digit")
+            if digit in {None, ""}:
+                continue
+            if digit in digits:
+                raise forms.ValidationError("IVR menu digits must be unique.")
+            digits.add(digit)
+
+
+class RingGroupForm(forms.ModelForm):
+    FIELDSETS = (
+        ("Identity", ("location", "name", "strategy", "timeout_seconds", "is_active")),
+        ("Static Members", ("members",)),
+    )
+    members = forms.ModelMultipleChoiceField(queryset=Extension.objects.none(), required=False)
+
+    class Meta:
+        model = RingGroup
+        fields = ("location", "name", "strategy", "timeout_seconds", "is_active", "members")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        location = _selected_location_from_form(self)
+        self.fields["members"].queryset = _extension_queryset_for_location(location)
+        if self.instance and self.instance.pk:
+            self.fields["members"].initial = Extension.objects.filter(ring_group_memberships__ring_group=self.instance)
+        _configure_standard_widgets(self.fields)
+        self.fields["members"].widget.attrs.setdefault("size", "6")
+
+    @property
+    def fieldsets(self):
+        return [
+            {
+                "legend": legend,
+                "fields": [self[field_name] for field_name in field_names if field_name in self.fields],
+            }
+            for legend, field_names in self.FIELDSETS
+        ]
+
+    def clean(self):
+        cleaned_data = super().clean()
+        self._validate_member_locations(cleaned_data)
+        return cleaned_data
+
+    def save(self, commit=True):
+        ring_group = super().save(commit=commit)
+        if commit:
+            _sync_extension_members(
+                ring_group,
+                self.cleaned_data["members"],
+                RingGroupMember,
+                "ring_group",
+                lambda index: {"priority": index},
+            )
+        return ring_group
+
+    def _validate_member_locations(self, cleaned_data):
+        location = cleaned_data.get("location")
+        members = cleaned_data.get("members") or []
+        if location and any(member.location_id != location.id for member in members):
+            self.add_error("members", "Ring group members must belong to the selected location.")
+
+
+class CallQueueForm(forms.ModelForm):
+    FIELDSETS = (
+        (
+            "Identity",
+            ("location", "name", "strategy", "timeout_seconds", "retry_seconds", "music_on_hold", "is_active"),
+        ),
+        ("Routing", ("overflow_destination",)),
+        ("Recording", ("recording_policy",)),
+        ("Static Members", ("members",)),
+    )
+    members = forms.ModelMultipleChoiceField(queryset=Extension.objects.none(), required=False)
+
+    class Meta:
+        model = CallQueue
+        fields = (
+            "location",
+            "name",
+            "strategy",
+            "timeout_seconds",
+            "retry_seconds",
+            "music_on_hold",
+            "overflow_destination",
+            "recording_policy",
+            "is_active",
+            "members",
+        )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        location = _selected_location_from_form(self)
+        self.fields["members"].queryset = _extension_queryset_for_location(location)
+        self.fields["overflow_destination"].queryset = _destination_queryset(location)
+        self.fields["overflow_destination"].required = False
+        if self.instance and self.instance.pk:
+            self.fields["members"].initial = Extension.objects.filter(queue_memberships__queue=self.instance)
+        _configure_standard_widgets(self.fields)
+        self.fields["members"].widget.attrs.setdefault("size", "6")
+
+    @property
+    def fieldsets(self):
+        return [
+            {
+                "legend": legend,
+                "fields": [self[field_name] for field_name in field_names if field_name in self.fields],
+            }
+            for legend, field_names in self.FIELDSETS
+        ]
+
+    def clean(self):
+        cleaned_data = super().clean()
+        location = cleaned_data.get("location")
+        members = cleaned_data.get("members") or []
+        overflow_destination = cleaned_data.get("overflow_destination")
+        if location and any(member.location_id != location.id for member in members):
+            self.add_error("members", "Queue members must belong to the selected location.")
+        if location and overflow_destination and overflow_destination.location_id != location.id:
+            self.add_error("overflow_destination", "Overflow destination must belong to the selected location.")
+        return cleaned_data
+
+    def save(self, commit=True):
+        queue = super().save(commit=commit)
+        if commit:
+            _sync_extension_members(
+                queue,
+                self.cleaned_data["members"],
+                QueueMember,
+                "queue",
+                lambda index: {"penalty": 0},
+            )
+        return queue
+
+
+class PagingGroupForm(forms.ModelForm):
+    FIELDSETS = (
+        ("Identity", ("location", "name", "page_code", "is_active")),
+        ("Static Members", ("members",)),
+    )
+    members = forms.ModelMultipleChoiceField(queryset=Extension.objects.none(), required=False)
+
+    class Meta:
+        model = PagingGroup
+        fields = ("location", "name", "page_code", "is_active", "members")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        location = _selected_location_from_form(self)
+        self.fields["members"].queryset = _extension_queryset_for_location(location)
+        if self.instance and self.instance.pk:
+            self.fields["members"].initial = Extension.objects.filter(paging_group_memberships__paging_group=self.instance)
+        self.fields["page_code"].widget.attrs.setdefault("maxlength", "4")
+        self.fields["page_code"].widget.attrs.setdefault("inputmode", "numeric")
+        _configure_standard_widgets(self.fields)
+        self.fields["members"].widget.attrs.setdefault("size", "6")
+
+    @property
+    def fieldsets(self):
+        return [
+            {
+                "legend": legend,
+                "fields": [self[field_name] for field_name in field_names if field_name in self.fields],
+            }
+            for legend, field_names in self.FIELDSETS
+        ]
+
+    def clean(self):
+        cleaned_data = super().clean()
+        location = cleaned_data.get("location")
+        members = cleaned_data.get("members") or []
+        if location and any(member.location_id != location.id for member in members):
+            self.add_error("members", "Paging group members must belong to the selected location.")
+        return cleaned_data
+
+    def save(self, commit=True):
+        paging_group = super().save(commit=commit)
+        if commit:
+            _sync_extension_members(
+                paging_group,
+                self.cleaned_data["members"],
+                PagingGroupMember,
+                "paging_group",
+                lambda index: {},
+            )
+        return paging_group
+
+
+class FeatureCodeForm(forms.ModelForm):
+    FIELDSETS = (
+        ("Identity", ("location", "code", "name", "feature_type", "is_active")),
+        ("Routing", ("destination",)),
+        ("Notes", ("notes",)),
+    )
+
+    class Meta:
+        model = FeatureCode
+        fields = ("location", "code", "name", "feature_type", "destination", "notes", "is_active")
+        widgets = {"notes": forms.Textarea(attrs={"rows": 3})}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        location = _selected_location_from_form(self)
+        self.fields["destination"].queryset = _destination_queryset(location)
+        self.fields["destination"].required = False
+        self.fields["code"].widget.attrs.setdefault("placeholder", "*98")
+        _configure_standard_widgets(self.fields)
+
+    @property
+    def fieldsets(self):
+        return [
+            {
+                "legend": legend,
+                "fields": [self[field_name] for field_name in field_names if field_name in self.fields],
+            }
+            for legend, field_names in self.FIELDSETS
+        ]
+
+    def clean(self):
+        cleaned_data = super().clean()
+        location = cleaned_data.get("location")
+        destination = cleaned_data.get("destination")
+        if location and destination and destination.location_id != location.id:
+            self.add_error("destination", "Destination must belong to the selected location.")
+        return cleaned_data
+
+
+IVRMenuOptionFormSet = forms.inlineformset_factory(
+    IVR,
+    IVRMenuOption,
+    form=IVRMenuOptionForm,
+    formset=BaseIVRMenuOptionFormSet,
+    fields=("digit", "label", "destination"),
+    extra=4,
+    can_delete=True,
+)
 
 
 class PhoneForm(forms.ModelForm):

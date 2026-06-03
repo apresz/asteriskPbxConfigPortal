@@ -8,6 +8,7 @@ from .models import (
     IVRMenuOption,
     CallQueue,
     Extension,
+    FeatureCode,
     InboundDestination,
     Location,
     OutboundRoute,
@@ -97,6 +98,7 @@ class LocationAdmin(admin.ModelAdmin):
             {"fields": ("sip_bind_ip", "sip_port", "rtp_port_start", "rtp_port_end", "iax_bind_ip", "iax_port")},
         ),
         ("Emergency", {"fields": ("default_did", "emergency_caller_id", "emergency_trunk")}),
+        ("Inbound Routing", {"fields": ("default_inbound_destination",)}),
         ("Recording", {"fields": ("recording_retention_days",)}),
         (
             "SMTP",
@@ -125,7 +127,7 @@ class ExtensionAdmin(admin.ModelAdmin):
 
 @admin.register(CallQueue)
 class CallQueueAdmin(admin.ModelAdmin):
-    list_display = ("name", "location", "strategy", "recording_policy", "is_active")
+    list_display = ("name", "location", "strategy", "recording_policy", "overflow_destination", "is_active")
     list_filter = ("location", "strategy", "recording_policy", "is_active")
     search_fields = ("name",)
 
@@ -172,6 +174,7 @@ admin.site.register(OutboundRouteTrunk)
 admin.site.register(InboundDestination)
 admin.site.register(IVR)
 admin.site.register(IVRMenuOption)
+admin.site.register(FeatureCode)
 admin.site.register(RingGroup)
 admin.site.register(RingGroupMember)
 admin.site.register(QueueMember)
