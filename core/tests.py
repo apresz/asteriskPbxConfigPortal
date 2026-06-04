@@ -66,7 +66,13 @@ from .config_export import (
     validate_location_routing,
     write_config_version_directory,
 )
-from .deployments import DeploymentCommandResult, DeploymentError, deploy_config_version
+from .deployments import (
+    SSHDeploymentRunner,
+    DeploymentCommandResult,
+    DeploymentError,
+    deploy_config_version,
+    extract_deployment_bundle,
+)
 from .extension_csv import ExtensionCSVError, export_extensions_csv, extension_template_csv, import_extensions_csv
 from .extension_management import sync_extension_relationships
 from .forms import ExtensionForm, IVRForm, LocationForm, PhoneForm
@@ -466,6 +472,10 @@ class PortalRouteTests(TestCase):
 
         self.assertEqual(admin_response.status_code, 200)
         self.assertContains(admin_response, 'data-area="settings"')
+        self.assertContains(admin_response, "plaintext telecom secret")
+        self.assertContains(admin_response, "LAN/WARP")
+        self.assertContains(admin_response, "emergency calling")
+        self.assertContains(admin_response, "call recording consent")
 
     def test_htmx_request_returns_partial_content(self):
         self.client.force_login(self.viewer)
@@ -853,6 +863,22 @@ class LocationManagementViewTests(TestCase):
             self.client.get(reverse("location-config-export-download", args=[location.slug, first.version_number])).status_code,
             403,
         )
+
+    def test_location_detail_surfaces_security_and_compliance_notes(self):
+        location = Location.objects.create(**location_model_data(name="Compliance HQ", slug="compliance-hq"))
+        Extension.objects.create(location=location, number="3000", display_name="Compliance Desk")
+        add_emergency_route(location)
+
+        self.client.force_login(self.editor)
+
+        response = self.client.get(reverse("location-detail", args=[location.slug]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Export and Deployment Warnings")
+        self.assertContains(response, "plaintext SIP")
+        self.assertContains(response, "LAN/WARP")
+        self.assertContains(response, "emergency calling routes")
+        self.assertContains(response, "recording consent")
 
     def test_export_download_deploy_and_rollback_actions_update_history(self):
         operator = User.objects.create_user(username="deploy-operator", password="portal-pass")
@@ -2206,6 +2232,10 @@ class AsteriskConfigGenerationTests(TestCase):
             self.assertEqual(payload["config_version"]["version_number"], version.version_number)
             self.assertEqual(payload["config_version"]["checksum"], version.checksum)
             self.assertEqual(zip_path.read_bytes(), bytes(version.archive))
+            if os.name == "posix":
+                self.assertEqual(zip_path.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(expanded_dir.stat().st_mode & 0o777, 0o700)
+                self.assertEqual((expanded_dir / "asterisk" / "extensions.conf").stat().st_mode & 0o777, 0o600)
 
     def _golden(self, filename):
         return (
@@ -2938,6 +2968,11 @@ class ConfigVersionExportTests(TestCase):
             env_example = archive.read(".env.example").decode("utf-8")
             manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
             checksums = archive.read("SHA256SUMS").decode("utf-8").splitlines()
+            modes = {
+                (info.external_attr >> 16) & 0o777
+                for info in archive.infolist()
+                if not info.is_dir()
+            }
 
         self.assertEqual(
             names,
@@ -2990,6 +3025,7 @@ class ConfigVersionExportTests(TestCase):
             {file["path"] for file in version.file_manifest},
             set(names),
         )
+        self.assertEqual(modes, {0o600})
 
     def test_runtime_bundle_files_match_golden_templates(self):
         version = create_config_version(self.location, exported_by=self.user)
@@ -3519,6 +3555,9 @@ class ConfigDeploymentServiceTests(TestCase):
         self.assertIn("tftp/company-directory.xml", runner.uploads[0]["tftp_files"])
         self.assertIn("/srv/pbx/current/asterisk", runner.remote_commands[2])
         self.assertIn("/srv/pbx/current/tftp", runner.remote_commands[2])
+        self.assertIn("umask 077", runner.remote_commands[0])
+        self.assertIn("mkdir -p -m 700", runner.remote_commands[0])
+        self.assertIn("chmod 700", runner.remote_commands[0])
 
         audit = AuditLog.objects.get(action=AuditAction.DEPLOYMENT)
         self.assertEqual(audit.actor, self.operator)
@@ -3575,6 +3614,58 @@ class ConfigDeploymentServiceTests(TestCase):
         self.assertEqual(audit.outcome, AuditOutcome.SUCCESS)
         self.assertEqual(audit.details["action"], DeploymentRecord.Action.ROLLBACK)
         self.assertEqual(audit.details["rollback_source_version_id"], previous_version.id)
+
+    def test_deployment_sensitive_files_and_staging_are_restricted(self):
+        version = create_config_version(self.location, exported_by=self.operator)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            runner = SSHDeploymentRunner.from_location(self.location, workspace)
+            extracted = extract_deployment_bundle(version, workspace / "bundle")
+
+            self.assertTrue(runner.key_path.exists())
+            self.assertTrue(runner.known_hosts_path.exists())
+            self.assertIn("asterisk/pjsip.conf", extracted)
+            self.assertIn("tftp/company-directory.xml", extracted)
+            if os.name == "posix":
+                self.assertEqual(runner.key_path.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(runner.known_hosts_path.stat().st_mode & 0o777, 0o600)
+                self.assertEqual((workspace / "bundle").stat().st_mode & 0o777, 0o700)
+                self.assertEqual((workspace / "bundle" / "asterisk").stat().st_mode & 0o777, 0o700)
+                self.assertEqual((workspace / "bundle" / "asterisk" / "pjsip.conf").stat().st_mode & 0o777, 0o600)
+
+    def test_upload_bundle_restricts_remote_staging_permissions(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundle_dir = Path(temp_dir)
+            (bundle_dir / "asterisk").mkdir()
+            (bundle_dir / "tftp").mkdir()
+            (bundle_dir / "asterisk" / "pjsip.conf").write_text("[transport]\n", encoding="utf-8")
+            (bundle_dir / "tftp" / "company-directory.xml").write_text("<directory />\n", encoding="utf-8")
+            runner = SSHDeploymentRunner(
+                host="pbx.example.test",
+                port=22,
+                username="deploy",
+                key_path=bundle_dir / "deployment_key",
+            )
+            calls = []
+
+            def fake_run(command, **kwargs):
+                calls.append((command, kwargs))
+                if command[0] == "tar":
+                    return subprocess.CompletedProcess(command, 0, stdout=b"tarball", stderr=b"")
+                return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+            with mock.patch("core.deployments.subprocess.run", side_effect=fake_run):
+                result = runner.upload_bundle(bundle_dir, "/srv/pbx/staging/site/v1")
+
+            self.assertEqual(result.returncode, 0)
+            remote_command = calls[1][0][-1]
+            self.assertIn("umask 077", remote_command)
+            self.assertIn("mkdir -p -m 700 /srv/pbx/staging/site/v1", remote_command)
+            self.assertIn("tar -xzf - -C /srv/pbx/staging/site/v1", remote_command)
+            self.assertIn("chmod -R go-rwx /srv/pbx/staging/site/v1", remote_command)
+
+
 class ConfigExportGoldenFileTests(TestCase):
     maxDiff = None
 
@@ -3659,7 +3750,8 @@ class ConfigExportGoldenFileTests(TestCase):
                 lines.append(
                     (
                         f"{path.relative_to(root).as_posix()}|size={len(content)}|"
-                        f"sha256={hashlib.sha256(content).hexdigest()}"
+                        f"sha256={hashlib.sha256(content).hexdigest()}|"
+                        f"mode={oct(path.stat().st_mode & 0o777)}"
                     )
                 )
         return "\n".join(lines) + "\n"
@@ -3878,6 +3970,9 @@ class AudioPromptConversionTests(TestCase):
             self.assertTrue(prompt.converted_file.name.endswith(".wav"))
             self.assertTrue(prompt.asterisk_path.endswith(".wav"))
             self.assertFalse(prompt.playback_name.endswith(".wav"))
+            if os.name == "posix":
+                self.assertEqual(Path(prompt.original_file.path).stat().st_mode & 0o777, 0o600)
+                self.assertEqual(Path(prompt.converted_file.path).stat().st_mode & 0o777, 0o600)
         for command in self.commands:
             self.assertIn("-ar", command)
             self.assertIn("8000", command)
@@ -4918,6 +5013,15 @@ class AdminBackupWorkflowTests(TestCase):
             self.assertEqual(manifest["contents"]["database_dump"], "database/django-dumpdata.json")
             self.assertEqual(manifest["contents"]["media"]["file_count"], 2)
             self.assertIn("off-host storage", manifest["off_host_storage"])
+            self.assertTrue(any("plaintext telecom secrets" in note for note in manifest["security_notes"]))
+            self.assertEqual(
+                {
+                    (info.external_attr >> 16) & 0o777
+                    for info in archive.infolist()
+                    if not info.is_dir()
+                },
+                {0o600},
+            )
 
             export_metadata = json.loads(archive.read("exports/config_versions.json"))
             self.assertEqual(export_metadata[0]["checksum"], self.config_version.checksum)
@@ -4933,7 +5037,9 @@ class AdminBackupWorkflowTests(TestCase):
 
             audit_logs = json.loads(archive.read("audit/audit_logs.json"))
             self.assertIn("config_change", {row["action"] for row in audit_logs})
-            self.assertIn(b"suitable for off-host storage", archive.read("README.txt").lower())
+            backup_readme = archive.read("README.txt").lower()
+            self.assertIn(b"suitable for off-host storage", backup_readme)
+            self.assertIn(b"plaintext telecom secrets", backup_readme)
 
     def test_backup_generate_and_download_require_admin(self):
         self.client.force_login(self.viewer)

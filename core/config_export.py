@@ -17,6 +17,7 @@ from django.db.models import Max
 from django.utils import timezone
 
 from .agent_client import portal_url_to_websocket_url
+from .file_permissions import RESTRICTED_FILE_MODE, ensure_restricted_directory, write_restricted_bytes
 from .models import (
     AudioPrompt,
     ConfigVersion,
@@ -371,8 +372,7 @@ def build_config_export_archive(
 
 
 def write_config_version_directory(version: ConfigVersion, output_dir: str | Path) -> None:
-    target = Path(output_dir)
-    target.mkdir(parents=True, exist_ok=True)
+    target = ensure_restricted_directory(output_dir)
     with zipfile.ZipFile(BytesIO(bytes(version.archive))) as archive:
         for zip_info in archive.infolist():
             destination = (target / zip_info.filename).resolve()
@@ -380,8 +380,8 @@ def write_config_version_directory(version: ConfigVersion, output_dir: str | Pat
                 destination.relative_to(target.resolve())
             except ValueError as exc:
                 raise ValueError(f"Unsafe ZIP member path: {zip_info.filename}") from exc
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(archive.read(zip_info.filename))
+            ensure_restricted_directory(destination.parent)
+            write_restricted_bytes(destination, archive.read(zip_info.filename))
 
 
 def _export_payload_files(location: Location, config: dict[str, Any]) -> list[tuple[str, bytes, str]]:
@@ -570,7 +570,7 @@ def _zip_archive(files: list[tuple[str, bytes, str]]) -> bytes:
         for path, content, _content_type in files:
             zip_info = zipfile.ZipInfo(path, date_time=ZIP_TIMESTAMP)
             zip_info.compress_type = zipfile.ZIP_DEFLATED
-            zip_info.external_attr = 0o644 << 16
+            zip_info.external_attr = RESTRICTED_FILE_MODE << 16
             archive.writestr(zip_info, content)
     return output.getvalue()
 

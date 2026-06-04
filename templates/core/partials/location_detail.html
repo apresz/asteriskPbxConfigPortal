@@ -3,6 +3,7 @@
     <p class="eyebrow">Location</p>
     <h1>{{ location.name }}</h1>
     <p>{{ location.description|default:"No description" }}</p>
+    <p class="restricted-copy">Generated ZIP archives contain plaintext telecom secrets; deploy only through LAN/WARP administrator paths after emergency calling and recording consent review.</p>
   </span>
   <span class="button-row">
     <a class="button button--secondary" href="{% url 'locations' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Locations</a>
@@ -16,6 +17,15 @@
       <a class="button" href="{% url 'location-edit' location.slug %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Edit</a>
     {% endif %}
   </span>
+</section>
+
+<section class="notice-panel notice-panel--warning" aria-label="Config export security and compliance notes">
+  <h2>Export and Deployment Warnings</h2>
+  <ul>
+    <li>Generated Asterisk configs, <code>.env</code> files, and exported ZIPs can contain plaintext SIP, AMI, SMTP, deployment SSH, and PBX agent secrets.</li>
+    <li>Deployments should stay restricted to LAN/WARP-accessible PBX hosts and administrator SSH paths.</li>
+    <li>Admins must validate emergency calling routes/caller ID and call recording consent/retention obligations before exporting, deploying, or running live controls.</li>
+  </ul>
 </section>
 
 {% if export_errors %}

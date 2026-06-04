@@ -3,13 +3,22 @@
     <span>
       <p class="eyebrow">Admin Settings</p>
       <h1>Backups</h1>
-      <p>Downloadable archives for off-host storage.</p>
+      <p>Downloadable archives for off-host storage. Treat PostgreSQL data and generated archives as plaintext telecom secret material.</p>
     </span>
     <form method="post" action="{% url 'admin-backup-create' %}">
       {% csrf_token %}
       <button class="button" type="submit">Generate backup</button>
     </form>
   </div>
+
+  <section class="notice-panel notice-panel--warning" aria-label="Backup security and compliance notes">
+    <h2>Security and Compliance</h2>
+    <ul>
+      <li>PostgreSQL records and backup ZIPs can contain plaintext SIP, AMI, SMTP, deployment SSH, and PBX agent secrets.</li>
+      <li>Keep portal access and backup handling limited to LAN/WARP administrator paths and encrypted restricted storage.</li>
+      <li>Admins are responsible for emergency calling configuration and call recording consent/retention compliance before restore or redeploy.</li>
+    </ul>
+  </section>
 
   <div class="summary-grid">
     <div class="summary-tile">

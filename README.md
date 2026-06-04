@@ -9,6 +9,7 @@ docker compose up --build
 ```
 
 The web app listens on `http://localhost:8000`. PostgreSQL is provided by the `db` service and wired through `DATABASE_URL`.
+Production access should remain limited to trusted LAN or WARP client networks.
 
 ## Environment
 
@@ -41,8 +42,17 @@ The ZIP archive includes database data, uploaded media/audio, export metadata, g
 PostgreSQL deployments use `pg_dump` when the command is available; local SQLite/test runs use a Django fixture dump fallback.
 
 Downloaded backups are suitable for off-host storage.
-Treat each archive as sensitive because it can contain PBX credentials, deployment secrets, uploaded prompts, and audit history.
-Retained copies should be stored outside the application host on encrypted storage.
+Treat each archive as sensitive because PostgreSQL records, generated configs, and exported ZIPs can contain plaintext SIP, AMI, SMTP, deployment SSH, and PBX agent secrets.
+Retained copies should be stored outside the application host on encrypted storage with administrator-only access.
+
+## Security and Operations Checklist
+
+- Keep portal access restricted to LAN/WARP client CIDRs with `PORTAL_ENFORCE_CLIENT_CIDR=true` in production.
+- Store local SQLite databases, uploaded media, generated backups, exported ZIPs, expanded export directories, SSH private keys, and deployment staging directories with owner-only permissions where the platform supports POSIX modes.
+- Review deployment hosts for `0700` staging directories and owner-only generated config files before enabling live deploy/rollback operations.
+- Treat PostgreSQL dumps and all exported configuration archives as plaintext telecom secret material.
+- Validate emergency calling routes, emergency caller ID, and upstream trunk behavior for each location before deployment.
+- Confirm call recording consent, retention, and playback access obligations for the deployment jurisdiction before enabling recording policies.
 
 ## Validation
 
