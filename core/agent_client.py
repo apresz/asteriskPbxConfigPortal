@@ -1,7 +1,9 @@
 import asyncio
 import base64
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone as datetime_timezone
 import json
+import mimetypes
 import os
 from pathlib import Path
 import secrets
@@ -13,6 +15,7 @@ from .ami_telemetry import (
     DEFAULT_CDR_CSV_PATH,
     DEFAULT_CEL_CSV_PATH,
     DEFAULT_RECORDING_ROOT,
+    RECORDING_AUDIO_SUFFIXES,
     collect_agent_telemetry,
     telemetry_failure_payload,
 )
@@ -54,6 +57,7 @@ class AgentConfig:
     cdr_csv_path: str = DEFAULT_CDR_CSV_PATH
     cel_csv_path: str = DEFAULT_CEL_CSV_PATH
     recording_root: str = DEFAULT_RECORDING_ROOT
+    recording_retention_days: int | None = None
     telemetry_interval_seconds: float = 60.0
 
     @classmethod
@@ -76,6 +80,7 @@ class AgentConfig:
             cdr_csv_path=os.environ.get("ASTERISK_CDR_CSV_PATH", DEFAULT_CDR_CSV_PATH),
             cel_csv_path=os.environ.get("ASTERISK_CEL_CSV_PATH", DEFAULT_CEL_CSV_PATH),
             recording_root=os.environ.get("ASTERISK_RECORDING_ROOT", DEFAULT_RECORDING_ROOT),
+            recording_retention_days=_positive_int_or_none(os.environ.get("RECORDING_RETENTION_DAYS")),
             telemetry_interval_seconds=float(os.environ.get("PBX_AGENT_TELEMETRY_INTERVAL_SECONDS", "60")),
         )
 
@@ -196,7 +201,10 @@ async def handle_agent_control_message(
     *,
     command_executor=None,
 ) -> dict | None:
-    if message.get("type") != "live_command":
+    message_type = message.get("type")
+    if message_type == "recording_file_request":
+        return await _maybe_await(read_recording_file_request(config, message))
+    if message_type != "live_command":
         return None
 
     command_id = str(message.get("command_id") or "")
@@ -212,6 +220,86 @@ async def handle_agent_control_message(
         "command_id": command_id,
         "command": command_name,
         **result,
+    }
+
+
+class RecordingFileError(Exception):
+    def __init__(self, message: str, *, code: str = "unavailable"):
+        super().__init__(message)
+        self.code = code
+
+
+def read_recording_file_request(config: AgentConfig, message: dict) -> dict:
+    request_id = str(message.get("request_id") or "")
+    path = str(message.get("path") or message.get("relative_path") or "").strip()
+    retention_days = _positive_int_or_none(message.get("retention_days"))
+    try:
+        payload = read_recording_file(config, path, retention_days=retention_days)
+    except RecordingFileError as exc:
+        return {
+            "type": "recording_file_result",
+            "request_id": request_id,
+            "status": "failure",
+            "error": str(exc),
+            "error_code": exc.code,
+        }
+
+    return {
+        "type": "recording_file_result",
+        "request_id": request_id,
+        "status": "success",
+        **payload,
+    }
+
+
+def read_recording_file(
+    config: AgentConfig,
+    path: str,
+    *,
+    retention_days: int | None = None,
+    now: datetime | None = None,
+) -> dict:
+    if not path:
+        raise RecordingFileError("Recording path is required.")
+
+    root_path = Path(config.recording_root).resolve(strict=False)
+    requested_path = Path(path)
+    candidate_path = requested_path if requested_path.is_absolute() else root_path / requested_path
+    candidate_path = candidate_path.resolve(strict=False)
+    try:
+        relative_path = candidate_path.relative_to(root_path).as_posix()
+    except ValueError as exc:
+        raise RecordingFileError("Recording path is outside the recording root.", code="denied") from exc
+
+    if candidate_path.suffix.lower() not in RECORDING_AUDIO_SUFFIXES:
+        raise RecordingFileError("Recording format is not supported.")
+    if not candidate_path.is_file():
+        raise RecordingFileError("Recording is unavailable.")
+
+    try:
+        stat = candidate_path.stat()
+    except OSError as exc:
+        raise RecordingFileError("Recording is unavailable.") from exc
+    modified_at = datetime.fromtimestamp(stat.st_mtime, tz=datetime_timezone.utc)
+    effective_retention_days = retention_days or config.recording_retention_days
+    if effective_retention_days:
+        expires_at = modified_at + timedelta(days=effective_retention_days)
+        if expires_at <= (now or datetime.now(tz=datetime_timezone.utc)):
+            raise RecordingFileError("Recording has expired.", code="expired")
+
+    try:
+        content = candidate_path.read_bytes()
+    except OSError as exc:
+        raise RecordingFileError("Recording is unavailable.") from exc
+    content_type, _encoding = mimetypes.guess_type(candidate_path.name)
+    return {
+        "path": str(candidate_path),
+        "relative_path": relative_path,
+        "filename": candidate_path.name,
+        "content_type": content_type or "application/octet-stream",
+        "size_bytes": stat.st_size,
+        "modified_at": modified_at.isoformat(),
+        "content_base64": base64.b64encode(content).decode("ascii"),
     }
 
 
@@ -353,3 +441,11 @@ async def _maybe_await(value):
     if hasattr(value, "__await__"):
         return await value
     return value
+
+
+def _positive_int_or_none(value) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None

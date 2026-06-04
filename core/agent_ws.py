@@ -282,6 +282,19 @@ async def _handle_agent_payload(location: Location, agent_session: AgentSession,
         )
         return
 
+    if payload.get("type") == "recording_file_result":
+        request_id = str(payload.get("request_id") or "")
+        if not request_id or not agent_connection_registry.resolve_result(agent_session, request_id, payload):
+            await _send_error(send, "Unknown recording file result.")
+            return
+        await send(
+            {
+                "type": "websocket.send",
+                "text": json.dumps({"type": "recording_file_result_ack", "request_id": request_id}),
+            }
+        )
+        return
+
     await _send_error(send, "Unsupported agent message type.")
 
 

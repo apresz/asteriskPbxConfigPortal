@@ -1,9 +1,11 @@
+import base64
 import csv
 import asyncio
 from datetime import datetime, timedelta, timezone as datetime_timezone
 import hashlib
 from io import BytesIO, StringIO
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -48,6 +50,7 @@ from .ami_telemetry import (
     parse_phone_registrations,
     parse_queue_status,
     parse_trunk_status,
+    recording_id_for_path,
     scan_recording_metadata,
 )
 from .config_export import (
@@ -476,7 +479,9 @@ class PortalRouteTests(TestCase):
 class DashboardViewTests(TestCase):
     def setUp(self):
         self.viewer = User.objects.create_user(username="dashboard-viewer", password="portal-pass")
+        self.operator = User.objects.create_user(username="dashboard-operator", password="portal-pass")
         assign_role(self.viewer, PortalRole.VIEWER)
+        assign_role(self.operator, PortalRole.OPERATOR)
 
     def test_home_dashboard_reflects_agent_telemetry_and_config_drift(self):
         location = Location.objects.create(**location_model_data(name="Dashboard HQ", slug="dashboard-hq"))
@@ -570,6 +575,9 @@ class DashboardViewTests(TestCase):
         self.assertContains(response, "3000 to +15551230000 - ANSWERED")
         self.assertContains(response, "Recording Availability")
         self.assertContains(response, "call-123.wav - 1200 bytes")
+        self.assertContains(response, "Unavailable")
+        self.assertContains(response, "Playback unavailable")
+        self.assertNotContains(response, "Playback</a>")
         self.assertContains(response, "Config Drift Warning")
         self.assertContains(response, "Active v1 differs from latest exported v2.")
         self.assertContains(response, "Latest exported v2 differs from latest deployed v1.")
@@ -589,6 +597,44 @@ class DashboardViewTests(TestCase):
         self.assertContains(response, "Partial HQ")
         self.assertContains(response, "Agent Connection: Waiting")
         self.assertNotContains(response, "<html")
+
+    def test_dashboard_shows_recording_playback_link_for_recording_role(self):
+        location = Location.objects.create(**location_model_data(name="Recording HQ", slug="recording-hq"))
+        reported_at = timezone.now()
+        recording_id = recording_id_for_path("call-456.wav")
+        location.agent_telemetry_reported_at = reported_at
+        location.agent_telemetry_errors = []
+        location.agent_telemetry = {
+            "timestamp": reported_at.isoformat(),
+            "location_health": {"ami_connected": True},
+            "phone_registrations": [],
+            "trunk_status": [],
+            "active_calls": [],
+            "queue_status": [],
+            "recent_calls": [],
+            "recording_metadata": [
+                {
+                    "recording_id": recording_id,
+                    "relative_path": "call-456.wav",
+                    "path": "/var/spool/asterisk/monitor/call-456.wav",
+                    "filename": "call-456.wav",
+                    "size_bytes": 4,
+                    "modified_at": reported_at.isoformat(),
+                    "retention_expires_at": (reported_at + timedelta(days=30)).isoformat(),
+                    "available": True,
+                }
+            ],
+            "telemetry_errors": [],
+        }
+        location.save(update_fields=["agent_telemetry", "agent_telemetry_errors", "agent_telemetry_reported_at", "updated_at"])
+        self.client.force_login(self.operator)
+
+        response = self.client.get(reverse("home"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "call-456.wav - 4 bytes")
+        self.assertContains(response, "Available")
+        self.assertContains(response, reverse("location-recording-playback", args=[location.slug, recording_id]))
 
 
 class LocationFormValidationTests(TestCase):
@@ -1003,6 +1049,136 @@ class LiveOperationViewTests(TestCase):
         self.assertEqual(audit.outcome, AuditOutcome.FAILURE)
         self.assertEqual(audit.details["command"], "pjsip_reload")
         self.assertEqual(audit.details["location_slug"], "live-hq")
+
+
+class RecordingPlaybackViewTests(TestCase):
+    def setUp(self):
+        self.viewer = User.objects.create_user(username="recording-viewer", password="portal-pass")
+        self.operator = User.objects.create_user(username="recording-operator", password="portal-pass")
+        assign_role(self.viewer, PortalRole.VIEWER)
+        assign_role(self.operator, PortalRole.OPERATOR)
+        self.location = Location.objects.create(
+            **location_model_data(name="Recording HQ", slug="recording-hq", recording_retention_days=30)
+        )
+        now = timezone.now()
+        self.available_id = recording_id_for_path("available.wav")
+        self.expired_id = recording_id_for_path("expired.wav")
+        self.unavailable_id = recording_id_for_path("missing.wav")
+        self.location.agent_telemetry = {
+            "timestamp": now.isoformat(),
+            "location_health": {"ami_connected": True},
+            "phone_registrations": [],
+            "trunk_status": [],
+            "active_calls": [],
+            "queue_status": [],
+            "recent_calls": [],
+            "recording_metadata": [
+                {
+                    "recording_id": self.available_id,
+                    "relative_path": "available.wav",
+                    "path": "/var/spool/asterisk/monitor/available.wav",
+                    "filename": "available.wav",
+                    "size_bytes": 4,
+                    "modified_at": (now - timedelta(days=1)).isoformat(),
+                    "retention_expires_at": (now + timedelta(days=29)).isoformat(),
+                    "available": True,
+                },
+                {
+                    "recording_id": self.expired_id,
+                    "relative_path": "expired.wav",
+                    "path": "/var/spool/asterisk/monitor/expired.wav",
+                    "filename": "expired.wav",
+                    "size_bytes": 4,
+                    "modified_at": (now - timedelta(days=45)).isoformat(),
+                    "retention_expires_at": (now - timedelta(days=15)).isoformat(),
+                    "available": True,
+                },
+                {
+                    "recording_id": self.unavailable_id,
+                    "relative_path": "missing.wav",
+                    "filename": "missing.wav",
+                    "size_bytes": 0,
+                    "available": False,
+                    "status": "unavailable",
+                },
+            ],
+            "telemetry_errors": [],
+        }
+        self.location.save(update_fields=["agent_telemetry", "updated_at"])
+
+    def test_viewer_cannot_access_playback_and_denial_is_audited(self):
+        self.client.force_login(self.viewer)
+
+        with mock.patch("core.views.run_location_recording_playback") as dispatcher:
+            response = self.client.get(
+                reverse("location-recording-playback", args=[self.location.slug, self.available_id])
+            )
+
+        self.assertEqual(response.status_code, 403)
+        dispatcher.assert_not_called()
+        audit = AuditLog.objects.get(action=AuditAction.RECORDING_PLAYBACK)
+        self.assertEqual(audit.actor, self.viewer)
+        self.assertEqual(audit.outcome, AuditOutcome.DENIED)
+        self.assertEqual(audit.target, f"locations/{self.location.slug}/recordings/{self.available_id}")
+        self.assertEqual(audit.details["actor_username"], "recording-viewer")
+        self.assertEqual(audit.details["status"], "denied")
+
+    def test_operator_playback_dispatches_via_agent_and_audits_success(self):
+        self.client.force_login(self.operator)
+        result = {
+            "type": "recording_file_result",
+            "request_id": "req-1",
+            "status": "success",
+            "filename": "available.wav",
+            "content_type": "audio/wav",
+            "content_base64": base64.b64encode(b"RIFF").decode("ascii"),
+        }
+
+        with mock.patch("core.views.run_location_recording_playback", return_value=result) as dispatcher:
+            response = self.client.get(
+                reverse("location-recording-playback", args=[self.location.slug, self.available_id])
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "audio/wav")
+        self.assertEqual(response.content, b"RIFF")
+        dispatcher.assert_called_once_with(
+            self.location,
+            "/var/spool/asterisk/monitor/available.wav",
+            retention_days=30,
+        )
+        audit = AuditLog.objects.get(action=AuditAction.RECORDING_PLAYBACK)
+        self.assertEqual(audit.actor, self.operator)
+        self.assertEqual(audit.outcome, AuditOutcome.SUCCESS)
+        self.assertEqual(audit.details["filename"], "available.wav")
+        self.assertEqual(audit.details["status"], "success")
+        self.assertNotIn("content_base64", json.dumps(audit.details))
+
+    def test_expired_recording_returns_gone_without_agent_dispatch_and_is_audited(self):
+        self.client.force_login(self.operator)
+
+        with mock.patch("core.views.run_location_recording_playback") as dispatcher:
+            response = self.client.get(reverse("location-recording-playback", args=[self.location.slug, self.expired_id]))
+
+        self.assertEqual(response.status_code, 410)
+        dispatcher.assert_not_called()
+        audit = AuditLog.objects.get(action=AuditAction.RECORDING_PLAYBACK)
+        self.assertEqual(audit.outcome, AuditOutcome.FAILURE)
+        self.assertEqual(audit.details["status"], "expired")
+
+    def test_unavailable_recording_returns_not_found_without_agent_dispatch_and_is_audited(self):
+        self.client.force_login(self.operator)
+
+        with mock.patch("core.views.run_location_recording_playback") as dispatcher:
+            response = self.client.get(
+                reverse("location-recording-playback", args=[self.location.slug, self.unavailable_id])
+            )
+
+        self.assertEqual(response.status_code, 404)
+        dispatcher.assert_not_called()
+        audit = AuditLog.objects.get(action=AuditAction.RECORDING_PLAYBACK)
+        self.assertEqual(audit.outcome, AuditOutcome.FAILURE)
+        self.assertEqual(audit.details["status"], "unavailable")
 
 
 class ProviderTrunkValidationTests(TestCase):
@@ -2114,6 +2290,29 @@ class AgentWebSocketTests(TransactionTestCase):
             outbound_payloads,
         )
 
+    def test_portal_dispatches_recording_file_request_to_authenticated_agent_websocket(self):
+        location = Location.objects.create(
+            **location_model_data(name="Recording Agent HQ", slug="recording-agent-hq", agent_secret="agent-secret")
+        )
+
+        events, result = asyncio.run(self._run_recording_playback_exchange(location))
+
+        outbound_payloads = [
+            json.loads(event["text"])
+            for event in events
+            if event["type"] == "websocket.send"
+        ]
+        recording_request = next(payload for payload in outbound_payloads if payload["type"] == "recording_file_request")
+        self.assertEqual(recording_request["path"], "/var/spool/asterisk/monitor/call.wav")
+        self.assertEqual(recording_request["retention_days"], 30)
+        self.assertEqual(result["type"], "recording_file_result")
+        self.assertEqual(result["request_id"], recording_request["request_id"])
+        self.assertEqual(result["status"], "success")
+        self.assertIn(
+            {"type": "recording_file_result_ack", "request_id": recording_request["request_id"]},
+            outbound_payloads,
+        )
+
     async def _run_agent_websocket(self, *, query_string=b"", headers=None, messages=None):
         from portal.asgi import application
 
@@ -2191,6 +2390,64 @@ class AgentWebSocketTests(TransactionTestCase):
         await asyncio.wait_for(app_task, timeout=1)
         return events, result
 
+    async def _run_recording_playback_exchange(self, location):
+        from portal.asgi import application
+        from .live_operations import run_location_recording_playback
+
+        events = []
+        inbound = asyncio.Queue()
+        authenticated = asyncio.Event()
+        await inbound.put({"type": "websocket.connect"})
+
+        async def receive():
+            return await inbound.get()
+
+        async def send(message):
+            events.append(message)
+            if message["type"] != "websocket.send":
+                return
+            payload = json.loads(message["text"])
+            if payload["type"] == "agent_authenticated":
+                authenticated.set()
+            if payload["type"] == "recording_file_request":
+                await inbound.put(
+                    {
+                        "type": "websocket.receive",
+                        "text": json.dumps(
+                            {
+                                "type": "recording_file_result",
+                                "request_id": payload["request_id"],
+                                "status": "success",
+                                "filename": "call.wav",
+                                "content_base64": base64.b64encode(b"RIFF").decode("ascii"),
+                            }
+                        ),
+                    }
+                )
+
+        app_task = asyncio.create_task(
+            application(
+                {
+                    "type": "websocket",
+                    "path": "/api/agent/ws/",
+                    "query_string": f"token={location.agent_token}&secret=agent-secret".encode("utf-8"),
+                    "headers": [],
+                },
+                receive,
+                send,
+            )
+        )
+        await asyncio.wait_for(authenticated.wait(), timeout=1)
+        result = await asyncio.to_thread(
+            run_location_recording_playback,
+            location,
+            "/var/spool/asterisk/monitor/call.wav",
+            retention_days=30,
+        )
+        await inbound.put({"type": "websocket.disconnect"})
+        await asyncio.wait_for(app_task, timeout=1)
+        return events, result
+
 
 class AgentTelemetryParsingTests(SimpleTestCase):
     def test_parses_representative_ami_cdr_cel_and_recording_fixtures(self):
@@ -2240,8 +2497,97 @@ class AgentTelemetryParsingTests(SimpleTestCase):
         self.assertEqual(recordings[0]["size_bytes"], 4)
         self.assertEqual(recordings[0]["uniqueid"], "1717460000.1")
 
+    def test_scans_recording_metadata_with_retention_status(self):
+        now = datetime(2026, 6, 4, 12, 0, tzinfo=datetime_timezone.utc)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fresh = Path(temp_dir) / "fresh.wav"
+            fresh.write_bytes(b"RIFF")
+            fresh_mtime = (now - timedelta(days=1)).timestamp()
+            os.utime(fresh, (fresh_mtime, fresh_mtime))
+
+            expired = Path(temp_dir) / "expired.wav"
+            expired.write_bytes(b"RIF")
+            expired_mtime = (now - timedelta(days=45)).timestamp()
+            os.utime(expired, (expired_mtime, expired_mtime))
+
+            recordings = scan_recording_metadata(temp_dir, retention_days=30, now=now)
+
+        by_filename = {recording["filename"]: recording for recording in recordings}
+        self.assertEqual(by_filename["fresh.wav"]["recording_id"], recording_id_for_path("fresh.wav"))
+        self.assertEqual(by_filename["fresh.wav"]["relative_path"], "fresh.wav")
+        self.assertEqual(by_filename["fresh.wav"]["retention_days"], 30)
+        self.assertFalse(by_filename["fresh.wav"]["expired"])
+        self.assertTrue(by_filename["fresh.wav"]["available"])
+        self.assertEqual(by_filename["fresh.wav"]["status"], "available")
+        self.assertEqual(by_filename["expired.wav"]["status"], "expired")
+        self.assertTrue(by_filename["expired.wav"]["expired"])
+        self.assertFalse(by_filename["expired.wav"]["available"])
+
     def _telemetry_fixture(self, filename):
         return (Path(__file__).with_name("testdata") / "telemetry" / filename).read_text(encoding="utf-8")
+
+
+class AgentRecordingFileRequestTests(SimpleTestCase):
+    def test_agent_control_message_returns_recording_file_content(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            recording = Path(temp_dir) / "call.wav"
+            recording.write_bytes(b"RIFF")
+            config = AgentConfig(
+                websocket_url="ws://portal.example.test/api/agent/ws/",
+                token="token",
+                secret="secret",
+                marker_path=Path(temp_dir) / "marker.json",
+                recording_root=temp_dir,
+                recording_retention_days=30,
+            )
+
+            result = asyncio.run(
+                handle_agent_control_message(
+                    config,
+                    {
+                        "type": "recording_file_request",
+                        "request_id": "req-1",
+                        "path": "call.wav",
+                    },
+                )
+            )
+
+        self.assertEqual(result["type"], "recording_file_result")
+        self.assertEqual(result["request_id"], "req-1")
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["filename"], "call.wav")
+        self.assertEqual(base64.b64decode(result["content_base64"]), b"RIFF")
+
+    def test_agent_control_message_rejects_expired_recording_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            recording = Path(temp_dir) / "expired.wav"
+            recording.write_bytes(b"RIFF")
+            old_mtime = (datetime.now(tz=datetime_timezone.utc) - timedelta(days=2)).timestamp()
+            os.utime(recording, (old_mtime, old_mtime))
+            config = AgentConfig(
+                websocket_url="ws://portal.example.test/api/agent/ws/",
+                token="token",
+                secret="secret",
+                marker_path=Path(temp_dir) / "marker.json",
+                recording_root=temp_dir,
+                recording_retention_days=1,
+            )
+
+            result = asyncio.run(
+                handle_agent_control_message(
+                    config,
+                    {
+                        "type": "recording_file_request",
+                        "request_id": "req-expired",
+                        "path": "expired.wav",
+                    },
+                )
+            )
+
+        self.assertEqual(result["type"], "recording_file_result")
+        self.assertEqual(result["request_id"], "req-expired")
+        self.assertEqual(result["status"], "failure")
+        self.assertEqual(result["error_code"], "expired")
 
 
 class AgentActiveConfigMarkerTests(TestCase):
@@ -3742,24 +4088,28 @@ class PortalPermissionTests(TestCase):
                 PortalPermission.VIEW: True,
                 PortalPermission.EDIT_CONFIG: False,
                 PortalPermission.RUN_LIVE_OPERATIONS: False,
+                PortalPermission.ACCESS_RECORDINGS: False,
                 PortalPermission.ADMINISTER: False,
             },
             self.editor: {
                 PortalPermission.VIEW: True,
                 PortalPermission.EDIT_CONFIG: True,
                 PortalPermission.RUN_LIVE_OPERATIONS: False,
+                PortalPermission.ACCESS_RECORDINGS: False,
                 PortalPermission.ADMINISTER: False,
             },
             self.operator: {
                 PortalPermission.VIEW: True,
                 PortalPermission.EDIT_CONFIG: False,
                 PortalPermission.RUN_LIVE_OPERATIONS: True,
+                PortalPermission.ACCESS_RECORDINGS: True,
                 PortalPermission.ADMINISTER: False,
             },
             self.admin: {
                 PortalPermission.VIEW: True,
                 PortalPermission.EDIT_CONFIG: True,
                 PortalPermission.RUN_LIVE_OPERATIONS: True,
+                PortalPermission.ACCESS_RECORDINGS: True,
                 PortalPermission.ADMINISTER: True,
             },
         }
@@ -3814,6 +4164,7 @@ class AuditLogTests(TestCase):
             AuditAction.CONFIG_EXPORT,
             AuditAction.DEPLOYMENT,
             AuditAction.LIVE_PBX_ACTION,
+            AuditAction.RECORDING_PLAYBACK,
         ]
 
         for action in representative_actions:
