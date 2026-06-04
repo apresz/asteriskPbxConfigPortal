@@ -1005,6 +1005,71 @@ class LiveOperationViewTests(TestCase):
         self.assertEqual(audit.details["location_slug"], "live-hq")
 
 
+class AuthenticatedChannelControlAPITests(TestCase):
+    def setUp(self):
+        self.viewer = User.objects.create_user(username="channel-viewer", password="portal-pass")
+        self.operator = User.objects.create_user(username="channel-operator", password="portal-pass")
+        self.admin = User.objects.create_user(username="channel-admin", password="portal-pass")
+        assign_role(self.viewer, PortalRole.VIEWER)
+        assign_role(self.operator, PortalRole.OPERATOR)
+        assign_role(self.admin, PortalRole.ADMIN)
+        self.location = Location.objects.create(
+            **location_model_data(name="Channel HQ", slug="channel-hq", agent_secret="agent-secret")
+        )
+        _viewer_key, self.viewer_secret = APIKey.issue(name="viewer channel api", user=self.viewer, created_by=self.admin)
+        _operator_key, self.operator_secret = APIKey.issue(
+            name="operator channel api",
+            user=self.operator,
+            created_by=self.admin,
+        )
+
+    def test_viewer_channel_control_is_denied_and_audited_like_live_controls(self):
+        with mock.patch("core.views.run_location_live_command") as dispatcher:
+            response = self._post_channel_control(self.viewer_secret, {"command": "core_reload"})
+
+        self.assertEqual(response.status_code, 403)
+        dispatcher.assert_not_called()
+        payload = response.json()
+        self.assertEqual(payload["status"], "denied")
+        audit = AuditLog.objects.get(action=AuditAction.LIVE_PBX_ACTION)
+        self.assertEqual(audit.actor, self.viewer)
+        self.assertEqual(audit.outcome, AuditOutcome.DENIED)
+        self.assertEqual(audit.details["command"], "core_reload")
+        self.assertEqual(audit.details["actor_username"], "channel-viewer")
+        self.assertEqual(audit.details["location_slug"], "channel-hq")
+
+    def test_operator_channel_control_dispatches_and_audits_success(self):
+        result = {
+            "type": "live_command_result",
+            "command_id": "cmd-channel",
+            "command": "core_reload",
+            "status": "success",
+            "ami_action": "Command",
+            "ami_response": [{"Response": "Success", "Message": "Command output follows"}],
+        }
+
+        with mock.patch("core.views.run_location_live_command", return_value=result) as dispatcher:
+            response = self._post_channel_control(self.operator_secret, {"command": "core_reload"})
+
+        self.assertEqual(response.status_code, 200)
+        dispatcher.assert_called_once_with(self.location, "core_reload", {})
+        payload = response.json()
+        self.assertEqual(payload["status"], "success")
+        self.assertEqual(payload["result"]["command_id"], "cmd-channel")
+        audit = AuditLog.objects.get(action=AuditAction.LIVE_PBX_ACTION)
+        self.assertEqual(audit.actor, self.operator)
+        self.assertEqual(audit.outcome, AuditOutcome.SUCCESS)
+        self.assertEqual(audit.target, "locations/channel-hq/live/core_reload")
+
+    def _post_channel_control(self, secret, payload):
+        return self.client.post(
+            reverse("api-channel-control", args=[self.location.slug]),
+            data=json.dumps(payload),
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {secret}",
+        )
+
+
 class ProviderTrunkValidationTests(TestCase):
     def setUp(self):
         self.location = Location.objects.create(**location_model_data(name="HQ", slug="hq"))
@@ -3934,6 +3999,114 @@ class AdminManagementAPITests(TestCase):
         return self.client.patch(url, data=json.dumps(payload), content_type="application/json")
 
 
+class AuthenticatedUserInfoAPITests(TestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(username="info-admin", password="portal-pass")
+        self.viewer = User.objects.create_user(username="info-viewer", password="portal-pass")
+        self.other = User.objects.create_user(username="info-other", password="portal-pass")
+        assign_role(self.admin, PortalRole.ADMIN)
+        assign_role(self.viewer, PortalRole.VIEWER)
+        assign_role(self.other, PortalRole.VIEWER)
+        _admin_key, self.admin_secret = APIKey.issue(name="admin info api", user=self.admin, created_by=self.admin)
+        _viewer_key, self.viewer_secret = APIKey.issue(name="viewer info api", user=self.viewer, created_by=self.admin)
+
+    def test_api_key_user_can_read_and_update_own_info_with_audit(self):
+        get_response = self.client.get(
+            reverse("api-current-user"),
+            HTTP_AUTHORIZATION=f"Bearer {self.viewer_secret}",
+        )
+
+        self.assertEqual(get_response.status_code, 200)
+        self.assertEqual(get_response.json()["user"]["username"], "info-viewer")
+        self.assertEqual(get_response.json()["user"]["role"], PortalRole.VIEWER)
+
+        update_response = self._patch_json(
+            reverse("api-current-user"),
+            {"email": "viewer@example.test", "first_name": "Viewer"},
+            self.viewer_secret,
+        )
+
+        self.assertEqual(update_response.status_code, 200)
+        self.viewer.refresh_from_db()
+        self.assertEqual(self.viewer.email, "viewer@example.test")
+        self.assertEqual(self.viewer.first_name, "Viewer")
+        audit = AuditLog.objects.get(action=AuditAction.API_USER_UPDATE)
+        self.assertEqual(audit.actor, self.viewer)
+        self.assertEqual(audit.target, f"users/{self.viewer.id}")
+        self.assertEqual(audit.outcome, AuditOutcome.SUCCESS)
+        self.assertEqual(audit.details["changed_fields"], ["email", "first_name"])
+        self.assertEqual(audit.details["api_key_id"], APIKey.objects.get(name="viewer info api").id)
+        self.assertNotIn("viewer@example.test", json.dumps(audit.details))
+
+    def test_non_admin_user_can_only_retrieve_self(self):
+        list_response = self.client.get(
+            reverse("api-users"),
+            HTTP_AUTHORIZATION=f"Bearer {self.viewer_secret}",
+        )
+        other_response = self.client.get(
+            reverse("api-user-detail", args=[self.other.id]),
+            HTTP_AUTHORIZATION=f"Bearer {self.viewer_secret}",
+        )
+
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual([user["username"] for user in list_response.json()["users"]], ["info-viewer"])
+        self.assertEqual(other_response.status_code, 403)
+
+    def test_non_admin_user_cannot_update_admin_only_fields(self):
+        response = self._patch_json(
+            reverse("api-current-user"),
+            {"role": PortalRole.ADMIN, "is_active": False},
+            self.viewer_secret,
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.viewer.refresh_from_db()
+        self.viewer.portal_profile.refresh_from_db()
+        self.assertTrue(self.viewer.is_active)
+        self.assertEqual(self.viewer.portal_profile.role, PortalRole.VIEWER)
+        self.assertEqual(AuditLog.objects.count(), 0)
+
+    def test_admin_api_key_can_retrieve_and_update_other_users_with_audit(self):
+        get_response = self.client.get(
+            reverse("api-user-detail", args=[self.other.id]),
+            HTTP_AUTHORIZATION=f"Bearer {self.admin_secret}",
+        )
+
+        self.assertEqual(get_response.status_code, 200)
+        self.assertEqual(get_response.json()["user"]["username"], "info-other")
+
+        update_response = self._patch_json(
+            reverse("api-user-detail", args=[self.other.id]),
+            {"username": "renamed-other", "role": PortalRole.OPERATOR, "is_active": False},
+            self.admin_secret,
+        )
+
+        self.assertEqual(update_response.status_code, 200)
+        self.other.refresh_from_db()
+        self.other.portal_profile.refresh_from_db()
+        self.assertEqual(self.other.username, "renamed-other")
+        self.assertFalse(self.other.is_active)
+        self.assertEqual(self.other.portal_profile.role, PortalRole.OPERATOR)
+        audit = AuditLog.objects.get(action=AuditAction.API_USER_UPDATE)
+        self.assertEqual(audit.actor, self.admin)
+        self.assertEqual(audit.target, f"users/{self.other.id}")
+        self.assertEqual(audit.details["changed_fields"], ["is_active", "role", "username"])
+
+    def test_invalid_bearer_token_is_rejected(self):
+        response = self.client.get(reverse("api-current-user"), HTTP_AUTHORIZATION="Bearer missing")
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"], "Invalid API key.")
+
+    def _patch_json(self, url, payload, secret):
+        return self.client.patch(
+            url,
+            data=json.dumps(payload),
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {secret}",
+        )
+
+
 class AdminBackupWorkflowTests(TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -4111,6 +4284,37 @@ class APIKeyLifecycleAPITests(TestCase):
         self.assertTrue(api_key.is_active)
         self.assertEqual(AuditLog.objects.count(), 0)
 
+    def test_non_admin_bearer_cannot_create_api_keys(self):
+        _viewer_key, viewer_secret = APIKey.issue(name="viewer automation", user=self.viewer, created_by=self.admin)
+
+        response = self._post_json(
+            reverse("api-key-create"),
+            {"name": "viewer key", "user_id": self.scoped_user.id},
+            HTTP_AUTHORIZATION=f"Bearer {viewer_secret}",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(APIKey.objects.filter(name="viewer key").exists())
+        self.assertEqual(AuditLog.objects.count(), 0)
+
+    def test_admin_bearer_can_create_user_scoped_api_key_and_audits(self):
+        _admin_key, admin_secret = APIKey.issue(name="admin automation", user=self.admin, created_by=self.admin)
+
+        response = self._post_json(
+            reverse("api-key-create"),
+            {"name": "API-created user key", "user_id": self.scoped_user.id},
+            HTTP_AUTHORIZATION=f"Bearer {admin_secret}",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        api_key = APIKey.objects.get(name="API-created user key")
+        self.assertEqual(api_key.user, self.scoped_user)
+        self.assertEqual(api_key.created_by, self.admin)
+        audit = AuditLog.objects.get(action=AuditAction.API_KEY_CREATE)
+        self.assertEqual(audit.actor, self.admin)
+        self.assertEqual(audit.target, f"api_keys/{api_key.id}")
+        self.assertEqual(audit.details["scope_id"], self.scoped_user.id)
+
     def test_admin_creates_user_scoped_api_key_and_audits_without_raw_secret(self):
         self.client.force_login(self.admin)
 
@@ -4214,8 +4418,8 @@ class APIKeyLifecycleAPITests(TestCase):
         self.assertEqual(rotate_response.status_code, 400)
         self.assertEqual(AuditLog.objects.filter(action=AuditAction.API_KEY_REVOKE).count(), 1)
 
-    def _post_json(self, url, payload):
-        return self.client.post(url, data=json.dumps(payload), content_type="application/json")
+    def _post_json(self, url, payload, **extra):
+        return self.client.post(url, data=json.dumps(payload), content_type="application/json", **extra)
 
 
 class LANWarpOnlyMiddlewareTests(SimpleTestCase):
