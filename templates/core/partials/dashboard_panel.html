@@ -1,0 +1,246 @@
+<section
+  id="dashboard-panel"
+  class="dashboard-panel"
+  aria-label="Location health dashboard"
+  hx-get="{% url 'dashboard-panel' %}"
+  hx-trigger="every 30s"
+  hx-swap="outerHTML"
+>
+  <section class="summary-grid dashboard-summary" aria-label="Dashboard summary">
+    <div class="summary-tile">
+      <span>Locations</span>
+      <strong>{{ dashboard_totals.locations }}</strong>
+    </div>
+    <div class="summary-tile">
+      <span>Agents Reporting</span>
+      <strong>{{ dashboard_totals.reporting_locations }}</strong>
+    </div>
+    <div class="summary-tile">
+      <span>Config Drift</span>
+      <strong>{{ dashboard_totals.drift_locations }}</strong>
+    </div>
+    <div class="summary-tile">
+      <span>Active Calls</span>
+      <strong>{{ dashboard_totals.active_calls }}</strong>
+    </div>
+    <div class="summary-tile">
+      <span>Queued Calls</span>
+      <strong>{{ dashboard_totals.queued_calls }}</strong>
+    </div>
+    <div class="summary-tile">
+      <span>Refreshed</span>
+      <strong>{{ dashboard_generated_at|date:"H:i:s" }}</strong>
+    </div>
+  </section>
+
+  {% for item in dashboard_locations %}
+    <section class="dashboard-location{% if item.config_drift.has_drift %} dashboard-location--drift{% endif %}" aria-labelledby="dashboard-location-{{ item.location.slug }}">
+      <header class="dashboard-location__header">
+        <span>
+          <p class="eyebrow">Location Health</p>
+          <h2 id="dashboard-location-{{ item.location.slug }}">{{ item.location.name }}</h2>
+          <p>{{ item.location.pbx_lan_ip }} LAN / {{ item.location.pbx_warp_ip }} WARP</p>
+        </span>
+        <span class="dashboard-status-row">
+          <span class="status-badge {{ item.agent_state.badge_class }}">Agent Connection: {{ item.agent_state.label }}</span>
+          <span class="status-badge {{ item.config_drift.badge_class }}">Config Drift: {{ item.config_drift.label }}</span>
+        </span>
+      </header>
+
+      {% if item.config_drift.has_drift %}
+        <section class="notice-panel notice-panel--warning" aria-label="{{ item.location.name }} drift warnings">
+          <h2>Config Drift Warning</h2>
+          <ul>
+            {% for warning in item.config_drift.warnings %}
+              <li>{{ warning }}</li>
+            {% endfor %}
+          </ul>
+        </section>
+      {% endif %}
+
+      <section class="summary-grid dashboard-version-grid" aria-label="{{ item.location.name }} config versions">
+        <div class="summary-tile">
+          <span>Active PBX Config</span>
+          <strong>{% if item.config_drift.active_version %}v{{ item.config_drift.active_version }}{% else %}Not reported{% endif %}</strong>
+        </div>
+        <div class="summary-tile">
+          <span>Latest Exported</span>
+          <strong>{% if item.config_drift.exported_version %}v{{ item.config_drift.exported_version }}{% else %}No exports{% endif %}</strong>
+        </div>
+        <div class="summary-tile">
+          <span>Latest Deployed</span>
+          <strong>{% if item.config_drift.deployed_version %}v{{ item.config_drift.deployed_version }}{% else %}Not deployed{% endif %}</strong>
+        </div>
+      </section>
+
+      <section class="record-grid dashboard-grid" aria-label="{{ item.location.name }} agent telemetry">
+        <article class="record-section">
+          <h2>Location Health</h2>
+          <dl>
+            <div><dt>AMI</dt><dd>{{ item.health.ami_connected|yesno:"Connected,Disconnected" }}</dd></div>
+            <div><dt>AMI Response</dt><dd>{{ item.health.ami_response|default:"unknown" }}</dd></div>
+            <div><dt>Current Calls</dt><dd>{{ item.health.core_current_calls|default:"0" }}</dd></div>
+            <div><dt>Max Calls</dt><dd>{{ item.health.core_max_calls|default:"unknown" }}</dd></div>
+            <div><dt>Reported</dt><dd>{{ item.location.agent_telemetry_reported_at|date:"Y-m-d H:i"|default:"Never" }}</dd></div>
+          </dl>
+        </article>
+
+        <article class="record-section">
+          <h2>Agent Connection</h2>
+          <dl>
+            <div><dt>State</dt><dd>{{ item.agent_state.label }}</dd></div>
+            <div><dt>Detail</dt><dd>{{ item.agent_state.detail }}</dd></div>
+            <div><dt>Telemetry Errors</dt><dd>{{ item.telemetry_errors|length }}</dd></div>
+          </dl>
+          {% if item.telemetry_errors %}
+            <ul class="compact-list">
+              {% for error in item.telemetry_errors %}
+                <li>{{ error.category|default:"telemetry" }}: {{ error.message|default:"Unknown error" }}</li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+        </article>
+
+        <article class="record-section">
+          <h2>Extension Registrations</h2>
+          <dl>
+            <div><dt>Total</dt><dd>{{ item.registration_summary.total }}</dd></div>
+            <div><dt>Reachable</dt><dd>{{ item.registration_summary.reachable }}</dd></div>
+            <div><dt>Unreachable</dt><dd>{{ item.registration_summary.unreachable }}</dd></div>
+          </dl>
+          {% if item.phone_registrations %}
+            <ul class="compact-list">
+              {% for registration in item.phone_registrations %}
+                <li>{{ registration.extension|default:"unknown" }} - {{ registration.status|default:"unknown" }}</li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+        </article>
+
+        <article class="record-section">
+          <h2>Trunk Status</h2>
+          <dl>
+            <div><dt>Total</dt><dd>{{ item.trunk_summary.total }}</dd></div>
+            <div><dt>Available</dt><dd>{{ item.trunk_summary.available }}</dd></div>
+            <div><dt>Unavailable</dt><dd>{{ item.trunk_summary.unavailable }}</dd></div>
+          </dl>
+          {% if item.trunk_status %}
+            <ul class="compact-list">
+              {% for trunk in item.trunk_status %}
+                <li>{{ trunk.name|default:"unknown" }} - {{ trunk.status|default:"unknown" }}</li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+        </article>
+
+        <article class="record-section">
+          <h2>Active Calls</h2>
+          <dl>
+            <div><dt>Now</dt><dd>{{ item.call_summary.total }}</dd></div>
+          </dl>
+          {% if item.active_calls %}
+            <ul class="compact-list">
+              {% for call in item.active_calls %}
+                <li>{{ call.caller_id|default:"unknown" }} to {% if call.connected_line %}{{ call.connected_line }}{% elif call.extension %}{{ call.extension }}{% else %}unknown{% endif %} - {{ call.state|default:"unknown" }}</li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+        </article>
+
+        <article class="record-section">
+          <h2>Queue Status</h2>
+          <dl>
+            <div><dt>Queues</dt><dd>{{ item.queue_summary.total }}</dd></div>
+            <div><dt>Waiting</dt><dd>{{ item.queue_summary.waiting }}</dd></div>
+            <div><dt>Members</dt><dd>{{ item.queue_summary.members }}</dd></div>
+          </dl>
+          {% if item.queue_status %}
+            <ul class="compact-list">
+              {% for queue in item.queue_status %}
+                <li>{{ queue.name|default:"unknown" }} - {{ queue.calls_waiting|default:"0" }} waiting</li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+        </article>
+
+        <article class="record-section">
+          <h2>Recent Calls</h2>
+          <dl>
+            <div><dt>Rows</dt><dd>{{ item.call_summary.recent }}</dd></div>
+          </dl>
+          {% if item.recent_calls %}
+            <ul class="compact-list">
+              {% for call in item.recent_calls %}
+                <li>{{ call.source|default:"unknown" }} to {{ call.destination|default:"unknown" }} - {{ call.disposition|default:"unknown" }}</li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+        </article>
+
+        <article class="record-section">
+          <h2>Recording Availability</h2>
+          <dl>
+            <div><dt>Status</dt><dd>{{ item.recording_summary.available|yesno:"Available,No recordings reported" }}</dd></div>
+            <div><dt>Recent Files</dt><dd>{{ item.recording_summary.total }}</dd></div>
+          </dl>
+          {% if item.recording_metadata %}
+            <ul class="compact-list">
+              {% for recording in item.recording_metadata %}
+                <li>{{ recording.filename|default:"recording" }} - {{ recording.size_bytes|default:"0" }} bytes</li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+        </article>
+      </section>
+
+      <section class="table-panel deployment-history dashboard-deployment-history" aria-label="{{ item.location.name }} deployment history">
+        <div class="table-panel__header">
+          <h2>Deployment History</h2>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th scope="col">Started</th>
+              <th scope="col">Action</th>
+              <th scope="col">Version</th>
+              <th scope="col">Operator</th>
+              <th scope="col">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for deployment in item.deployment_records %}
+              <tr>
+                <td>{{ deployment.started_at|date:"Y-m-d H:i" }}</td>
+                <td>{{ deployment.get_action_display }}</td>
+                <td>
+                  v{{ deployment.config_version.version_number }}
+                  {% if deployment.rollback_source_version %}
+                    <span class="table-meta">Rollback source v{{ deployment.rollback_source_version.version_number }}</span>
+                  {% endif %}
+                </td>
+                <td>{{ deployment.operator.get_username|default:"system" }}</td>
+                <td>
+                  <span class="status-badge{% if deployment.status == 'failed' %} status-badge--danger{% endif %}">
+                    {{ deployment.get_status_display }}
+                  </span>
+                  {% if deployment.error_message %}
+                    <span class="table-meta">{{ deployment.error_message|truncatechars:80 }}</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% empty %}
+              <tr>
+                <td colspan="5">No deployments recorded.</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+    </section>
+  {% empty %}
+    <section class="empty-state">
+      <h2>No locations configured</h2>
+      <p>Create a location to begin receiving PBX agent telemetry.</p>
+    </section>
+  {% endfor %}
+</section>

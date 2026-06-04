@@ -1,4 +1,5 @@
 import json
+from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
@@ -6,6 +7,7 @@ from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import IntegrityError, transaction
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from .access import (
@@ -95,8 +97,14 @@ def health(request):
 
 @permission_required(PortalPermission.VIEW)
 def home(request):
-    context = {"areas": visible_portal_areas(request.user)}
+    context = _dashboard_context(request)
     return render(request, _template(request, "core/home.html", "core/partials/home_content.html"), context)
+
+
+@permission_required(PortalPermission.VIEW)
+@require_GET
+def dashboard_panel(request):
+    return render(request, "core/partials/dashboard_panel.html", _dashboard_context(request))
 
 
 @login_required
@@ -1881,6 +1889,194 @@ def _record_backup_audit(actor, action: AuditAction, backup: AdminBackup) -> Non
             "database_dump_method": backup.database_dump_method,
         },
     )
+
+
+def _dashboard_context(request):
+    dashboard_locations = [_dashboard_location(location) for location in Location.objects.order_by("name")]
+    dashboard_totals = {
+        "locations": len(dashboard_locations),
+        "reporting_locations": sum(1 for item in dashboard_locations if item["agent_state"]["is_reporting"]),
+        "drift_locations": sum(1 for item in dashboard_locations if item["config_drift"]["has_drift"]),
+        "active_calls": sum(item["call_summary"]["total"] for item in dashboard_locations),
+        "queued_calls": sum(item["queue_summary"]["waiting"] for item in dashboard_locations),
+    }
+    return {
+        "areas": visible_portal_areas(request.user),
+        "dashboard_generated_at": timezone.now(),
+        "dashboard_locations": dashboard_locations,
+        "dashboard_totals": dashboard_totals,
+    }
+
+
+def _dashboard_location(location: Location) -> dict:
+    telemetry = location.agent_telemetry if isinstance(location.agent_telemetry, dict) else {}
+    phone_registrations = _telemetry_list(telemetry, "phone_registrations")
+    trunk_status = _telemetry_list(telemetry, "trunk_status")
+    active_calls = _telemetry_list(telemetry, "active_calls")
+    queue_status = _telemetry_list(telemetry, "queue_status")
+    recent_calls = _telemetry_list(telemetry, "recent_calls")
+    recording_metadata = _telemetry_list(telemetry, "recording_metadata")
+    telemetry_errors = location.agent_telemetry_errors if isinstance(location.agent_telemetry_errors, list) else []
+
+    latest_exported = location.config_versions.order_by("-version_number").first()
+    deployed_versions = location.config_versions.filter(
+        deployment_status__in=(
+            ConfigVersion.DeploymentStatus.DEPLOYED,
+            ConfigVersion.DeploymentStatus.ROLLED_BACK,
+        )
+    )
+    latest_deployed = (
+        deployed_versions.filter(deployed_at__isnull=False)
+        .order_by("-deployed_at", "-version_number")
+        .first()
+    )
+    if latest_deployed is None:
+        latest_deployed = deployed_versions.order_by("-version_number").first()
+
+    return {
+        "location": location,
+        "agent_state": _agent_state(location, telemetry_errors),
+        "health": _telemetry_dict(telemetry, "location_health"),
+        "phone_registrations": phone_registrations[:8],
+        "trunk_status": trunk_status[:8],
+        "active_calls": active_calls[:8],
+        "queue_status": queue_status[:6],
+        "recent_calls": recent_calls[:6],
+        "recording_metadata": recording_metadata[:6],
+        "telemetry_errors": telemetry_errors[:6],
+        "registration_summary": _registration_summary(phone_registrations),
+        "trunk_summary": _trunk_summary(trunk_status),
+        "call_summary": {"total": len(active_calls), "recent": len(recent_calls)},
+        "queue_summary": _queue_summary(queue_status),
+        "recording_summary": {"total": len(recording_metadata), "available": bool(recording_metadata)},
+        "config_drift": _config_drift(location, latest_exported, latest_deployed),
+        "deployment_records": location.deployment_records.select_related(
+            "operator",
+            "config_version",
+            "rollback_source_version",
+        ).order_by("-started_at", "-id")[:5],
+    }
+
+
+def _agent_state(location: Location, telemetry_errors: list) -> dict:
+    reported_at = location.agent_telemetry_reported_at
+    if reported_at is None:
+        return {
+            "label": "Waiting",
+            "detail": "No telemetry received",
+            "badge_class": "status-badge--muted",
+            "is_reporting": False,
+        }
+
+    if reported_at < timezone.now() - timedelta(minutes=5):
+        return {
+            "label": "Stale",
+            "detail": "Telemetry is older than 5 minutes",
+            "badge_class": "status-badge--warning",
+            "is_reporting": False,
+        }
+
+    if telemetry_errors:
+        return {
+            "label": "Degraded",
+            "detail": f"{len(telemetry_errors)} telemetry error(s)",
+            "badge_class": "status-badge--warning",
+            "is_reporting": True,
+        }
+
+    return {
+        "label": "Reporting",
+        "detail": "Telemetry is current",
+        "badge_class": "",
+        "is_reporting": True,
+    }
+
+
+def _config_drift(location: Location, latest_exported: ConfigVersion | None, latest_deployed: ConfigVersion | None) -> dict:
+    active_version = location.active_config_version_number
+    exported_version = latest_exported.version_number if latest_exported else None
+    deployed_version = latest_deployed.version_number if latest_deployed else None
+    warnings = []
+
+    if (exported_version or deployed_version) and active_version is None:
+        warnings.append("PBX active version has not been reported.")
+    if active_version and exported_version and active_version != exported_version:
+        warnings.append(f"Active v{active_version} differs from latest exported v{exported_version}.")
+    if active_version and deployed_version and active_version != deployed_version:
+        warnings.append(f"Active v{active_version} differs from latest deployed v{deployed_version}.")
+    if exported_version and deployed_version and exported_version != deployed_version:
+        warnings.append(f"Latest exported v{exported_version} differs from latest deployed v{deployed_version}.")
+
+    if warnings:
+        label = "Drift warning"
+        badge_class = "status-badge--warning"
+    elif active_version or exported_version or deployed_version:
+        label = "Aligned"
+        badge_class = ""
+    else:
+        label = "No versions"
+        badge_class = "status-badge--muted"
+
+    return {
+        "active_version": active_version,
+        "exported_version": exported_version,
+        "deployed_version": deployed_version,
+        "latest_exported": latest_exported,
+        "latest_deployed": latest_deployed,
+        "warnings": warnings,
+        "has_drift": bool(warnings),
+        "label": label,
+        "badge_class": badge_class,
+    }
+
+
+def _registration_summary(registrations: list[dict]) -> dict:
+    reachable = sum(
+        1
+        for item in registrations
+        if item.get("reachable") or str(item.get("status") or "").lower() == "reachable"
+    )
+    return {
+        "total": len(registrations),
+        "reachable": reachable,
+        "unreachable": max(len(registrations) - reachable, 0),
+    }
+
+
+def _trunk_summary(trunks: list[dict]) -> dict:
+    available = sum(1 for item in trunks if item.get("available"))
+    return {
+        "total": len(trunks),
+        "available": available,
+        "unavailable": max(len(trunks) - available, 0),
+    }
+
+
+def _queue_summary(queues: list[dict]) -> dict:
+    return {
+        "total": len(queues),
+        "waiting": sum(_int_or_zero(item.get("calls_waiting")) for item in queues),
+        "members": sum(len(item.get("members") or []) for item in queues),
+    }
+
+
+def _telemetry_list(telemetry: dict, key: str) -> list:
+    value = telemetry.get(key)
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _telemetry_dict(telemetry: dict, key: str) -> dict:
+    value = telemetry.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _int_or_zero(value) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _location_context(request, context):

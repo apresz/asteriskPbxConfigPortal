@@ -422,6 +422,16 @@ a {
   flex-wrap: wrap;
 }
 
+.table-panel__header {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.table-panel__header h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
 .inline-check {
   display: inline-flex;
   align-items: center;
@@ -487,6 +497,12 @@ a {
   color: #a43d3d;
 }
 
+.status-badge--warning {
+  border-color: rgba(183, 121, 31, 0.42);
+  background: rgba(183, 121, 31, 0.12);
+  color: var(--warn);
+}
+
 .tag-list {
   display: flex;
   flex-wrap: wrap;
@@ -546,6 +562,10 @@ a {
   border-left-color: #a43d3d;
 }
 
+.notice-panel--warning {
+  border-left-color: var(--warn);
+}
+
 .notice-panel p,
 .notice-panel ul {
   margin: 0;
@@ -592,6 +612,81 @@ a {
 
 .summary-tile strong {
   font-size: 1.08rem;
+}
+
+.dashboard-panel {
+  max-width: 1180px;
+  display: grid;
+  gap: 22px;
+  margin-bottom: 28px;
+}
+
+.dashboard-summary {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  margin-bottom: 0;
+}
+
+.dashboard-location {
+  display: grid;
+  gap: 16px;
+  padding-top: 22px;
+  border-top: 1px solid var(--line);
+}
+
+.dashboard-location--drift {
+  border-top-color: rgba(183, 121, 31, 0.55);
+}
+
+.dashboard-location__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.dashboard-location__header h2 {
+  margin: 0;
+  font-size: clamp(1.45rem, 2vw, 2.1rem);
+}
+
+.dashboard-location__header p:not(.eyebrow) {
+  margin: 8px 0 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.dashboard-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.dashboard-version-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 0;
+}
+
+.record-grid.dashboard-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.dashboard-grid .record-section {
+  min-height: 236px;
+}
+
+.dashboard-deployment-history .data-table {
+  min-width: 760px;
+}
+
+.compact-list {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.4;
 }
 
 .record-grid {
@@ -845,6 +940,20 @@ textarea.form-control {
   .form-grid,
   .inline-form-row {
     grid-template-columns: 1fr;
+  }
+
+  .dashboard-summary,
+  .dashboard-version-grid,
+  .record-grid.dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-location__header {
+    flex-direction: column;
+  }
+
+  .dashboard-status-row {
+    justify-content: flex-start;
   }
 
   .record-section dl div {
