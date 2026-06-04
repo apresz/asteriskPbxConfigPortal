@@ -1,0 +1,21 @@
+Event: CoreShowChannel
+ActionID: channels-1
+Channel: PJSIP/3000-00000001
+ChannelState: 6
+ChannelStateDesc: Up
+CallerIDNum: 3000
+ConnectedLineNum: 15551234567
+Context: outbound
+Exten: 15551234567
+Priority: 3
+Application: Dial
+ApplicationData: PJSIP/15551234567@trunk-primary-sip,60
+Duration: 00:00:42
+BridgeId: bridge-1
+Uniqueid: 1717460000.1
+Linkedid: 1717460000.1
+
+Event: CoreShowChannelsComplete
+ActionID: channels-1
+EventList: Complete
+ListItems: 1

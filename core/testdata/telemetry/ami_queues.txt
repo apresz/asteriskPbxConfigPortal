@@ -1,0 +1,36 @@
+Event: QueueParams
+ActionID: queues-1
+Queue: support-queue
+Strategy: ringall
+Calls: 1
+Holdtime: 12
+TalkTime: 84
+Completed: 7
+Abandoned: 1
+ServiceLevelPerf: 95.0
+
+Event: QueueMember
+ActionID: queues-1
+Queue: support-queue
+Name: 3000
+Location: PJSIP/3000
+Membership: dynamic
+Penalty: 0
+Status: 1
+Paused: 0
+CallsTaken: 4
+LastCall: 1717460100
+
+Event: QueueEntry
+ActionID: queues-1
+Queue: support-queue
+Position: 1
+Channel: PJSIP/trunk-primary-sip-00000002
+CallerIDNum: 15557654321
+Wait: 18
+Uniqueid: 1717460200.2
+
+Event: QueueStatusComplete
+ActionID: queues-1
+EventList: Complete
+ListItems: 3

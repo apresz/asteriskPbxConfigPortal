@@ -1,0 +1,32 @@
+Asterisk Call Manager/9.0.0
+
+Event: ContactList
+ActionID: contacts-1
+ObjectName: 3000;@a1b2c3
+ObjectType: contact
+AOR: 3000
+URI: sip:3000@10.30.0.42:5060
+EndpointName: 3000
+ViaAddress: 10.30.0.42:5060
+Status: Reachable
+RoundtripUsec: 12345
+RegExpire: 181
+UserAgent: Cisco-CP-8841
+
+Event: ContactList
+ActionID: contacts-1
+ObjectName: 3001;@d4e5f6
+ObjectType: contact
+AOR: 3001
+URI: sip:3001@10.30.0.43:5060
+EndpointName: 3001
+ViaAddress: 10.30.0.43:5060
+Status: Unreachable
+RoundtripUsec: 0
+RegExpire: 0
+UserAgent: Cisco-CP-8865
+
+Event: ContactListComplete
+ActionID: contacts-1
+EventList: Complete
+ListItems: 2

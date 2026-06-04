@@ -1,0 +1,26 @@
+Event: EndpointList
+ActionID: endpoints-1
+ObjectType: endpoint
+ObjectName: trunk-primary-sip
+Transport: transport-tcp
+Aors: aor-trunk-primary-sip
+Auths: auth-trunk-primary-sip
+OutboundAuths: auth-trunk-primary-sip
+DeviceState: Not in use
+ActiveContacts: 1
+Contacts: 1
+
+Event: EndpointList
+ActionID: endpoints-1
+ObjectType: endpoint
+ObjectName: 3000
+Transport: transport-tcp
+Aors: 3000
+DeviceState: Not in use
+ActiveContacts: 1
+Contacts: 1
+
+Event: EndpointListComplete
+ActionID: endpoints-1
+EventList: Complete
+ListItems: 2
