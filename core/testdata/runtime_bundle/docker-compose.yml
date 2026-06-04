@@ -50,7 +50,14 @@ services:
       ASTERISK_AMI_PORT: ${ASTERISK_AMI_PORT:-5038}
       ASTERISK_AMI_USERNAME: "${ASTERISK_AMI_USERNAME:?ASTERISK_AMI_USERNAME is required}"
       ASTERISK_AMI_SECRET: "${ASTERISK_AMI_SECRET:?ASTERISK_AMI_SECRET is required}"
+      ASTERISK_CDR_CSV_PATH: ${ASTERISK_CDR_CSV_PATH:-/var/log/asterisk/cdr-csv/Master.csv}
+      ASTERISK_CEL_CSV_PATH: ${ASTERISK_CEL_CSV_PATH:-/var/log/asterisk/cel-custom/Master.csv}
+      ASTERISK_RECORDING_ROOT: ${ASTERISK_RECORDING_ROOT:-/var/spool/asterisk/monitor}
+      PBX_AGENT_TELEMETRY_INTERVAL_SECONDS: ${PBX_AGENT_TELEMETRY_INTERVAL_SECONDS:-60}
       PORTAL_API_BASE_URL: ${PORTAL_API_BASE_URL:-}
+    volumes:
+      - asterisk-log:/var/log/asterisk:ro
+      - asterisk-spool:/var/spool/asterisk:ro
     depends_on:
       - asterisk
 

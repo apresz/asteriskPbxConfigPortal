@@ -507,6 +507,13 @@ class Location(TimestampedModel):
         null=True,
         blank=True,
     )
+    agent_telemetry = models.JSONField("PBX agent telemetry", default=dict, blank=True)
+    agent_telemetry_errors = models.JSONField("PBX agent telemetry errors", default=list, blank=True)
+    agent_telemetry_reported_at = models.DateTimeField(
+        "PBX agent telemetry reported at",
+        null=True,
+        blank=True,
+    )
     is_active = models.BooleanField(default=True)
     last_deployed_at = models.DateTimeField("last deployed", null=True, blank=True)
     deployment_status = models.CharField(

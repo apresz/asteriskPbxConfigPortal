@@ -20,6 +20,10 @@ class ActiveConfigReportError(ValueError):
     pass
 
 
+class AgentTelemetryReportError(ValueError):
+    pass
+
+
 def authenticate_agent(token: str | None, secret: str | None) -> Location:
     if not token or not secret:
         raise AgentAuthenticationError("Missing agent token or secret.")
@@ -30,6 +34,16 @@ def authenticate_agent(token: str | None, secret: str | None) -> Location:
     if not hmac.compare_digest(location.agent_secret, secret):
         raise AgentAuthenticationError("Invalid agent token or secret.")
     return location
+
+
+TELEMETRY_LIST_FIELDS = (
+    "phone_registrations",
+    "trunk_status",
+    "active_calls",
+    "queue_status",
+    "recent_calls",
+    "recording_metadata",
+)
 
 
 def update_active_config_report(location_id: int, payload: dict) -> Location:
@@ -63,6 +77,53 @@ def update_active_config_report(location_id: int, payload: dict) -> Location:
             "active_config_checksum",
             "active_config_timestamp",
             "active_config_reported_at",
+            "updated_at",
+        ]
+    )
+    return location
+
+
+def update_agent_telemetry_report(location_id: int, payload: dict) -> Location:
+    timestamp = str(payload.get("timestamp") or "").strip()
+    parsed_timestamp = dateparse.parse_datetime(timestamp)
+    if parsed_timestamp is None:
+        raise AgentTelemetryReportError("Telemetry timestamp must be ISO-8601.")
+    if timezone.is_naive(parsed_timestamp):
+        parsed_timestamp = timezone.make_aware(parsed_timestamp, datetime_timezone.utc)
+
+    telemetry: dict[str, object] = {
+        "timestamp": parsed_timestamp.isoformat(),
+    }
+    for field_name in TELEMETRY_LIST_FIELDS:
+        value = payload.get(field_name)
+        if not isinstance(value, list):
+            raise AgentTelemetryReportError(f"Telemetry field {field_name} must be a list.")
+        telemetry[field_name] = value
+
+    location_health = payload.get("location_health")
+    if not isinstance(location_health, dict):
+        raise AgentTelemetryReportError("Telemetry field location_health must be an object.")
+    telemetry["location_health"] = location_health
+
+    call_events = payload.get("call_events", [])
+    if not isinstance(call_events, list):
+        raise AgentTelemetryReportError("Telemetry field call_events must be a list.")
+    telemetry["call_events"] = call_events
+
+    telemetry_errors = payload.get("telemetry_errors", [])
+    if not isinstance(telemetry_errors, list):
+        raise AgentTelemetryReportError("Telemetry field telemetry_errors must be a list.")
+    telemetry["telemetry_errors"] = telemetry_errors
+
+    location = Location.objects.get(pk=location_id)
+    location.agent_telemetry = telemetry
+    location.agent_telemetry_errors = telemetry_errors
+    location.agent_telemetry_reported_at = timezone.now()
+    location.save(
+        update_fields=[
+            "agent_telemetry",
+            "agent_telemetry_errors",
+            "agent_telemetry_reported_at",
             "updated_at",
         ]
     )
@@ -104,33 +165,61 @@ class AgentWebSocketApplication:
             if payload is None:
                 await _send_error(send, "Expected a JSON text message.")
                 continue
-            if payload.get("type") != "active_config":
+            if payload.get("type") == "active_config":
+                try:
+                    updated_location = await sync_to_async(update_active_config_report, thread_sensitive=True)(
+                        location.id,
+                        payload,
+                    )
+                except ActiveConfigReportError as exc:
+                    await _send_error(send, str(exc))
+                    continue
+
+                await send(
+                    {
+                        "type": "websocket.send",
+                        "text": json.dumps(
+                            {
+                                "type": "active_config_ack",
+                                "location": updated_location.slug,
+                                "version": updated_location.active_config_version_number,
+                                "checksum": updated_location.active_config_checksum,
+                                "timestamp": updated_location.active_config_timestamp.isoformat(),
+                            }
+                        ),
+                    }
+                )
+                continue
+
+            if payload.get("type") == "telemetry":
+                try:
+                    updated_location = await sync_to_async(update_agent_telemetry_report, thread_sensitive=True)(
+                        location.id,
+                        payload,
+                    )
+                except AgentTelemetryReportError as exc:
+                    await _send_error(send, str(exc))
+                    continue
+
+                await send(
+                    {
+                        "type": "websocket.send",
+                        "text": json.dumps(
+                            {
+                                "type": "telemetry_ack",
+                                "location": updated_location.slug,
+                                "timestamp": updated_location.agent_telemetry["timestamp"],
+                                "categories": [*TELEMETRY_LIST_FIELDS, "call_events", "location_health"],
+                                "error_count": len(updated_location.agent_telemetry_errors),
+                            }
+                        ),
+                    }
+                )
+                continue
+
+            if payload.get("type") not in {"active_config", "telemetry"}:
                 await _send_error(send, "Unsupported agent message type.")
                 continue
-
-            try:
-                updated_location = await sync_to_async(update_active_config_report, thread_sensitive=True)(
-                    location.id,
-                    payload,
-                )
-            except ActiveConfigReportError as exc:
-                await _send_error(send, str(exc))
-                continue
-
-            await send(
-                {
-                    "type": "websocket.send",
-                    "text": json.dumps(
-                        {
-                            "type": "active_config_ack",
-                            "location": updated_location.slug,
-                            "version": updated_location.active_config_version_number,
-                            "checksum": updated_location.active_config_checksum,
-                            "timestamp": updated_location.active_config_timestamp.isoformat(),
-                        }
-                    ),
-                }
-            )
 
 
 def _credentials_from_scope(scope) -> tuple[str | None, str | None]:

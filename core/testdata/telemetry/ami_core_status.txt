@@ -1,0 +1,6 @@
+Response: Success
+ActionID: health-1
+CoreStartupTime: 1717459000
+CoreReloadTime: 1717459900
+CoreCurrentCalls: 1
+CoreMaxCalls: 100

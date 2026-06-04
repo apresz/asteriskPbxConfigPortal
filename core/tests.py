@@ -28,7 +28,25 @@ from .access import (
 )
 from .audit import record_audit
 from .audio_prompts import AudioPromptConversionError, create_audio_prompt_from_upload
-from .agent_client import AgentConfig, portal_url_to_websocket_url, read_active_config_marker, report_active_config_once
+from .agent_client import (
+    AgentConfig,
+    portal_url_to_websocket_url,
+    read_active_config_marker,
+    report_active_config_once,
+    report_telemetry_once,
+    run_telemetry_loop,
+)
+from .ami_telemetry import (
+    parse_active_calls,
+    parse_ami_messages,
+    parse_cdr_csv,
+    parse_cel_csv,
+    parse_location_health,
+    parse_phone_registrations,
+    parse_queue_status,
+    parse_trunk_status,
+    scan_recording_metadata,
+)
 from .config_export import (
     ASTERISK_CONFIG_FILENAMES,
     build_asterisk_config_files,
@@ -1796,6 +1814,55 @@ class AgentWebSocketTests(TransactionTestCase):
         self.assertIsNone(location.active_config_timestamp)
         self.assertIsNone(location.active_config_reported_at)
 
+    def test_authenticated_agent_reports_telemetry_snapshot(self):
+        location = Location.objects.create(
+            **location_model_data(name="Telemetry HQ", slug="telemetry-hq", agent_secret="agent-secret")
+        )
+        payload = {
+            "type": "telemetry",
+            "timestamp": "2026-06-04T03:45:00Z",
+            "location_health": {
+                "location_slug": "spoofed-slug",
+                "ami_connected": True,
+                "collected_at": "2026-06-04T03:45:00Z",
+            },
+            "phone_registrations": [{"extension": "3000", "status": "reachable"}],
+            "trunk_status": [{"name": "trunk-primary-sip", "status": "not in use"}],
+            "active_calls": [{"channel": "PJSIP/3000-00000001"}],
+            "queue_status": [{"name": "support-queue"}],
+            "recent_calls": [{"uniqueid": "1717460000.1"}],
+            "call_events": [{"event_type": "ANSWER"}],
+            "recording_metadata": [{"filename": "1717460000.1.wav"}],
+            "telemetry_errors": [{"category": "recording_metadata", "message": "scan skipped"}],
+        }
+
+        events = asyncio.run(
+            self._run_agent_websocket(
+                query_string=f"token={location.agent_token}&secret=agent-secret".encode("utf-8"),
+                messages=[
+                    {
+                        "type": "websocket.receive",
+                        "text": json.dumps(payload),
+                    }
+                ],
+            )
+        )
+
+        location.refresh_from_db()
+        ack = json.loads(events[2]["text"])
+        self.assertEqual(ack["type"], "telemetry_ack")
+        self.assertEqual(ack["location"], "telemetry-hq")
+        self.assertEqual(ack["error_count"], 1)
+        self.assertIsNotNone(location.agent_telemetry_reported_at)
+        self.assertEqual(location.agent_telemetry["phone_registrations"][0]["extension"], "3000")
+        self.assertEqual(location.agent_telemetry["trunk_status"][0]["name"], "trunk-primary-sip")
+        self.assertEqual(location.agent_telemetry["active_calls"][0]["channel"], "PJSIP/3000-00000001")
+        self.assertEqual(location.agent_telemetry["queue_status"][0]["name"], "support-queue")
+        self.assertEqual(location.agent_telemetry["recent_calls"][0]["uniqueid"], "1717460000.1")
+        self.assertEqual(location.agent_telemetry["call_events"][0]["event_type"], "ANSWER")
+        self.assertEqual(location.agent_telemetry["recording_metadata"][0]["filename"], "1717460000.1.wav")
+        self.assertEqual(location.agent_telemetry_errors, payload["telemetry_errors"])
+
     async def _run_agent_websocket(self, *, query_string=b"", headers=None, messages=None):
         from portal.asgi import application
 
@@ -1819,6 +1886,58 @@ class AgentWebSocketTests(TransactionTestCase):
             send,
         )
         return events
+
+
+class AgentTelemetryParsingTests(SimpleTestCase):
+    def test_parses_representative_ami_cdr_cel_and_recording_fixtures(self):
+        contacts = parse_phone_registrations(parse_ami_messages(self._telemetry_fixture("ami_contacts.txt")))
+        trunks = parse_trunk_status(parse_ami_messages(self._telemetry_fixture("ami_endpoints.txt")))
+        calls = parse_active_calls(parse_ami_messages(self._telemetry_fixture("ami_channels.txt")))
+        queues = parse_queue_status(parse_ami_messages(self._telemetry_fixture("ami_queues.txt")))
+        health = parse_location_health(parse_ami_messages(self._telemetry_fixture("ami_core_status.txt")))
+        recent_calls = parse_cdr_csv(self._telemetry_fixture("cdr_master.csv"))
+        call_events = parse_cel_csv(self._telemetry_fixture("cel_master.csv"))
+
+        self.assertEqual(contacts[0]["extension"], "3000")
+        self.assertTrue(contacts[0]["reachable"])
+        self.assertEqual(contacts[1]["extension"], "3001")
+        self.assertFalse(contacts[1]["reachable"])
+        self.assertEqual(trunks, [
+            {
+                "name": "trunk-primary-sip",
+                "technology": "PJSIP",
+                "status": "not in use",
+                "available": True,
+                "active_contacts": 1,
+                "configured_contacts": 1,
+                "aors": ["aor-trunk-primary-sip"],
+                "transport": "transport-tcp",
+                "outbound_auths": ["auth-trunk-primary-sip"],
+            }
+        ])
+        self.assertEqual(calls[0]["uniqueid"], "1717460000.1")
+        self.assertEqual(calls[0]["application"], "Dial")
+        self.assertEqual(queues[0]["name"], "support-queue")
+        self.assertEqual(queues[0]["members"][0]["location"], "PJSIP/3000")
+        self.assertEqual(queues[0]["callers"][0]["caller_id"], "15557654321")
+        self.assertEqual(health["core_current_calls"], 1)
+        self.assertEqual(recent_calls[0]["uniqueid"], "1717460200.2")
+        self.assertEqual(recent_calls[0]["disposition"], "ANSWERED")
+        self.assertEqual(call_events[0]["event_type"], "ANSWER")
+
+    def test_scans_recording_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            recording = Path(temp_dir) / "1717460000.1-in.wav"
+            recording.write_bytes(b"RIFF")
+
+            recordings = scan_recording_metadata(temp_dir)
+
+        self.assertEqual(recordings[0]["filename"], "1717460000.1-in.wav")
+        self.assertEqual(recordings[0]["size_bytes"], 4)
+        self.assertEqual(recordings[0]["uniqueid"], "1717460000.1")
+
+    def _telemetry_fixture(self, filename):
+        return (Path(__file__).with_name("testdata") / "telemetry" / filename).read_text(encoding="utf-8")
 
 
 class AgentActiveConfigMarkerTests(TestCase):
@@ -1874,6 +1993,82 @@ class AgentActiveConfigMarkerTests(TestCase):
             portal_url_to_websocket_url("https://portal.warp.test"),
             "wss://portal.warp.test/api/agent/ws/",
         )
+
+    def test_agent_reports_collector_failure_as_telemetry_payload(self):
+        async def failing_collector(_config):
+            raise RuntimeError("AMI unavailable")
+
+        websocket_exchange = mock.AsyncMock(return_value={"type": "telemetry_ack"})
+
+        with mock.patch("core.agent_client.websocket_json_exchange", websocket_exchange):
+            response = asyncio.run(
+                report_telemetry_once(
+                    AgentConfig(
+                        websocket_url="wss://portal.warp.test/api/agent/ws/",
+                        token="agent-token",
+                        secret="agent-secret",
+                        marker_path=Path("/tmp/unused-marker.json"),
+                        location_slug="agent-hq",
+                    ),
+                    collector=failing_collector,
+                )
+            )
+
+        self.assertEqual(response, {"type": "telemetry_ack"})
+        payload = websocket_exchange.await_args.args[1]
+        self.assertEqual(payload["telemetry_errors"], [{"category": "telemetry", "message": "AMI unavailable"}])
+        self.assertFalse(payload["location_health"]["ami_connected"])
+
+    def test_agent_reconnect_loop_preserves_location_identity(self):
+        calls = []
+
+        async def collector(config):
+            return {
+                "type": "telemetry",
+                "timestamp": "2026-06-04T03:45:00Z",
+                "location_health": {"location_slug": config.location_slug, "ami_connected": True},
+                "phone_registrations": [],
+                "trunk_status": [],
+                "active_calls": [],
+                "queue_status": [],
+                "recent_calls": [],
+                "call_events": [],
+                "recording_metadata": [],
+                "telemetry_errors": [],
+            }
+
+        async def flaky_exchange(url, payload, headers):
+            calls.append((url, payload, headers))
+            if len(calls) == 1:
+                raise ConnectionError("portal dropped connection")
+            return {"type": "telemetry_ack", "location": "agent-hq"}
+
+        async def no_sleep(_seconds):
+            return None
+
+        asyncio.run(
+            run_telemetry_loop(
+                AgentConfig(
+                    websocket_url="wss://portal.warp.test/api/agent/ws/",
+                    token="agent-token",
+                    secret="agent-secret",
+                    marker_path=Path("/tmp/unused-marker.json"),
+                    location_slug="agent-hq",
+                    telemetry_interval_seconds=0,
+                ),
+                collector=collector,
+                websocket_exchange=flaky_exchange,
+                sleep=no_sleep,
+                reconnect_delay_seconds=0,
+                iterations=2,
+            )
+        )
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][2], calls[1][2])
+        self.assertEqual(calls[1][2]["X-PBX-Agent-Token"], "agent-token")
+        self.assertEqual(calls[1][2]["X-PBX-Agent-Secret"], "agent-secret")
+        self.assertEqual(calls[1][1]["location_health"]["location_slug"], "agent-hq")
 
 
 class ConfigVersionExportTests(TestCase):
@@ -2208,6 +2403,7 @@ class ConfigExportGoldenFileTests(TestCase):
                 recording_retention_days=30,
                 ami_username="ami-golden",
                 ami_secret="ami-golden-secret",
+                agent_token="agent-token",
                 agent_secret="golden-agent-secret",
             ),
         )

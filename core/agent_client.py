@@ -8,6 +8,14 @@ import secrets
 import ssl
 from urllib.parse import urlparse
 
+from .ami_telemetry import (
+    DEFAULT_CDR_CSV_PATH,
+    DEFAULT_CEL_CSV_PATH,
+    DEFAULT_RECORDING_ROOT,
+    collect_agent_telemetry,
+    telemetry_failure_payload,
+)
+
 
 DEFAULT_AGENT_WEBSOCKET_PATH = "/api/agent/ws/"
 
@@ -33,6 +41,18 @@ class AgentConfig:
     token: str
     secret: str
     marker_path: Path
+    location_slug: str = ""
+    lan_ip: str = ""
+    warp_ip: str = ""
+    ami_host: str = "127.0.0.1"
+    ami_port: int = 5038
+    ami_username: str = ""
+    ami_secret: str = ""
+    ami_timeout_seconds: float = 5.0
+    cdr_csv_path: str = DEFAULT_CDR_CSV_PATH
+    cel_csv_path: str = DEFAULT_CEL_CSV_PATH
+    recording_root: str = DEFAULT_RECORDING_ROOT
+    telemetry_interval_seconds: float = 60.0
 
     @classmethod
     def from_env(cls) -> "AgentConfig":
@@ -44,6 +64,17 @@ class AgentConfig:
             token=os.environ.get("PBX_AGENT_TOKEN", ""),
             secret=os.environ.get("PBX_AGENT_SECRET", ""),
             marker_path=Path(os.environ.get("PBX_ACTIVE_CONFIG_MARKER", "/etc/asterisk/pbx-active-config.json")),
+            location_slug=os.environ.get("PBX_LOCATION_SLUG", ""),
+            lan_ip=os.environ.get("PBX_LAN_IP", ""),
+            warp_ip=os.environ.get("PBX_WARP_IP", ""),
+            ami_host=os.environ.get("ASTERISK_AMI_HOST", "127.0.0.1"),
+            ami_port=int(os.environ.get("ASTERISK_AMI_PORT", "5038")),
+            ami_username=os.environ.get("ASTERISK_AMI_USERNAME", ""),
+            ami_secret=os.environ.get("ASTERISK_AMI_SECRET", ""),
+            cdr_csv_path=os.environ.get("ASTERISK_CDR_CSV_PATH", DEFAULT_CDR_CSV_PATH),
+            cel_csv_path=os.environ.get("ASTERISK_CEL_CSV_PATH", DEFAULT_CEL_CSV_PATH),
+            recording_root=os.environ.get("ASTERISK_RECORDING_ROOT", DEFAULT_RECORDING_ROOT),
+            telemetry_interval_seconds=float(os.environ.get("PBX_AGENT_TELEMETRY_INTERVAL_SECONDS", "60")),
         )
 
 
@@ -77,14 +108,45 @@ async def report_active_config_once(config: AgentConfig) -> dict:
         raise ValueError("PBX agent token and secret are required.")
 
     marker = read_active_config_marker(config.marker_path)
-    return await websocket_json_exchange(
-        config.websocket_url,
-        marker.as_payload(),
-        {
-            "X-PBX-Agent-Token": config.token,
-            "X-PBX-Agent-Secret": config.secret,
-        },
-    )
+    return await websocket_json_exchange(config.websocket_url, marker.as_payload(), _auth_headers(config))
+
+
+async def report_telemetry_once(config: AgentConfig, *, collector=collect_agent_telemetry) -> dict:
+    if not config.websocket_url:
+        raise ValueError("PBX agent WebSocket URL is required.")
+    if not config.token or not config.secret:
+        raise ValueError("PBX agent token and secret are required.")
+
+    try:
+        payload = await _maybe_await(collector(config))
+    except Exception as exc:
+        payload = telemetry_failure_payload(config, exc)
+    return await websocket_json_exchange(config.websocket_url, payload, _auth_headers(config))
+
+
+async def run_telemetry_loop(
+    config: AgentConfig,
+    *,
+    collector=collect_agent_telemetry,
+    websocket_exchange=None,
+    sleep=asyncio.sleep,
+    iterations: int | None = None,
+    reconnect_delay_seconds: float = 5.0,
+) -> None:
+    websocket_exchange = websocket_exchange or websocket_json_exchange
+    completed = 0
+    while iterations is None or completed < iterations:
+        try:
+            payload = await _maybe_await(collector(config))
+        except Exception as exc:
+            payload = telemetry_failure_payload(config, exc)
+
+        try:
+            await websocket_exchange(config.websocket_url, payload, _auth_headers(config))
+            await sleep(config.telemetry_interval_seconds)
+        except Exception:
+            await sleep(reconnect_delay_seconds)
+        completed += 1
 
 
 async def websocket_json_exchange(url: str, payload: dict, headers: dict[str, str]) -> dict:
@@ -101,9 +163,9 @@ async def websocket_json_exchange(url: str, payload: dict, headers: dict[str, st
     try:
         await _client_handshake(reader, writer, parsed, headers)
         await _write_text_frame(writer, json.dumps(payload))
-        response = await _read_text_frame(reader)
+        response = await _read_agent_response(reader)
         await _write_close_frame(writer)
-        return json.loads(response)
+        return response
     finally:
         writer.close()
         await writer.wait_closed()
@@ -168,3 +230,25 @@ async def _read_text_frame(reader) -> str:
     if opcode != 0x1:
         raise ConnectionError("Expected a text frame from portal.")
     return payload.decode("utf-8")
+
+
+async def _read_agent_response(reader) -> dict:
+    for _attempt in range(10):
+        response = json.loads(await _read_text_frame(reader))
+        if response.get("type") == "agent_authenticated":
+            continue
+        return response
+    raise ConnectionError("Portal did not acknowledge the agent payload.")
+
+
+def _auth_headers(config: AgentConfig) -> dict[str, str]:
+    return {
+        "X-PBX-Agent-Token": config.token,
+        "X-PBX-Agent-Secret": config.secret,
+    }
+
+
+async def _maybe_await(value):
+    if hasattr(value, "__await__"):
+        return await value
+    return value
