@@ -1,5 +1,7 @@
+import base64
+import binascii
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone as datetime_timezone
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
@@ -7,7 +9,7 @@ from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import IntegrityError, transaction
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
-from django.utils import timezone
+from django.utils import dateparse, timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from .access import (
@@ -20,6 +22,7 @@ from .access import (
 )
 from .audit import record_audit
 from .audio_prompts import AudioPromptConversionError, create_audio_prompt_from_upload
+from .ami_telemetry import recording_id_for_path
 from .backups import create_admin_backup
 from .config_export import ConfigExportValidationError, create_config_version, validate_location_routing
 from .deployments import DeploymentError, deploy_config_version
@@ -54,6 +57,7 @@ from .live_operations import (
     AgentUnavailableError,
     UnsupportedLiveCommandError,
     run_location_live_command,
+    run_location_recording_playback,
     supported_live_commands,
 )
 from .models import (
@@ -886,6 +890,136 @@ def _execute_live_operation(request, location: Location, payload: dict) -> tuple
     }
     _record_live_operation_audit(request.user, location, command_name, outcome, response_payload)
     return response_payload, status
+
+
+@login_required
+@require_GET
+def location_recording_playback(request, slug: str, recording_id: str):
+    location = get_object_or_404(Location, slug=slug)
+    if not user_has_permission(request.user, PortalPermission.ACCESS_RECORDINGS):
+        _record_recording_playback_audit(
+            request.user,
+            location,
+            recording_id,
+            AuditOutcome.DENIED,
+            details={"status": "denied", "error": "Permission denied."},
+        )
+        raise PermissionDenied
+
+    recording = _recording_metadata_for_id(location, recording_id)
+    if recording is None:
+        _record_recording_playback_audit(
+            request.user,
+            location,
+            recording_id,
+            AuditOutcome.FAILURE,
+            details={"status": "missing", "error": "Recording metadata was not found."},
+        )
+        raise Http404("Recording not found.")
+
+    recording_status = _recording_status(location, recording)
+    if recording_status == "expired":
+        _record_recording_playback_audit(
+            request.user,
+            location,
+            recording_id,
+            AuditOutcome.FAILURE,
+            recording=recording,
+            details={"status": "expired", "error": "Recording has expired."},
+        )
+        return HttpResponse("Recording has expired.", status=410)
+    if recording_status != "available":
+        _record_recording_playback_audit(
+            request.user,
+            location,
+            recording_id,
+            AuditOutcome.FAILURE,
+            recording=recording,
+            details={"status": "unavailable", "error": "Recording is unavailable."},
+        )
+        raise Http404("Recording not available.")
+
+    try:
+        result = run_location_recording_playback(
+            location,
+            _recording_path(recording),
+            retention_days=location.recording_retention_days,
+        )
+    except AgentUnavailableError as exc:
+        return _recording_playback_failure_response(
+            request,
+            location,
+            recording_id,
+            recording,
+            "agent_unavailable",
+            str(exc),
+            503,
+        )
+    except AgentCommandTimeoutError as exc:
+        return _recording_playback_failure_response(
+            request,
+            location,
+            recording_id,
+            recording,
+            "agent_timeout",
+            str(exc),
+            504,
+        )
+    except Exception as exc:
+        return _recording_playback_failure_response(
+            request,
+            location,
+            recording_id,
+            recording,
+            "agent_error",
+            str(exc),
+            502,
+        )
+
+    if result.get("status") != "success":
+        error_code = str(result.get("error_code") or "agent_failure")
+        status_code = 410 if error_code == "expired" else 404 if error_code == "unavailable" else 502
+        return _recording_playback_failure_response(
+            request,
+            location,
+            recording_id,
+            recording,
+            error_code,
+            str(result.get("error") or "Recording playback failed."),
+            status_code,
+            result=result,
+        )
+
+    try:
+        content = base64.b64decode(str(result.get("content_base64") or ""), validate=True)
+    except (binascii.Error, ValueError):
+        return _recording_playback_failure_response(
+            request,
+            location,
+            recording_id,
+            recording,
+            "invalid_agent_payload",
+            "PBX agent returned invalid recording content.",
+            502,
+        )
+
+    _record_recording_playback_audit(
+        request.user,
+        location,
+        recording_id,
+        AuditOutcome.SUCCESS,
+        recording=recording,
+        details={
+            "status": "success",
+            "content_type": result.get("content_type") or "application/octet-stream",
+            "size_bytes": len(content),
+        },
+    )
+    response = HttpResponse(content, content_type=result.get("content_type") or "application/octet-stream")
+    filename = _recording_filename(result) or _recording_filename(recording) or "recording"
+    response["Content-Disposition"] = f'inline; filename="{filename.replace(chr(34), "")}"'
+    response["Content-Length"] = str(len(content))
+    return response
 
 
 @permission_required(PortalPermission.VIEW)
@@ -2015,7 +2149,7 @@ def _record_backup_audit(actor, action: AuditAction, backup: AdminBackup) -> Non
 
 
 def _dashboard_context(request):
-    dashboard_locations = [_dashboard_location(location) for location in Location.objects.order_by("name")]
+    dashboard_locations = [_dashboard_location(location, request.user) for location in Location.objects.order_by("name")]
     dashboard_totals = {
         "locations": len(dashboard_locations),
         "reporting_locations": sum(1 for item in dashboard_locations if item["agent_state"]["is_reporting"]),
@@ -2031,14 +2165,18 @@ def _dashboard_context(request):
     }
 
 
-def _dashboard_location(location: Location) -> dict:
+def _dashboard_location(location: Location, user) -> dict:
     telemetry = location.agent_telemetry if isinstance(location.agent_telemetry, dict) else {}
     phone_registrations = _telemetry_list(telemetry, "phone_registrations")
     trunk_status = _telemetry_list(telemetry, "trunk_status")
     active_calls = _telemetry_list(telemetry, "active_calls")
     queue_status = _telemetry_list(telemetry, "queue_status")
     recent_calls = _telemetry_list(telemetry, "recent_calls")
-    recording_metadata = _telemetry_list(telemetry, "recording_metadata")
+    can_access_recordings = user_has_permission(user, PortalPermission.ACCESS_RECORDINGS)
+    recording_metadata = [
+        _recording_context(location, recording, can_access_recordings=can_access_recordings)
+        for recording in _telemetry_list(telemetry, "recording_metadata")
+    ]
     telemetry_errors = location.agent_telemetry_errors if isinstance(location.agent_telemetry_errors, list) else []
 
     latest_exported = location.config_versions.order_by("-version_number").first()
@@ -2071,7 +2209,12 @@ def _dashboard_location(location: Location) -> dict:
         "trunk_summary": _trunk_summary(trunk_status),
         "call_summary": {"total": len(active_calls), "recent": len(recent_calls)},
         "queue_summary": _queue_summary(queue_status),
-        "recording_summary": {"total": len(recording_metadata), "available": bool(recording_metadata)},
+        "recording_summary": {
+            "total": len(recording_metadata),
+            "available": any(recording["status"] == "available" for recording in recording_metadata),
+            "expired": sum(1 for recording in recording_metadata if recording["status"] == "expired"),
+            "unavailable": sum(1 for recording in recording_metadata if recording["status"] == "unavailable"),
+        },
         "config_drift": _config_drift(location, latest_exported, latest_deployed),
         "deployment_records": location.deployment_records.select_related(
             "operator",
@@ -2181,6 +2324,81 @@ def _queue_summary(queues: list[dict]) -> dict:
         "waiting": sum(_int_or_zero(item.get("calls_waiting")) for item in queues),
         "members": sum(len(item.get("members") or []) for item in queues),
     }
+
+
+def _recording_metadata_for_id(location: Location, recording_id: str) -> dict | None:
+    telemetry = location.agent_telemetry if isinstance(location.agent_telemetry, dict) else {}
+    for recording in _telemetry_list(telemetry, "recording_metadata"):
+        normalized = _recording_context(location, recording, can_access_recordings=True)
+        if recording_id in {
+            str(normalized.get("recording_id") or ""),
+            str(normalized.get("filename") or ""),
+            str(normalized.get("relative_path") or ""),
+        }:
+            return normalized
+    return None
+
+
+def _recording_context(location: Location, recording: dict, *, can_access_recordings: bool) -> dict:
+    normalized = dict(recording)
+    recording_id = str(normalized.get("recording_id") or "").strip()
+    if not recording_id:
+        raw_path = str(normalized.get("relative_path") or normalized.get("filename") or "").strip()
+        recording_id = recording_id_for_path(raw_path) if raw_path else ""
+    normalized["recording_id"] = recording_id
+    status = _recording_status(location, normalized)
+    normalized["status"] = status
+    normalized["status_label"] = {
+        "available": "Available",
+        "expired": "Expired",
+        "unavailable": "Unavailable",
+    }[status]
+    normalized["status_badge_class"] = {
+        "available": "",
+        "expired": "status-badge--warning",
+        "unavailable": "status-badge--muted",
+    }[status]
+    normalized["can_playback"] = bool(can_access_recordings and status == "available" and recording_id)
+    return normalized
+
+
+def _recording_status(location: Location, recording: dict) -> str:
+    if recording.get("expired") is True or str(recording.get("status") or "").lower() == "expired":
+        return "expired"
+    if recording.get("available") is False or not _recording_path(recording):
+        return "unavailable"
+    if _recording_expired_by_retention(location, recording):
+        return "expired"
+    return "available"
+
+
+def _recording_expired_by_retention(location: Location, recording: dict) -> bool:
+    expires_at = _parse_aware_datetime(recording.get("retention_expires_at"))
+    if expires_at is None:
+        modified_at = _parse_aware_datetime(recording.get("modified_at"))
+        if modified_at is None:
+            return False
+        expires_at = modified_at + timedelta(days=location.recording_retention_days)
+    return expires_at <= timezone.now()
+
+
+def _parse_aware_datetime(value) -> datetime | None:
+    if not value:
+        return None
+    parsed = dateparse.parse_datetime(str(value))
+    if parsed is None:
+        return None
+    if timezone.is_naive(parsed):
+        parsed = timezone.make_aware(parsed, datetime_timezone.utc)
+    return parsed
+
+
+def _recording_path(recording: dict) -> str:
+    return str(recording.get("path") or recording.get("relative_path") or "").strip()
+
+
+def _recording_filename(recording: dict) -> str:
+    return str(recording.get("filename") or "").strip()
 
 
 def _telemetry_list(telemetry: dict, key: str) -> list:
@@ -2294,6 +2512,74 @@ def _record_live_operation_audit(
             "location_slug": location.slug,
             "result": result,
         },
+    )
+
+
+def _recording_playback_failure_response(
+    request,
+    location: Location,
+    recording_id: str,
+    recording: dict,
+    status_name: str,
+    error: str,
+    status_code: int,
+    *,
+    result: dict | None = None,
+) -> HttpResponse:
+    details = {"status": status_name, "error": error}
+    if result:
+        details["agent_result"] = {
+            key: value
+            for key, value in result.items()
+            if key not in {"content_base64"}
+        }
+    _record_recording_playback_audit(
+        request.user,
+        location,
+        recording_id,
+        AuditOutcome.FAILURE,
+        recording=recording,
+        details=details,
+    )
+    return HttpResponse(error, status=status_code)
+
+
+def _record_recording_playback_audit(
+    actor,
+    location: Location,
+    recording_id: str,
+    outcome: AuditOutcome,
+    *,
+    recording: dict | None = None,
+    details: dict | None = None,
+) -> None:
+    actor_username = actor.get_username() if getattr(actor, "is_authenticated", False) else "anonymous"
+    audit_details = {
+        "actor_username": actor_username,
+        "location_id": location.id,
+        "location_slug": location.slug,
+        "recording_id": recording_id,
+    }
+    if recording:
+        audit_details.update(
+            {
+                "filename": _recording_filename(recording),
+                "relative_path": recording.get("relative_path") or "",
+                "uniqueid": recording.get("uniqueid") or "",
+                "retention_days": location.recording_retention_days,
+                "retention_expires_at": recording.get("retention_expires_at"),
+                "metadata_status": recording.get("status") or "",
+            }
+        )
+    if details:
+        audit_details.update(details)
+
+    record_audit(
+        actor=actor,
+        action=AuditAction.RECORDING_PLAYBACK,
+        target=f"locations/{location.slug}/recordings/{recording_id}",
+        outcome=outcome,
+        details=audit_details,
     )
 
 

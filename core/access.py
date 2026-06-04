@@ -12,12 +12,15 @@ from .models import PortalPermission, PortalRole, PortalUserProfile
 ROLE_PERMISSIONS = {
     PortalRole.VIEWER: frozenset({PortalPermission.VIEW}),
     PortalRole.EDITOR: frozenset({PortalPermission.VIEW, PortalPermission.EDIT_CONFIG}),
-    PortalRole.OPERATOR: frozenset({PortalPermission.VIEW, PortalPermission.RUN_LIVE_OPERATIONS}),
+    PortalRole.OPERATOR: frozenset(
+        {PortalPermission.VIEW, PortalPermission.RUN_LIVE_OPERATIONS, PortalPermission.ACCESS_RECORDINGS}
+    ),
     PortalRole.ADMIN: frozenset(
         {
             PortalPermission.VIEW,
             PortalPermission.EDIT_CONFIG,
             PortalPermission.RUN_LIVE_OPERATIONS,
+            PortalPermission.ACCESS_RECORDINGS,
             PortalPermission.ADMINISTER,
         }
     ),

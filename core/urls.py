@@ -11,6 +11,11 @@ urlpatterns = [
     path("locations/<slug:slug>/edit/", views.location_update, name="location-edit"),
     path("locations/<slug:slug>/delete/", views.location_delete, name="location-delete"),
     path("locations/<slug:slug>/live/", views.location_live_operation, name="location-live-operation"),
+    path(
+        "locations/<slug:slug>/recordings/<str:recording_id>/playback/",
+        views.location_recording_playback,
+        name="location-recording-playback",
+    ),
     path("locations/<slug:slug>/exports/", views.location_config_export, name="location-config-export"),
     path(
         "locations/<slug:slug>/exports/<int:version_number>/download/",

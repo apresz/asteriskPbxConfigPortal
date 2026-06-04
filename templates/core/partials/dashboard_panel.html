@@ -180,13 +180,26 @@
         <article class="record-section">
           <h2>Recording Availability</h2>
           <dl>
-            <div><dt>Status</dt><dd>{{ item.recording_summary.available|yesno:"Available,No recordings reported" }}</dd></div>
+            <div><dt>Status</dt><dd>{{ item.recording_summary.available|yesno:"Available,No playable recordings" }}</dd></div>
             <div><dt>Recent Files</dt><dd>{{ item.recording_summary.total }}</dd></div>
+            <div><dt>Expired</dt><dd>{{ item.recording_summary.expired }}</dd></div>
+            <div><dt>Unavailable</dt><dd>{{ item.recording_summary.unavailable }}</dd></div>
           </dl>
           {% if item.recording_metadata %}
             <ul class="compact-list">
               {% for recording in item.recording_metadata %}
-                <li>{{ recording.filename|default:"recording" }} - {{ recording.size_bytes|default:"0" }} bytes</li>
+                <li>
+                  <span>{{ recording.filename|default:"recording" }} - {{ recording.size_bytes|default:"0" }} bytes</span>
+                  <span class="status-badge {{ recording.status_badge_class }}">{{ recording.status_label }}</span>
+                  {% if recording.retention_expires_at %}
+                    <span class="table-meta">Retention until {{ recording.retention_expires_at }}</span>
+                  {% endif %}
+                  {% if recording.can_playback %}
+                    <a class="table-link" href="{% url 'location-recording-playback' item.location.slug recording.recording_id %}">Playback</a>
+                  {% else %}
+                    <span class="table-meta">Playback unavailable</span>
+                  {% endif %}
+                </li>
               {% endfor %}
             </ul>
           {% endif %}

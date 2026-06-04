@@ -9,6 +9,7 @@ from uuid import uuid4
 
 
 DEFAULT_LIVE_COMMAND_TIMEOUT_SECONDS = 15.0
+DEFAULT_RECORDING_PLAYBACK_TIMEOUT_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -121,28 +122,63 @@ class AgentSession:
         timeout_seconds: float = DEFAULT_LIVE_COMMAND_TIMEOUT_SECONDS,
     ) -> dict[str, Any]:
         command_id = uuid4().hex
-        result_future: Future = Future()
-        with self._lock:
-            if self._closed:
-                raise AgentUnavailableError(f"PBX agent for {self.location_slug} is not connected.")
-            self._pending_results[command_id] = result_future
-
-        self._outbound_messages.put(
-            {
+        return self._dispatch_pending_result(
+            result_id=command_id,
+            outbound_payload={
                 "type": "live_command",
                 "command_id": command_id,
                 "command": command_name,
                 "parameters": parameters or {},
-            }
+            },
+            timeout_seconds=timeout_seconds,
+            timeout_message=f"PBX agent did not answer command {command_name}.",
         )
+
+    def dispatch_recording_file(
+        self,
+        *,
+        path: str,
+        retention_days: int | None = None,
+        timeout_seconds: float = DEFAULT_RECORDING_PLAYBACK_TIMEOUT_SECONDS,
+    ) -> dict[str, Any]:
+        request_id = uuid4().hex
+        outbound_payload: dict[str, Any] = {
+            "type": "recording_file_request",
+            "request_id": request_id,
+            "path": path,
+        }
+        if retention_days is not None:
+            outbound_payload["retention_days"] = retention_days
+        return self._dispatch_pending_result(
+            result_id=request_id,
+            outbound_payload=outbound_payload,
+            timeout_seconds=timeout_seconds,
+            timeout_message="PBX agent did not answer recording playback request.",
+        )
+
+    def _dispatch_pending_result(
+        self,
+        *,
+        result_id: str,
+        outbound_payload: dict[str, Any],
+        timeout_seconds: float,
+        timeout_message: str,
+    ) -> dict[str, Any]:
+        result_future: Future = Future()
+        with self._lock:
+            if self._closed:
+                raise AgentUnavailableError(f"PBX agent for {self.location_slug} is not connected.")
+            self._pending_results[result_id] = result_future
+
+        self._outbound_messages.put(outbound_payload)
         try:
             result = result_future.result(timeout=timeout_seconds)
         except FutureTimeoutError as exc:
             with self._lock:
-                self._pending_results.pop(command_id, None)
-            raise AgentCommandTimeoutError(f"PBX agent did not answer command {command_name}.") from exc
+                self._pending_results.pop(result_id, None)
+            raise AgentCommandTimeoutError(timeout_message) from exc
         if not isinstance(result, dict):
-            raise AgentUnavailableError(f"PBX agent returned an invalid result for {command_name}.")
+            raise AgentUnavailableError("PBX agent returned an invalid result.")
         return result
 
     def wait_for_outbound_message(self) -> dict[str, Any] | None:
@@ -212,6 +248,25 @@ class AgentConnectionRegistry:
             timeout_seconds=timeout_seconds,
         )
 
+    def dispatch_recording_file(
+        self,
+        *,
+        location_id: int,
+        location_slug: str,
+        path: str,
+        retention_days: int | None = None,
+        timeout_seconds: float = DEFAULT_RECORDING_PLAYBACK_TIMEOUT_SECONDS,
+    ) -> dict[str, Any]:
+        with self._lock:
+            session = self._sessions_by_location_id.get(location_id)
+        if session is None:
+            raise AgentUnavailableError(f"PBX agent for {location_slug} is not connected.")
+        return session.dispatch_recording_file(
+            path=path,
+            retention_days=retention_days,
+            timeout_seconds=timeout_seconds,
+        )
+
     def resolve_result(self, session: AgentSession, command_id: str, result: dict[str, Any]) -> bool:
         with self._lock:
             active_session = self._sessions_by_location_id.get(session.location_id)
@@ -240,5 +295,21 @@ def run_location_live_command(
         location_slug=location.slug,
         command_name=command_name,
         parameters=parameters,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def run_location_recording_playback(
+    location,
+    path: str,
+    *,
+    retention_days: int | None = None,
+    timeout_seconds: float = DEFAULT_RECORDING_PLAYBACK_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    return agent_connection_registry.dispatch_recording_file(
+        location_id=location.id,
+        location_slug=location.slug,
+        path=path,
+        retention_days=retention_days,
         timeout_seconds=timeout_seconds,
     )

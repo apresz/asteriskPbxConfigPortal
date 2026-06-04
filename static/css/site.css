@@ -689,6 +689,15 @@ a {
   line-height: 1.4;
 }
 
+.compact-list li {
+  display: grid;
+  gap: 4px;
+}
+
+.compact-list .status-badge {
+  justify-self: start;
+}
+
 .record-grid {
   max-width: 1180px;
   display: grid;

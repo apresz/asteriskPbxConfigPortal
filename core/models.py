@@ -88,6 +88,7 @@ class PortalPermission(models.TextChoices):
     VIEW = "view", "View portal"
     EDIT_CONFIG = "edit_config", "Edit configuration"
     RUN_LIVE_OPERATIONS = "run_live_operations", "Run live operations"
+    ACCESS_RECORDINGS = "access_recordings", "Access recordings"
     ADMINISTER = "administer", "Administer portal"
 
 
@@ -102,6 +103,7 @@ class AuditAction(models.TextChoices):
     CONFIG_EXPORT = "config_export", "Config export"
     DEPLOYMENT = "deployment", "Deployment"
     LIVE_PBX_ACTION = "live_pbx_action", "Live PBX action"
+    RECORDING_PLAYBACK = "recording_playback", "Recording playback"
     API_KEY_CREATE = "api_key_create", "API key create"
     API_KEY_ROTATE = "api_key_rotate", "API key rotate"
     API_KEY_REVOKE = "api_key_revoke", "API key revoke"

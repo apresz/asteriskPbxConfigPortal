@@ -1,6 +1,7 @@
 import asyncio
+import base64
 import csv
-from datetime import datetime, timezone as datetime_timezone
+from datetime import datetime, timedelta, timezone as datetime_timezone
 from pathlib import Path
 import secrets
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 DEFAULT_CDR_CSV_PATH = "/var/log/asterisk/cdr-csv/Master.csv"
 DEFAULT_CEL_CSV_PATH = "/var/log/asterisk/cel-custom/Master.csv"
 DEFAULT_RECORDING_ROOT = "/var/spool/asterisk/monitor"
+RECORDING_AUDIO_SUFFIXES = frozenset({".wav", ".gsm", ".mp3", ".ogg"})
 
 
 class AMIError(ConnectionError):
@@ -156,7 +158,11 @@ async def collect_agent_telemetry(config: Any) -> dict[str, Any]:
         category="call_events",
         errors=errors,
     )
-    recording_metadata = scan_recording_metadata(getattr(config, "recording_root", DEFAULT_RECORDING_ROOT), errors=errors)
+    recording_metadata = scan_recording_metadata(
+        getattr(config, "recording_root", DEFAULT_RECORDING_ROOT),
+        retention_days=getattr(config, "recording_retention_days", None),
+        errors=errors,
+    )
 
     return {
         "type": "telemetry",
@@ -408,6 +414,8 @@ def scan_recording_metadata(
     root: str | Path,
     *,
     limit: int = 100,
+    retention_days: int | str | None = None,
+    now: datetime | None = None,
     errors: list[dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     root_path = Path(root)
@@ -417,7 +425,7 @@ def scan_recording_metadata(
         paths = [
             path
             for path in root_path.rglob("*")
-            if path.is_file() and path.suffix.lower() in {".wav", ".gsm", ".mp3", ".ogg"}
+            if path.is_file() and path.suffix.lower() in RECORDING_AUDIO_SUFFIXES
         ]
     except OSError as exc:
         if errors is not None:
@@ -436,17 +444,53 @@ def scan_recording_metadata(
 
     files.sort(key=lambda item: item[1].st_mtime, reverse=True)
     recordings = []
+    normalized_retention_days = _positive_int_or_none(retention_days)
+    reference_time = now or datetime.now(tz=datetime_timezone.utc)
     for path, stat in files[:limit]:
+        modified_at = datetime.fromtimestamp(stat.st_mtime, tz=datetime_timezone.utc)
+        retention_expires_at = _retention_expires_at(modified_at, normalized_retention_days)
+        expired = bool(retention_expires_at and retention_expires_at <= reference_time)
+        try:
+            relative_path = path.relative_to(root_path).as_posix()
+        except ValueError:
+            relative_path = path.name
         recordings.append(
             {
                 "path": str(path),
+                "relative_path": relative_path,
+                "recording_id": recording_id_for_path(relative_path),
                 "filename": path.name,
                 "size_bytes": stat.st_size,
-                "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=datetime_timezone.utc).isoformat(),
+                "modified_at": modified_at.isoformat(),
                 "uniqueid": path.stem.split("-", 1)[0],
+                "retention_days": normalized_retention_days,
+                "retention_expires_at": retention_expires_at.isoformat() if retention_expires_at else None,
+                "expired": expired,
+                "available": not expired,
+                "status": "expired" if expired else "available",
             }
         )
     return recordings
+
+
+def recording_id_for_path(path: str | Path) -> str:
+    normalized_path = Path(str(path)).as_posix().lstrip("/")
+    encoded = base64.urlsafe_b64encode(normalized_path.encode("utf-8")).decode("ascii")
+    return encoded.rstrip("=")
+
+
+def _retention_expires_at(modified_at: datetime, retention_days: int | None) -> datetime | None:
+    if retention_days is None:
+        return None
+    return modified_at + timedelta(days=retention_days)
+
+
+def _positive_int_or_none(value: int | str | None) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def telemetry_failure_payload(config: Any, exc: Exception) -> dict[str, Any]:
