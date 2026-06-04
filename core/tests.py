@@ -30,6 +30,8 @@ from .audit import record_audit
 from .audio_prompts import AudioPromptConversionError, create_audio_prompt_from_upload
 from .agent_client import (
     AgentConfig,
+    execute_live_ami_command,
+    handle_agent_control_message,
     portal_url_to_websocket_url,
     read_active_config_marker,
     report_active_config_once,
@@ -634,6 +636,8 @@ class LocationManagementViewTests(TestCase):
         self.assertNotContains(viewer_response, "Download")
         self.assertNotContains(viewer_response, ">Deploy</button>")
         self.assertNotContains(viewer_response, ">Rollback</button>")
+        self.assertNotContains(viewer_response, "Live Controls")
+        self.assertNotContains(viewer_response, "Core reload")
 
         self.client.force_login(self.editor)
         editor_response = self.client.get(reverse("location-detail", args=[location.slug]))
@@ -642,6 +646,8 @@ class LocationManagementViewTests(TestCase):
         self.assertContains(editor_response, "Download")
         self.assertNotContains(editor_response, ">Deploy</button>")
         self.assertNotContains(editor_response, ">Rollback</button>")
+        self.assertNotContains(editor_response, "Live Controls")
+        self.assertNotContains(editor_response, "Core reload")
 
         self.client.force_login(operator)
         operator_response = self.client.get(reverse("location-detail", args=[location.slug]))
@@ -650,6 +656,10 @@ class LocationManagementViewTests(TestCase):
         self.assertNotContains(operator_response, "Download")
         self.assertContains(operator_response, ">Deploy</button>")
         self.assertContains(operator_response, ">Rollback</button>")
+        self.assertContains(operator_response, "Live Controls")
+        self.assertContains(operator_response, "Core reload")
+        self.assertContains(operator_response, "PJSIP reload")
+        self.assertContains(operator_response, "Queue reload")
 
         self.client.force_login(self.viewer)
         self.assertEqual(
@@ -775,6 +785,88 @@ class LocationManagementViewTests(TestCase):
         self.assertEqual(location.smtp_password, "original-smtp-password")
         self.assertEqual(location.ami_secret, "original-ami-secret")
         self.assertEqual(location.agent_secret, "original-agent-secret")
+
+
+class LiveOperationViewTests(TestCase):
+    def setUp(self):
+        self.viewer = User.objects.create_user(username="live-viewer", password="portal-pass")
+        self.operator = User.objects.create_user(username="live-operator", password="portal-pass")
+        self.admin = User.objects.create_user(username="live-admin", password="portal-pass")
+        assign_role(self.viewer, PortalRole.VIEWER)
+        assign_role(self.operator, PortalRole.OPERATOR)
+        assign_role(self.admin, PortalRole.ADMIN)
+        self.location = Location.objects.create(
+            **location_model_data(name="Live HQ", slug="live-hq", agent_secret="agent-secret")
+        )
+
+    def test_unauthorized_user_cannot_execute_live_operation_and_is_audited(self):
+        self.client.force_login(self.viewer)
+
+        with mock.patch("core.views.run_location_live_command") as dispatcher:
+            response = self.client.post(
+                reverse("location-live-operation", args=[self.location.slug]),
+                data=json.dumps({"command": "core_reload"}),
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 403)
+        dispatcher.assert_not_called()
+        payload = json.loads(response.content.decode("utf-8"))
+        self.assertEqual(payload["status"], "denied")
+        audit = AuditLog.objects.get(action=AuditAction.LIVE_PBX_ACTION)
+        self.assertEqual(audit.actor, self.viewer)
+        self.assertEqual(audit.outcome, AuditOutcome.DENIED)
+        self.assertEqual(audit.details["command"], "core_reload")
+        self.assertEqual(audit.details["actor_username"], "live-viewer")
+        self.assertEqual(audit.details["location_slug"], "live-hq")
+
+    def test_operator_live_operation_dispatches_and_audits_success(self):
+        self.client.force_login(self.operator)
+        result = {
+            "type": "live_command_result",
+            "command_id": "cmd-1",
+            "command": "core_reload",
+            "status": "success",
+            "ami_action": "Command",
+            "ami_response": [{"Response": "Success", "Message": "Command output follows"}],
+        }
+
+        with mock.patch("core.views.run_location_live_command", return_value=result) as dispatcher:
+            response = self.client.post(
+                reverse("location-live-operation", args=[self.location.slug]),
+                data=json.dumps({"command": "core_reload"}),
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        dispatcher.assert_called_once_with(self.location, "core_reload", {})
+        payload = json.loads(response.content.decode("utf-8"))
+        self.assertEqual(payload["status"], "success")
+        self.assertEqual(payload["result"]["command_id"], "cmd-1")
+        audit = AuditLog.objects.get(action=AuditAction.LIVE_PBX_ACTION)
+        self.assertEqual(audit.actor, self.operator)
+        self.assertEqual(audit.outcome, AuditOutcome.SUCCESS)
+        self.assertEqual(audit.target, "locations/live-hq/live/core_reload")
+        self.assertEqual(audit.details["result"]["result"]["status"], "success")
+
+    def test_supported_command_without_connected_agent_returns_failure_and_audits(self):
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            reverse("location-live-operation", args=[self.location.slug]),
+            data=json.dumps({"command": "pjsip_reload"}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 503)
+        payload = json.loads(response.content.decode("utf-8"))
+        self.assertEqual(payload["status"], "failure")
+        self.assertIn("not connected", payload["result"]["error"])
+        audit = AuditLog.objects.get(action=AuditAction.LIVE_PBX_ACTION)
+        self.assertEqual(audit.actor, self.admin)
+        self.assertEqual(audit.outcome, AuditOutcome.FAILURE)
+        self.assertEqual(audit.details["command"], "pjsip_reload")
+        self.assertEqual(audit.details["location_slug"], "live-hq")
 
 
 class ProviderTrunkValidationTests(TestCase):
@@ -1863,6 +1955,29 @@ class AgentWebSocketTests(TransactionTestCase):
         self.assertEqual(location.agent_telemetry["recording_metadata"][0]["filename"], "1717460000.1.wav")
         self.assertEqual(location.agent_telemetry_errors, payload["telemetry_errors"])
 
+    def test_portal_dispatches_live_command_to_authenticated_agent_websocket(self):
+        location = Location.objects.create(
+            **location_model_data(name="Live Agent HQ", slug="live-agent-hq", agent_secret="agent-secret")
+        )
+
+        events, result = asyncio.run(self._run_live_command_exchange(location))
+
+        outbound_payloads = [
+            json.loads(event["text"])
+            for event in events
+            if event["type"] == "websocket.send"
+        ]
+        live_command = next(payload for payload in outbound_payloads if payload["type"] == "live_command")
+        self.assertEqual(live_command["command"], "core_reload")
+        self.assertEqual(live_command["parameters"], {})
+        self.assertEqual(result["type"], "live_command_result")
+        self.assertEqual(result["command_id"], live_command["command_id"])
+        self.assertEqual(result["status"], "success")
+        self.assertIn(
+            {"type": "live_command_result_ack", "command_id": live_command["command_id"]},
+            outbound_payloads,
+        )
+
     async def _run_agent_websocket(self, *, query_string=b"", headers=None, messages=None):
         from portal.asgi import application
 
@@ -1886,6 +2001,59 @@ class AgentWebSocketTests(TransactionTestCase):
             send,
         )
         return events
+
+    async def _run_live_command_exchange(self, location):
+        from portal.asgi import application
+        from .live_operations import run_location_live_command
+
+        events = []
+        inbound = asyncio.Queue()
+        authenticated = asyncio.Event()
+        await inbound.put({"type": "websocket.connect"})
+
+        async def receive():
+            return await inbound.get()
+
+        async def send(message):
+            events.append(message)
+            if message["type"] != "websocket.send":
+                return
+            payload = json.loads(message["text"])
+            if payload["type"] == "agent_authenticated":
+                authenticated.set()
+            if payload["type"] == "live_command":
+                await inbound.put(
+                    {
+                        "type": "websocket.receive",
+                        "text": json.dumps(
+                            {
+                                "type": "live_command_result",
+                                "command_id": payload["command_id"],
+                                "command": payload["command"],
+                                "status": "success",
+                                "ami_response": [{"Response": "Success"}],
+                            }
+                        ),
+                    }
+                )
+
+        app_task = asyncio.create_task(
+            application(
+                {
+                    "type": "websocket",
+                    "path": "/api/agent/ws/",
+                    "query_string": f"token={location.agent_token}&secret=agent-secret".encode("utf-8"),
+                    "headers": [],
+                },
+                receive,
+                send,
+            )
+        )
+        await asyncio.wait_for(authenticated.wait(), timeout=1)
+        result = await asyncio.to_thread(run_location_live_command, location, "core_reload")
+        await inbound.put({"type": "websocket.disconnect"})
+        await asyncio.wait_for(app_task, timeout=1)
+        return events, result
 
 
 class AgentTelemetryParsingTests(SimpleTestCase):
@@ -2069,6 +2237,112 @@ class AgentActiveConfigMarkerTests(TestCase):
         self.assertEqual(calls[1][2]["X-PBX-Agent-Token"], "agent-token")
         self.assertEqual(calls[1][2]["X-PBX-Agent-Secret"], "agent-secret")
         self.assertEqual(calls[1][1]["location_health"]["location_slug"], "agent-hq")
+
+
+class AgentLiveCommandExecutionTests(SimpleTestCase):
+    def test_agent_executes_supported_live_command_through_ami(self):
+        calls = []
+        init_kwargs = []
+
+        class FakeAMIClient:
+            def __init__(self, **kwargs):
+                init_kwargs.append(kwargs)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return None
+
+            async def action(self, action, parameters=None, *, complete_event=None):
+                calls.append((action, parameters, complete_event))
+                return [{"Response": "Success", "Message": "Command output follows"}]
+
+        result = asyncio.run(
+            execute_live_ami_command(
+                AgentConfig(
+                    websocket_url="wss://portal.warp.test/api/agent/ws/",
+                    token="agent-token",
+                    secret="agent-secret",
+                    marker_path=Path("/tmp/unused-marker.json"),
+                    ami_host="127.0.0.1",
+                    ami_port=5038,
+                    ami_username="ami-user",
+                    ami_secret="ami-secret",
+                ),
+                "pjsip_reload",
+                ami_client_factory=FakeAMIClient,
+            )
+        )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["ami_action"], "Command")
+        self.assertEqual(result["ami_parameters"], {"Command": "pjsip reload"})
+        self.assertEqual(calls, [("Command", {"Command": "pjsip reload"}, None)])
+        self.assertEqual(init_kwargs[0]["username"], "ami-user")
+        self.assertEqual(init_kwargs[0]["secret"], "ami-secret")
+
+    def test_agent_rejects_unsupported_live_command_before_ami(self):
+        calls = []
+
+        class FakeAMIClient:
+            def __init__(self, **_kwargs):
+                calls.append("init")
+
+        result = asyncio.run(
+            execute_live_ami_command(
+                AgentConfig(
+                    websocket_url="wss://portal.warp.test/api/agent/ws/",
+                    token="agent-token",
+                    secret="agent-secret",
+                    marker_path=Path("/tmp/unused-marker.json"),
+                    ami_username="ami-user",
+                    ami_secret="ami-secret",
+                ),
+                "raw_ami_command",
+                ami_client_factory=FakeAMIClient,
+            )
+        )
+
+        self.assertEqual(result["status"], "failure")
+        self.assertIn("Unsupported live PBX command", result["error"])
+        self.assertEqual(calls, [])
+
+    def test_agent_live_command_message_returns_command_result_payload(self):
+        async def fake_executor(config, command_name, parameters):
+            return {
+                "status": "success",
+                "ami_action": "QueueReload",
+                "location_slug": config.location_slug,
+                "parameters": parameters,
+                "command_name": command_name,
+            }
+
+        response = asyncio.run(
+            handle_agent_control_message(
+                AgentConfig(
+                    websocket_url="wss://portal.warp.test/api/agent/ws/",
+                    token="agent-token",
+                    secret="agent-secret",
+                    marker_path=Path("/tmp/unused-marker.json"),
+                    location_slug="agent-hq",
+                ),
+                {
+                    "type": "live_command",
+                    "command_id": "cmd-2",
+                    "command": "queue_reload",
+                    "parameters": {},
+                },
+                command_executor=fake_executor,
+            )
+        )
+
+        self.assertEqual(response["type"], "live_command_result")
+        self.assertEqual(response["command_id"], "cmd-2")
+        self.assertEqual(response["command"], "queue_reload")
+        self.assertEqual(response["status"], "success")
+        self.assertEqual(response["ami_action"], "QueueReload")
+        self.assertEqual(response["location_slug"], "agent-hq")
 
 
 class ConfigVersionExportTests(TestCase):

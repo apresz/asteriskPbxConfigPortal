@@ -45,6 +45,13 @@ from .forms import (
     PhoneSpeedDialFormSet,
     TrunkForm,
 )
+from .live_operations import (
+    AgentCommandTimeoutError,
+    AgentUnavailableError,
+    UnsupportedLiveCommandError,
+    run_location_live_command,
+    supported_live_commands,
+)
 from .models import (
     APIKey,
     AdminBackup,
@@ -782,6 +789,67 @@ def location_config_export_rollback(request, slug: str, version_number: int):
             status=400,
         )
     return redirect("location-detail", slug=version.location.slug)
+
+
+@login_required
+@require_POST
+def location_live_operation(request, slug: str):
+    location = get_object_or_404(Location, slug=slug)
+    payload, payload_error = _live_operation_payload(request)
+    if payload_error is not None:
+        return payload_error
+
+    command_name = str(payload.get("command") or "").strip()
+    parameters = payload.get("parameters") or {}
+    if not isinstance(parameters, dict):
+        parameters = {}
+
+    if not user_has_permission(request.user, PortalPermission.RUN_LIVE_OPERATIONS):
+        response_payload = {
+            "location": location.slug,
+            "command": command_name,
+            "status": "denied",
+            "error": "Permission denied.",
+        }
+        _record_live_operation_audit(
+            request.user,
+            location,
+            command_name,
+            AuditOutcome.DENIED,
+            response_payload,
+        )
+        return _live_operation_response(request, location, response_payload, status=403)
+
+    try:
+        result = run_location_live_command(location, command_name, parameters)
+    except UnsupportedLiveCommandError as exc:
+        result = {"status": "failure", "error": str(exc)}
+        outcome = AuditOutcome.FAILURE
+        status = 400
+    except AgentUnavailableError as exc:
+        result = {"status": "failure", "error": str(exc)}
+        outcome = AuditOutcome.FAILURE
+        status = 503
+    except AgentCommandTimeoutError as exc:
+        result = {"status": "failure", "error": str(exc)}
+        outcome = AuditOutcome.FAILURE
+        status = 504
+    except Exception as exc:
+        result = {"status": "failure", "error": str(exc)}
+        outcome = AuditOutcome.FAILURE
+        status = 502
+    else:
+        outcome = AuditOutcome.SUCCESS if result.get("status") == "success" else AuditOutcome.FAILURE
+        status = 200 if outcome == AuditOutcome.SUCCESS else 502
+
+    response_payload = {
+        "location": location.slug,
+        "command": command_name,
+        "status": result.get("status", "failure"),
+        "result": result,
+    }
+    _record_live_operation_audit(request.user, location, command_name, outcome, response_payload)
+    return _live_operation_response(request, location, response_payload, status=status)
 
 
 @permission_required(PortalPermission.VIEW)
@@ -1823,6 +1891,8 @@ def _location_context(request, context):
             "can_manage_location_secrets": _can_manage_location_secrets(request),
             "can_export_config": user_has_permission(request.user, PortalPermission.EDIT_CONFIG),
             "can_deploy_config": user_has_permission(request.user, PortalPermission.RUN_LIVE_OPERATIONS),
+            "can_run_live_operations": user_has_permission(request.user, PortalPermission.RUN_LIVE_OPERATIONS),
+            "live_commands": supported_live_commands(),
         }
     )
     return context
@@ -1857,6 +1927,55 @@ def _config_version_or_404(slug: str, version_number: int) -> ConfigVersion:
 
 def _reload_confirmed(request) -> bool:
     return request.POST.get("confirm_reload") in {"1", "on", "true", "yes"}
+
+
+def _live_operation_payload(request):
+    if _request_is_json(request):
+        return _json_payload(request)
+    return {"command": request.POST.get("command", ""), "parameters": {}}, None
+
+
+def _request_is_json(request) -> bool:
+    return str(getattr(request, "content_type", "") or "").split(";", 1)[0] == "application/json"
+
+
+def _wants_json(request) -> bool:
+    return _request_is_json(request) or "application/json" in request.headers.get("Accept", "")
+
+
+def _live_operation_response(request, location: Location, payload: dict, *, status: int):
+    if _wants_json(request):
+        return JsonResponse(payload, status=status)
+    context = _location_detail_context(request, location, {"live_operation_result": payload})
+    return render(
+        request,
+        _template(request, "core/locations/detail.html", "core/partials/location_detail.html"),
+        context,
+        status=status,
+    )
+
+
+def _record_live_operation_audit(
+    actor,
+    location: Location,
+    command_name: str,
+    outcome: AuditOutcome,
+    result: dict,
+) -> None:
+    actor_username = actor.get_username() if getattr(actor, "is_authenticated", False) else "anonymous"
+    record_audit(
+        actor=actor,
+        action=AuditAction.LIVE_PBX_ACTION,
+        target=f"locations/{location.slug}/live/{command_name or 'missing'}",
+        outcome=outcome,
+        details={
+            "command": command_name,
+            "actor_username": actor_username,
+            "location_id": location.id,
+            "location_slug": location.slug,
+            "result": result,
+        },
+    )
 
 
 def _mark_config_version_deployed(version: ConfigVersion, user, *, rolled_back: bool):

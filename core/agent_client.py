@@ -9,12 +9,14 @@ import ssl
 from urllib.parse import urlparse
 
 from .ami_telemetry import (
+    AsteriskAMIClient,
     DEFAULT_CDR_CSV_PATH,
     DEFAULT_CEL_CSV_PATH,
     DEFAULT_RECORDING_ROOT,
     collect_agent_telemetry,
     telemetry_failure_payload,
 )
+from .live_operations import ami_action_for_live_command
 
 
 DEFAULT_AGENT_WEBSOCKET_PATH = "/api/agent/ws/"
@@ -147,6 +149,105 @@ async def run_telemetry_loop(
         except Exception:
             await sleep(reconnect_delay_seconds)
         completed += 1
+
+
+async def run_agent_control_loop(
+    config: AgentConfig,
+    *,
+    command_executor=None,
+) -> None:
+    if not config.websocket_url:
+        raise ValueError("PBX agent WebSocket URL is required.")
+    if not config.token or not config.secret:
+        raise ValueError("PBX agent token and secret are required.")
+
+    parsed = urlparse(config.websocket_url)
+    if parsed.scheme not in {"ws", "wss"}:
+        raise ValueError("PBX agent WebSocket URL must use ws:// or wss://.")
+    host = parsed.hostname
+    if not host:
+        raise ValueError("PBX agent WebSocket URL requires a hostname.")
+
+    port = parsed.port or (443 if parsed.scheme == "wss" else 80)
+    ssl_context = ssl.create_default_context() if parsed.scheme == "wss" else None
+    reader, writer = await asyncio.open_connection(host, port, ssl=ssl_context)
+    try:
+        await _client_handshake(reader, writer, parsed, _auth_headers(config))
+        while True:
+            payload = json.loads(await _read_text_frame(reader))
+            response = await handle_agent_control_message(
+                config,
+                payload,
+                command_executor=command_executor,
+            )
+            if response is not None:
+                await _write_text_frame(writer, json.dumps(response))
+    finally:
+        try:
+            await _write_close_frame(writer)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+
+async def handle_agent_control_message(
+    config: AgentConfig,
+    message: dict,
+    *,
+    command_executor=None,
+) -> dict | None:
+    if message.get("type") != "live_command":
+        return None
+
+    command_id = str(message.get("command_id") or "")
+    command_name = str(message.get("command") or "")
+    parameters = message.get("parameters") or {}
+    if not isinstance(parameters, dict):
+        parameters = {}
+
+    executor = command_executor or execute_live_ami_command
+    result = await _maybe_await(executor(config, command_name, parameters))
+    return {
+        "type": "live_command_result",
+        "command_id": command_id,
+        "command": command_name,
+        **result,
+    }
+
+
+async def execute_live_ami_command(
+    config: AgentConfig,
+    command_name: str,
+    parameters: dict | None = None,
+    *,
+    ami_client_factory=AsteriskAMIClient,
+) -> dict:
+    try:
+        ami_action = ami_action_for_live_command(command_name, parameters)
+        async with ami_client_factory(
+            host=config.ami_host,
+            port=int(config.ami_port),
+            username=config.ami_username,
+            secret=config.ami_secret,
+            timeout_seconds=float(config.ami_timeout_seconds),
+        ) as ami:
+            ami_response = await ami.action(
+                ami_action.ami_action,
+                ami_action.ami_parameters,
+                complete_event=ami_action.complete_event,
+            )
+    except Exception as exc:
+        return {
+            "status": "failure",
+            "error": str(exc),
+        }
+
+    return {
+        "status": "success",
+        "ami_action": ami_action.ami_action,
+        "ami_parameters": ami_action.ami_parameters,
+        "ami_response": ami_response,
+    }
 
 
 async def websocket_json_exchange(url: str, payload: dict, headers: dict[str, str]) -> dict:

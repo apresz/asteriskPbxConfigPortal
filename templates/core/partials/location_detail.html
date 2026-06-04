@@ -40,6 +40,19 @@
   </section>
 {% endif %}
 
+{% if live_operation_result %}
+  <section class="notice-panel{% if live_operation_result.status != 'success' %} notice-panel--error{% endif %}">
+    <h2>Live Action {{ live_operation_result.status|title }}</h2>
+    <p>{{ live_operation_result.command }} on {{ live_operation_result.location }}</p>
+    {% if live_operation_result.error %}
+      <p>{{ live_operation_result.error }}</p>
+    {% endif %}
+    {% if live_operation_result.result.error %}
+      <p>{{ live_operation_result.result.error }}</p>
+    {% endif %}
+  </section>
+{% endif %}
+
 <section class="summary-grid" aria-label="Location deployment status">
   <div class="summary-tile">
     <span>Active</span>
@@ -163,6 +176,21 @@
     </dl>
   </article>
 </section>
+
+{% if can_run_live_operations %}
+  <section class="table-panel live-controls" aria-label="Live PBX controls">
+    <h2>Live Controls</h2>
+    <div class="table-actions">
+      {% for command in live_commands %}
+        <form method="post" action="{% url 'location-live-operation' location.slug %}">
+          {% csrf_token %}
+          <input type="hidden" name="command" value="{{ command.name }}">
+          <button class="button button--secondary" type="submit">{{ command.label }}</button>
+        </form>
+      {% endfor %}
+    </div>
+  </section>
+{% endif %}
 
 <section class="table-panel export-history" aria-label="Export history">
   <table class="data-table">
