@@ -3,6 +3,8 @@ from ipaddress import ip_address, ip_network
 from django.conf import settings
 from django.http import HttpResponseForbidden
 
+from .models import APIKey
+
 
 class LANWarpOnlyMiddleware:
     """Optionally restrict portal access to configured LAN/WARP CIDRs."""
@@ -50,3 +52,41 @@ class LANWarpOnlyMiddleware:
 
         return any(address in network for network in networks)
 
+
+class APIKeyAuthenticationMiddleware:
+    """Authenticate user-scoped API keys for JSON API endpoints."""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        request.api_key = None
+        request.api_user = None
+        request.api_key_auth_error = ""
+        request.api_key_auth_error_status = 401
+
+        authorization = request.headers.get("Authorization", "").strip()
+        if authorization and request.path.startswith("/api/"):
+            request._dont_enforce_csrf_checks = True
+            self._authenticate(request, authorization)
+
+        return self.get_response(request)
+
+    def _authenticate(self, request, authorization: str) -> None:
+        scheme, separator, raw_secret = authorization.partition(" ")
+        raw_secret = raw_secret.strip()
+        if scheme.lower() != "bearer" or not separator or not raw_secret:
+            request.api_key_auth_error = "Authorization header must use Bearer token."
+            return
+
+        api_key = APIKey.find_by_secret(raw_secret)
+        if api_key is None:
+            request.api_key_auth_error = "Invalid API key."
+            return
+
+        request.api_key = api_key
+        if api_key.user_id:
+            request.api_user = api_key.user
+        else:
+            request.api_key_auth_error = "API key must be scoped to an active user."
+            request.api_key_auth_error_status = 403
