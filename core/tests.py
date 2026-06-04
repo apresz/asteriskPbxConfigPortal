@@ -1,6 +1,6 @@
 import csv
 import asyncio
-from datetime import datetime, timezone as datetime_timezone
+from datetime import datetime, timedelta, timezone as datetime_timezone
 import hashlib
 from io import BytesIO, StringIO
 import json
@@ -19,6 +19,7 @@ from django.core.management.base import CommandError
 from django.db import IntegrityError, transaction
 from django.test import Client, SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from .access import (
     assign_role,
@@ -172,6 +173,23 @@ def location_model_data(**overrides):
     data["is_active"] = True
     data.update(overrides)
     return data
+
+
+def dashboard_config_version(location, version_number, **overrides):
+    checksum = hashlib.sha256(f"{location.slug}-{version_number}".encode("utf-8")).hexdigest()
+    data = {
+        "location": location,
+        "version_number": version_number,
+        "checksum": checksum,
+        "warnings": [],
+        "emergency_status": {},
+        "file_manifest": [{"path": "pjsip.conf", "sha256": checksum}],
+        "deployment_snapshot": {"location_deployment_status": location.deployment_status},
+        "archive": b"dashboard-test",
+        "archive_size_bytes": len(b"dashboard-test"),
+    }
+    data.update(overrides)
+    return ConfigVersion.objects.create(**data)
 
 
 def extension_form_data(location, **overrides):
@@ -450,6 +468,124 @@ class PortalRouteTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'data-area="extensions"')
+        self.assertNotContains(response, "<html")
+
+
+class DashboardViewTests(TestCase):
+    def setUp(self):
+        self.viewer = User.objects.create_user(username="dashboard-viewer", password="portal-pass")
+        assign_role(self.viewer, PortalRole.VIEWER)
+
+    def test_home_dashboard_reflects_agent_telemetry_and_config_drift(self):
+        location = Location.objects.create(**location_model_data(name="Dashboard HQ", slug="dashboard-hq"))
+        deployed_version = dashboard_config_version(
+            location,
+            1,
+            deployment_status=ConfigVersion.DeploymentStatus.ROLLED_BACK,
+            deployed_at=timezone.now() - timedelta(minutes=2),
+        )
+        dashboard_config_version(location, 2)
+        DeploymentRecord.objects.create(
+            location=location,
+            config_version=deployed_version,
+            rollback_source_version=ConfigVersion.objects.get(location=location, version_number=2),
+            target_host=location.deployment_ssh_host,
+            target_username=location.deployment_ssh_username,
+            staging_path=location.deployment_staging_path,
+            asterisk_path=location.deployment_asterisk_path,
+            tftp_path=location.deployment_tftp_path,
+            reload_command=location.deployment_reload_command,
+            action=DeploymentRecord.Action.ROLLBACK,
+            status=DeploymentRecord.Status.SUCCESS,
+            reload_result=DeploymentRecord.ReloadResult.SUCCESS,
+        )
+        reported_at = timezone.now()
+        location.active_config_version_number = 1
+        location.active_config_checksum = deployed_version.checksum
+        location.active_config_timestamp = reported_at
+        location.active_config_reported_at = reported_at
+        location.agent_telemetry_reported_at = reported_at
+        location.agent_telemetry_errors = []
+        location.agent_telemetry = {
+            "timestamp": reported_at.isoformat(),
+            "location_health": {
+                "ami_connected": True,
+                "ami_response": "success",
+                "core_current_calls": 1,
+                "core_max_calls": 20,
+            },
+            "phone_registrations": [
+                {"extension": "3000", "status": "reachable", "reachable": True},
+                {"extension": "3001", "status": "unreachable", "reachable": False},
+            ],
+            "trunk_status": [
+                {"name": "trunk-primary-sip", "status": "reachable", "available": True},
+            ],
+            "active_calls": [
+                {"caller_id": "3000", "connected_line": "3001", "state": "Up"},
+            ],
+            "queue_status": [
+                {"name": "support-queue", "calls_waiting": 2, "members": [{"name": "3000"}], "callers": []},
+            ],
+            "recent_calls": [
+                {"source": "3000", "destination": "+15551230000", "disposition": "ANSWERED"},
+            ],
+            "recording_metadata": [
+                {"filename": "call-123.wav", "size_bytes": 1200},
+            ],
+            "telemetry_errors": [],
+        }
+        location.save(
+            update_fields=[
+                "active_config_version_number",
+                "active_config_checksum",
+                "active_config_timestamp",
+                "active_config_reported_at",
+                "agent_telemetry",
+                "agent_telemetry_errors",
+                "agent_telemetry_reported_at",
+                "updated_at",
+            ]
+        )
+        self.client.force_login(self.viewer)
+
+        response = self.client.get(reverse("home"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Dashboard")
+        self.assertContains(response, "Dashboard HQ")
+        self.assertContains(response, "Agent Connection: Reporting")
+        self.assertContains(response, "Location Health")
+        self.assertContains(response, "Extension Registrations")
+        self.assertContains(response, "3000 - reachable")
+        self.assertContains(response, "Trunk Status")
+        self.assertContains(response, "trunk-primary-sip - reachable")
+        self.assertContains(response, "Active Calls")
+        self.assertContains(response, "3000 to 3001 - Up")
+        self.assertContains(response, "Queue Status")
+        self.assertContains(response, "support-queue - 2 waiting")
+        self.assertContains(response, "Recent Calls")
+        self.assertContains(response, "3000 to +15551230000 - ANSWERED")
+        self.assertContains(response, "Recording Availability")
+        self.assertContains(response, "call-123.wav - 1200 bytes")
+        self.assertContains(response, "Config Drift Warning")
+        self.assertContains(response, "Active v1 differs from latest exported v2.")
+        self.assertContains(response, "Latest exported v2 differs from latest deployed v1.")
+        self.assertContains(response, "Deployment History")
+        self.assertContains(response, "Rollback")
+        self.assertContains(response, "Rollback source v2")
+
+    def test_dashboard_panel_htmx_partial_returns_refreshable_content(self):
+        Location.objects.create(**location_model_data(name="Partial HQ", slug="partial-hq"))
+        self.client.force_login(self.viewer)
+
+        response = self.client.get(reverse("dashboard-panel"), headers={"HX-Request": "true"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="dashboard-panel"')
+        self.assertContains(response, 'hx-get="' + reverse("dashboard-panel") + '"')
+        self.assertContains(response, "Partial HQ")
+        self.assertContains(response, "Agent Connection: Waiting")
         self.assertNotContains(response, "<html")
 
 

@@ -1,8 +1,10 @@
-<section class="page-heading" data-area="overview">
-  <p class="eyebrow">Portal foundation</p>
-  <h1>Asterisk PBX Config Portal</h1>
-  <p>Central configuration workspace for PBX administration across private LAN and WARP access paths.</p>
+<section class="page-heading" data-area="dashboard">
+  <p class="eyebrow">Operations</p>
+  <h1>Dashboard</h1>
+  <p>Location health, live PBX telemetry, configuration drift, and deployment history across managed sites.</p>
 </section>
+
+{% include "core/partials/dashboard_panel.html" %}
 
 <section class="area-grid" aria-label="Portal areas">
   {% for slug, area in areas.items %}
@@ -15,4 +17,3 @@
     </a>
   {% endfor %}
 </section>
-
