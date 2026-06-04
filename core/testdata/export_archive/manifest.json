@@ -17,14 +17,14 @@
     {
       "content_type": "application/x-yaml",
       "path": "docker-compose.yml",
-      "sha256": "f97961f480717cc86a034323e350e87bbefe367f04523f395955fa8349118605",
-      "size": 1948
+      "sha256": "a29216677b3b6901308b8ca8e94dc7878aef580bf518b062726648c19676a47c",
+      "size": 2195
     },
     {
       "content_type": "text/plain",
       "path": ".env.example",
-      "sha256": "7c80a2b145348b5592a65a1c6ed27b4ad0eb3fb4c88223cc86edc1f1ba1d213a",
-      "size": 551
+      "sha256": "91a949032a425fdd7d0159f23ec146ad291586d23f0cec3b258be4b698325051",
+      "size": 705
     },
     {
       "content_type": "text/plain",

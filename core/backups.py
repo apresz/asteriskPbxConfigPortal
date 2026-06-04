@@ -19,6 +19,7 @@ from django.db import connection
 from django.utils import timezone
 
 from .config_export import build_location_config
+from .file_permissions import RESTRICTED_FILE_MODE
 from .models import AdminBackup, AuditLog, ConfigVersion, Location
 
 
@@ -361,7 +362,7 @@ def _readme() -> str:
             "",
             "This archive is suitable for off-host storage.",
             "It contains operational PBX configuration, uploaded media/audio, export metadata, audit logs, and database data.",
-            "Treat it as sensitive because configuration records can include credentials and deployment secrets.",
+            "Treat it as sensitive because configuration records can include plaintext telecom credentials and deployment secrets.",
             "Store retained copies on encrypted storage outside the application host.",
             "",
         ]
@@ -393,7 +394,7 @@ def _zip_archive(files: list[tuple[str, bytes, str]]) -> bytes:
         for path, content, _content_type in files:
             zip_info = zipfile.ZipInfo(path, ZIP_TIMESTAMP)
             zip_info.compress_type = zipfile.ZIP_DEFLATED
-            zip_info.external_attr = 0o644 << 16
+            zip_info.external_attr = RESTRICTED_FILE_MODE << 16
             archive.writestr(zip_info, content)
     return buffer.getvalue()
 

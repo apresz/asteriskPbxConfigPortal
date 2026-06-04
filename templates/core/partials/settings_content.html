@@ -26,6 +26,15 @@
     </div>
   </div>
 
+  <div class="notice-panel notice-panel--warning">
+    <h2>Security and compliance</h2>
+    <ul>
+      <li>PostgreSQL records, media, admin backups, and exported config ZIPs can contain plaintext telecom secrets, including SIP, IAX, AMI, SMTP, agent, and deployment credentials.</li>
+      <li>Keep the portal LAN/WARP-only and store downloaded backups on encrypted admin-controlled storage with restrictive file permissions.</li>
+      <li>Admins remain responsible for emergency calling validation and call recording consent, notice, and retention compliance.</li>
+    </ul>
+  </div>
+
   {% if backups %}
     <div class="table-panel">
       <table class="data-table">

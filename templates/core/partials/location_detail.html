@@ -40,6 +40,15 @@
   </section>
 {% endif %}
 
+<section class="notice-panel notice-panel--warning">
+  <h2>Security and compliance</h2>
+  <ul>
+    <li>PostgreSQL records and exported config ZIPs can contain plaintext telecom secrets; keep downloads restricted to admin storage and keep deployment access LAN/WARP-only.</li>
+    <li>Emergency calling remains an administrator responsibility: verify caller ID, emergency routes, emergency-capable trunks, and provider/local requirements before deployment.</li>
+    <li>Call recording consent, notice, and retention compliance are administrator responsibilities for this location.</li>
+  </ul>
+</section>
+
 <section class="summary-grid" aria-label="Location deployment status">
   <div class="summary-tile">
     <span>Active</span>

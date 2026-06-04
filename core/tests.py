@@ -41,9 +41,16 @@ from .config_export import (
     validate_location_routing,
     write_config_version_directory,
 )
-from .deployments import DeploymentCommandResult, DeploymentError, deploy_config_version
+from .deployments import (
+    DeploymentCommandResult,
+    DeploymentError,
+    SSHDeploymentRunner,
+    deploy_config_version,
+    extract_deployment_bundle,
+)
 from .extension_csv import ExtensionCSVError, export_extensions_csv, extension_template_csv, import_extensions_csv
 from .extension_management import sync_extension_relationships
+from .file_permissions import RESTRICTED_DIR_MODE, RESTRICTED_FILE_MODE
 from .forms import ExtensionForm, IVRForm, LocationForm, PhoneForm
 from .phone_csv import (
     did_template_csv,
@@ -88,6 +95,10 @@ from .models import (
 
 
 User = get_user_model()
+
+
+def permission_mode(path):
+    return Path(path).stat().st_mode & 0o777
 
 
 def location_form_data(**overrides):
@@ -424,6 +435,10 @@ class PortalRouteTests(TestCase):
 
         self.assertEqual(admin_response.status_code, 200)
         self.assertContains(admin_response, 'data-area="settings"')
+        self.assertContains(admin_response, "plaintext telecom secrets")
+        self.assertContains(admin_response, "LAN/WARP-only")
+        self.assertContains(admin_response, "emergency calling validation")
+        self.assertContains(admin_response, "call recording consent")
 
     def test_htmx_request_returns_partial_content(self):
         self.client.force_login(self.viewer)
@@ -544,6 +559,18 @@ class LocationManagementViewTests(TestCase):
         self.assertContains(response, "PBX Active Version")
         self.assertContains(response, "Not reported")
         self.assertContains(response, "Branch Office")
+
+    def test_location_detail_surfaces_security_and_compliance_notes(self):
+        location = Location.objects.create(**location_model_data(name="Compliance HQ", slug="compliance-hq"))
+        self.client.force_login(self.admin)
+
+        response = self.client.get(reverse("location-detail", args=[location.slug]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "plaintext telecom secrets")
+        self.assertContains(response, "LAN/WARP-only")
+        self.assertContains(response, "Emergency calling remains an administrator responsibility")
+        self.assertContains(response, "Call recording consent")
 
     def test_viewer_cannot_create_location(self):
         self.client.force_login(self.viewer)
@@ -1717,6 +1744,11 @@ class AsteriskConfigGenerationTests(TestCase):
             self.assertTrue((expanded_dir / "tftp" / "company-directory.xml").exists())
             self.assertTrue((expanded_dir / "manifest.json").exists())
             self.assertTrue((expanded_dir / "SHA256SUMS").exists())
+            self.assertEqual(permission_mode(expanded_dir), RESTRICTED_DIR_MODE)
+            self.assertEqual(permission_mode(expanded_dir / "asterisk"), RESTRICTED_DIR_MODE)
+            self.assertEqual(permission_mode(expanded_dir / "asterisk" / "pjsip.conf"), RESTRICTED_FILE_MODE)
+            self.assertEqual(permission_mode(expanded_dir / ".env.example"), RESTRICTED_FILE_MODE)
+            self.assertEqual(permission_mode(zip_path), RESTRICTED_FILE_MODE)
             self.assertEqual(payload["config_version"]["version_number"], version.version_number)
             self.assertEqual(payload["config_version"]["checksum"], version.checksum)
             self.assertEqual(zip_path.read_bytes(), bytes(version.archive))
@@ -1920,6 +1952,7 @@ class ConfigVersionExportTests(TestCase):
 
         with zipfile.ZipFile(BytesIO(bytes(version.archive))) as archive:
             names = sorted(archive.namelist())
+            modes = {zip_info.filename: zip_info.external_attr >> 16 for zip_info in archive.infolist()}
             env_example = archive.read(".env.example").decode("utf-8")
             manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
             checksums = archive.read("SHA256SUMS").decode("utf-8").splitlines()
@@ -1955,6 +1988,7 @@ class ConfigVersionExportTests(TestCase):
         self.assertEqual(manifest["version"]["number"], 1)
         self.assertEqual(manifest["version"]["exported_by"], "exporter")
         self.assertFalse(manifest["emergency_status"]["blocked"])
+        self.assertEqual(set(modes.values()), {RESTRICTED_FILE_MODE})
         self.assertIn("PBX_AGENT_WS_URL=wss://portal.warp.test/api/agent/ws/", env_example)
         self.assertIn(f"PBX_AGENT_TOKEN={self.location.agent_token}", env_example)
         self.assertIn("PBX_AGENT_SECRET=agent-secret", env_example)
@@ -1975,6 +2009,19 @@ class ConfigVersionExportTests(TestCase):
             {file["path"] for file in version.file_manifest},
             set(names),
         )
+
+    def test_expanded_export_directory_uses_restricted_permissions(self):
+        version = create_config_version(self.location, exported_by=self.user)
+
+        with tempfile.TemporaryDirectory() as output_dir:
+            target = Path(output_dir) / "expanded"
+            write_config_version_directory(version, target)
+
+            self.assertEqual(permission_mode(target), RESTRICTED_DIR_MODE)
+            self.assertEqual(permission_mode(target / "asterisk"), RESTRICTED_DIR_MODE)
+            self.assertEqual(permission_mode(target / "tftp"), RESTRICTED_DIR_MODE)
+            self.assertEqual(permission_mode(target / "asterisk" / "pjsip.conf"), RESTRICTED_FILE_MODE)
+            self.assertEqual(permission_mode(target / ".env.example"), RESTRICTED_FILE_MODE)
 
     def test_runtime_bundle_files_match_golden_templates(self):
         version = create_config_version(self.location, exported_by=self.user)
@@ -2111,6 +2158,8 @@ class ConfigDeploymentServiceTests(TestCase):
         self.assertEqual(len(runner.uploads), 1)
         self.assertIn("asterisk/pjsip.conf", runner.uploads[0]["asterisk_files"])
         self.assertIn("tftp/company-directory.xml", runner.uploads[0]["tftp_files"])
+        self.assertIn("umask 077", runner.remote_commands[0])
+        self.assertIn("mkdir -m 700 -p", runner.remote_commands[0])
         self.assertIn("/srv/pbx/current/asterisk", runner.remote_commands[2])
         self.assertIn("/srv/pbx/current/tftp", runner.remote_commands[2])
 
@@ -2169,6 +2218,47 @@ class ConfigDeploymentServiceTests(TestCase):
         self.assertEqual(audit.outcome, AuditOutcome.SUCCESS)
         self.assertEqual(audit.details["action"], DeploymentRecord.Action.ROLLBACK)
         self.assertEqual(audit.details["rollback_source_version_id"], previous_version.id)
+
+    def test_extract_deployment_bundle_uses_restricted_local_permissions(self):
+        version = create_config_version(self.location, exported_by=self.operator)
+
+        with tempfile.TemporaryDirectory() as output_dir:
+            target = Path(output_dir) / "bundle"
+            extracted_paths = extract_deployment_bundle(version, target)
+
+            self.assertIn("asterisk/pjsip.conf", extracted_paths)
+            self.assertIn("tftp/company-directory.xml", extracted_paths)
+            self.assertEqual(permission_mode(target), RESTRICTED_DIR_MODE)
+            self.assertEqual(permission_mode(target / "asterisk"), RESTRICTED_DIR_MODE)
+            self.assertEqual(permission_mode(target / "asterisk" / "pjsip.conf"), RESTRICTED_FILE_MODE)
+            self.assertEqual(permission_mode(target / "tftp" / "company-directory.xml"), RESTRICTED_FILE_MODE)
+
+    def test_ssh_runner_writes_restricted_key_files_and_uploads_with_restricted_staging(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = SSHDeploymentRunner.from_location(self.location, Path(temp_dir))
+
+            self.assertEqual(permission_mode(runner.key_path), RESTRICTED_FILE_MODE)
+            self.assertEqual(permission_mode(runner.known_hosts_path), RESTRICTED_FILE_MODE)
+
+            bundle_dir = Path(temp_dir) / "bundle"
+            (bundle_dir / "asterisk").mkdir(parents=True)
+            (bundle_dir / "tftp").mkdir(parents=True)
+            (bundle_dir / "asterisk" / "pjsip.conf").write_text("secret=config\n", encoding="utf-8")
+            (bundle_dir / "tftp" / "company-directory.xml").write_text("<directory />\n", encoding="utf-8")
+
+            tar_result = subprocess.CompletedProcess(["tar"], 0, stdout=b"tarball", stderr=b"")
+            ssh_result = subprocess.CompletedProcess(["ssh"], 0, stdout=b"", stderr=b"")
+            with mock.patch("subprocess.run", side_effect=[tar_result, ssh_result]) as run_mock:
+                result = runner.upload_bundle(bundle_dir, "/srv/pbx/staging")
+
+            self.assertEqual(result.returncode, 0)
+            ssh_command = run_mock.call_args_list[1].args[0]
+            remote_command = ssh_command[-1]
+            self.assertIn("umask 077", remote_command)
+            self.assertIn("mkdir -m 700 -p /srv/pbx/staging", remote_command)
+            self.assertIn("chmod -R go-rwx /srv/pbx/staging", remote_command)
+
+
 class ConfigExportGoldenFileTests(TestCase):
     maxDiff = None
 
@@ -2206,6 +2296,7 @@ class ConfigExportGoldenFileTests(TestCase):
                 default_did="+15551206000",
                 emergency_caller_id="+15551206999",
                 recording_retention_days=30,
+                agent_token="golden-agent-token",
                 ami_username="ami-golden",
                 ami_secret="ami-golden-secret",
                 agent_secret="golden-agent-secret",
@@ -2471,6 +2562,8 @@ class AudioPromptConversionTests(TestCase):
             self.assertTrue(prompt.converted_file.name.endswith(".wav"))
             self.assertTrue(prompt.asterisk_path.endswith(".wav"))
             self.assertFalse(prompt.playback_name.endswith(".wav"))
+            self.assertEqual(permission_mode(prompt.original_file.path), RESTRICTED_FILE_MODE)
+            self.assertEqual(permission_mode(prompt.converted_file.path), RESTRICTED_FILE_MODE)
         for command in self.commands:
             self.assertIn("-ar", command)
             self.assertIn("8000", command)
@@ -3368,6 +3461,9 @@ class AdminBackupWorkflowTests(TestCase):
         self.assertContains(settings_response, 'data-area="settings"')
         self.assertContains(settings_response, "Generate backup")
         self.assertContains(settings_response, "Suitable for off-host storage")
+        self.assertContains(settings_response, "plaintext telecom secrets")
+        self.assertContains(settings_response, "emergency calling validation")
+        self.assertContains(settings_response, "call recording consent")
         self.assertEqual(create_response.status_code, 302)
 
         backup = AdminBackup.objects.get()
@@ -3379,6 +3475,7 @@ class AdminBackupWorkflowTests(TestCase):
 
         with zipfile.ZipFile(BytesIO(download_response.content)) as archive:
             names = set(archive.namelist())
+            modes = {zip_info.filename: zip_info.external_attr >> 16 for zip_info in archive.infolist()}
             media_archive_path = f"media/files/{self.prompt.original_file.name}"
 
             self.assertIn("manifest.json", names)
@@ -3392,6 +3489,7 @@ class AdminBackupWorkflowTests(TestCase):
             self.assertIn("audit/audit_logs.json", names)
             self.assertIn("backups/admin_backups.json", names)
             self.assertIn("SHA256SUMS", names)
+            self.assertEqual(set(modes.values()), {RESTRICTED_FILE_MODE})
 
             manifest = json.loads(archive.read("manifest.json"))
             self.assertEqual(manifest["format"], "pbx-admin-backup/v1")
@@ -3414,6 +3512,7 @@ class AdminBackupWorkflowTests(TestCase):
             audit_logs = json.loads(archive.read("audit/audit_logs.json"))
             self.assertIn("config_change", {row["action"] for row in audit_logs})
             self.assertIn(b"suitable for off-host storage", archive.read("README.txt").lower())
+            self.assertIn(b"credentials and deployment secrets", archive.read("README.txt").lower())
 
     def test_backup_generate_and_download_require_admin(self):
         self.client.force_login(self.viewer)

@@ -546,6 +546,10 @@ a {
   border-left-color: #a43d3d;
 }
 
+.notice-panel--warning {
+  border-left-color: var(--warn);
+}
+
 .notice-panel p,
 .notice-panel ul {
   margin: 0;

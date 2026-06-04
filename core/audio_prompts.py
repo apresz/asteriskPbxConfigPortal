@@ -9,6 +9,7 @@ from django.conf import settings
 from django.core.files import File
 from django.utils.text import slugify
 
+from .file_permissions import apply_restricted_file_permissions
 from .models import AudioPrompt
 
 
@@ -86,6 +87,8 @@ def create_audio_prompt_from_upload(*, location, uploaded_file, name: str = "", 
                 save=False,
             )
         prompt.save()
+        _restrict_saved_file(prompt.original_file)
+        _restrict_saved_file(prompt.converted_file)
     return prompt
 
 
@@ -139,3 +142,9 @@ def _asterisk_path(location_slug: str, prompt_stem: str) -> str:
 
 def _ffmpeg_binary() -> str:
     return getattr(settings, "AUDIO_CONVERSION_FFMPEG", "ffmpeg")
+
+
+def _restrict_saved_file(field_file) -> None:
+    path = getattr(field_file, "path", None)
+    if path:
+        apply_restricted_file_permissions(path)
