@@ -4,7 +4,7 @@ from typing import Any
 
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
-from django.http import HttpRequest, HttpResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse
 
 from .models import PortalPermission, PortalRole, PortalUserProfile
 
@@ -80,6 +80,43 @@ def permission_required(permission: PortalPermission | str) -> Callable:
         def wrapper(request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
             if not user_has_permission(request.user, required_permission):
                 raise PermissionDenied
+            return view_func(request, *args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
+def api_login_required(view_func: Callable[..., HttpResponse]) -> Callable[..., HttpResponse]:
+    @wraps(view_func)
+    def wrapper(request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
+        auth_error = getattr(request, "api_key_auth_error", "")
+        if auth_error:
+            return JsonResponse(
+                {"error": auth_error},
+                status=getattr(request, "api_key_auth_error_status", 401),
+            )
+
+        api_user = getattr(request, "api_user", None)
+        if _is_active_user(api_user):
+            request.user = api_user
+        elif not _is_active_user(request.user):
+            return JsonResponse({"error": "Authentication required."}, status=401)
+
+        return view_func(request, *args, **kwargs)
+
+    return wrapper
+
+
+def api_permission_required(permission: PortalPermission | str) -> Callable:
+    required_permission = PortalPermission(permission)
+
+    def decorator(view_func: Callable[..., HttpResponse]) -> Callable[..., HttpResponse]:
+        @api_login_required
+        @wraps(view_func)
+        def wrapper(request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
+            if not user_has_permission(request.user, required_permission):
+                return JsonResponse({"error": "Permission denied."}, status=403)
             return view_func(request, *args, **kwargs)
 
         return wrapper

@@ -13,6 +13,8 @@ from django.utils import dateparse, timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from .access import (
+    api_login_required,
+    api_permission_required,
     assign_role,
     get_user_role,
     permission_required,
@@ -77,6 +79,7 @@ from .models import (
     PhoneSpeedDial,
     PortalPermission,
     PortalRole,
+    PortalUserProfile,
     RingGroup,
     Provider,
     ServiceIdentity,
@@ -359,7 +362,7 @@ def outbound_route_delete(request, route_id: int):
     )
 
 
-@permission_required(PortalPermission.ADMINISTER)
+@api_permission_required(PortalPermission.ADMINISTER)
 @require_GET
 def admin_roles(request):
     roles = [
@@ -373,7 +376,7 @@ def admin_roles(request):
     return JsonResponse({"roles": roles})
 
 
-@permission_required(PortalPermission.ADMINISTER)
+@api_permission_required(PortalPermission.ADMINISTER)
 @require_http_methods(["GET", "POST"])
 def admin_users(request):
     if request.method == "GET":
@@ -418,7 +421,7 @@ def admin_users(request):
     return JsonResponse({"user": _serialize_user(user)}, status=201)
 
 
-@permission_required(PortalPermission.ADMINISTER)
+@api_permission_required(PortalPermission.ADMINISTER)
 @require_http_methods(["PATCH"])
 def admin_user_detail(request, user_id: int):
     user = get_object_or_404(User, pk=user_id)
@@ -426,28 +429,36 @@ def admin_user_detail(request, user_id: int):
     if error is not None:
         return error
 
-    for field in ("username", "email", "first_name", "last_name"):
-        if field in payload:
-            setattr(user, field, str(payload[field]).strip())
-
-    try:
-        if "is_active" in payload:
-            user.is_active = _payload_bool(payload, "is_active", user.is_active)
-        if payload.get("password"):
-            user.set_password(str(payload["password"]))
-        role = _payload_role(payload, required=False)
-        user.full_clean()
-        with transaction.atomic():
-            user.save()
-            if role is not None:
-                assign_role(user, role)
-    except (IntegrityError, ValidationError, ValueError) as exc:
-        return _json_error(str(exc))
-
-    return JsonResponse({"user": _serialize_user(user)})
+    return _update_user_info_response(request, user, payload, allow_admin_fields=True)
 
 
-@permission_required(PortalPermission.ADMINISTER)
+@api_permission_required(PortalPermission.VIEW)
+@require_GET
+def api_users(request):
+    users = User.objects.select_related("portal_profile")
+    if user_has_permission(request.user, PortalPermission.ADMINISTER):
+        users = users.order_by("username", "id")
+    else:
+        users = users.filter(pk=request.user.pk)
+    return JsonResponse({"users": [_serialize_user(user) for user in users]})
+
+
+@api_permission_required(PortalPermission.VIEW)
+@require_http_methods(["GET", "PATCH"])
+def api_current_user(request):
+    return _api_user_detail_response(request, request.user)
+
+
+@api_permission_required(PortalPermission.VIEW)
+@require_http_methods(["GET", "PATCH"])
+def api_user_detail(request, user_id: int):
+    user = get_object_or_404(User, pk=user_id)
+    if user.pk != request.user.pk and not user_has_permission(request.user, PortalPermission.ADMINISTER):
+        return _json_error("Permission denied.", status=403)
+    return _api_user_detail_response(request, user)
+
+
+@api_permission_required(PortalPermission.ADMINISTER)
 @require_http_methods(["GET", "POST"])
 def admin_service_identities(request):
     if request.method == "GET":
@@ -482,7 +493,7 @@ def admin_service_identities(request):
     return JsonResponse({"service_identity": _serialize_service_identity(identity)}, status=201)
 
 
-@permission_required(PortalPermission.ADMINISTER)
+@api_permission_required(PortalPermission.ADMINISTER)
 @require_http_methods(["PATCH"])
 def admin_service_identity_detail(request, service_identity_id: int):
     identity = get_object_or_404(ServiceIdentity, pk=service_identity_id)
@@ -505,7 +516,7 @@ def admin_service_identity_detail(request, service_identity_id: int):
     return JsonResponse({"service_identity": _serialize_service_identity(identity)})
 
 
-@permission_required(PortalPermission.ADMINISTER)
+@api_permission_required(PortalPermission.ADMINISTER)
 @require_http_methods(["GET", "POST"])
 def admin_api_keys(request):
     if request.method == "GET":
@@ -539,7 +550,7 @@ def admin_api_keys(request):
     return JsonResponse({"api_key": _serialize_api_key(api_key), "secret": raw_secret}, status=201)
 
 
-@permission_required(PortalPermission.ADMINISTER)
+@api_permission_required(PortalPermission.ADMINISTER)
 @require_POST
 def admin_api_key_rotate(request, api_key_id: int):
     api_key = get_object_or_404(APIKey.objects.select_related("user", "service_identity"), pk=api_key_id)
@@ -560,7 +571,7 @@ def admin_api_key_rotate(request, api_key_id: int):
     return JsonResponse({"api_key": _serialize_api_key(api_key), "secret": raw_secret})
 
 
-@permission_required(PortalPermission.ADMINISTER)
+@api_permission_required(PortalPermission.ADMINISTER)
 @require_POST
 def admin_api_key_revoke(request, api_key_id: int):
     api_key = get_object_or_404(APIKey.objects.select_related("user", "service_identity"), pk=api_key_id)
@@ -811,6 +822,23 @@ def location_live_operation(request, slug: str):
     if payload_error is not None:
         return payload_error
 
+    response_payload, status = _execute_live_operation(request, location, payload)
+    return _live_operation_response(request, location, response_payload, status=status)
+
+
+@api_login_required
+@require_POST
+def api_channel_control(request, slug: str):
+    location = get_object_or_404(Location, slug=slug)
+    payload, payload_error = _json_payload(request)
+    if payload_error is not None:
+        return payload_error
+
+    response_payload, status = _execute_live_operation(request, location, payload)
+    return JsonResponse(response_payload, status=status)
+
+
+def _execute_live_operation(request, location: Location, payload: dict) -> tuple[dict, int]:
     command_name = str(payload.get("command") or "").strip()
     parameters = payload.get("parameters") or {}
     if not isinstance(parameters, dict):
@@ -830,7 +858,7 @@ def location_live_operation(request, slug: str):
             AuditOutcome.DENIED,
             response_payload,
         )
-        return _live_operation_response(request, location, response_payload, status=403)
+        return response_payload, 403
 
     try:
         result = run_location_live_command(location, command_name, parameters)
@@ -861,7 +889,7 @@ def location_live_operation(request, slug: str):
         "result": result,
     }
     _record_live_operation_audit(request.user, location, command_name, outcome, response_payload)
-    return _live_operation_response(request, location, response_payload, status=status)
+    return response_payload, status
 
 
 @login_required
@@ -1908,6 +1936,10 @@ def _json_error(message: str, *, status: int = 400) -> JsonResponse:
     return JsonResponse({"error": message}, status=status)
 
 
+SELF_USER_UPDATE_FIELDS = frozenset({"email", "first_name", "last_name", "password"})
+ADMIN_USER_UPDATE_FIELDS = frozenset({"username", "email", "first_name", "last_name", "is_active", "password", "role"})
+
+
 def _payload_bool(payload: dict, field: str, default: bool) -> bool:
     if field not in payload:
         return default
@@ -1934,6 +1966,77 @@ def _payload_api_key_scope(payload: dict):
     if user_id:
         return get_object_or_404(User, pk=user_id), None, None
     return None, get_object_or_404(ServiceIdentity, pk=service_identity_id), None
+
+
+def _api_user_detail_response(request, user) -> JsonResponse:
+    if request.method == "GET":
+        return JsonResponse({"user": _serialize_user(user)})
+
+    payload, error = _json_payload(request)
+    if error is not None:
+        return error
+
+    return _update_user_info_response(
+        request,
+        user,
+        payload,
+        allow_admin_fields=user_has_permission(request.user, PortalPermission.ADMINISTER),
+    )
+
+
+def _update_user_info_response(request, user, payload: dict, *, allow_admin_fields: bool) -> JsonResponse:
+    allowed_fields = ADMIN_USER_UPDATE_FIELDS if allow_admin_fields else SELF_USER_UPDATE_FIELDS
+    known_fields = ADMIN_USER_UPDATE_FIELDS
+    unknown_fields = sorted(set(payload) - known_fields)
+    if unknown_fields:
+        return _json_error(f"Unsupported field: {unknown_fields[0]}")
+
+    disallowed_fields = sorted(set(payload) - allowed_fields)
+    if disallowed_fields:
+        return _json_error(f"Field is not permitted: {disallowed_fields[0]}", status=403)
+
+    changed_fields: list[str] = []
+    for field in ("username", "email", "first_name", "last_name"):
+        if field in payload:
+            value = str(payload[field]).strip()
+            if getattr(user, field) != value:
+                setattr(user, field, value)
+                changed_fields.append(field)
+
+    role = None
+    try:
+        if "is_active" in payload:
+            is_active = _payload_bool(payload, "is_active", user.is_active)
+            if user.is_active != is_active:
+                user.is_active = is_active
+                changed_fields.append("is_active")
+        if payload.get("password"):
+            user.set_password(str(payload["password"]))
+            changed_fields.append("password")
+        if "role" in payload:
+            role = _payload_role(payload, required=False)
+            if role is not None and _stored_user_role(user) != role:
+                changed_fields.append("role")
+
+        user.full_clean()
+        with transaction.atomic():
+            user.save()
+            if role is not None:
+                user.portal_profile = assign_role(user, role)
+    except (IntegrityError, ValidationError, ValueError) as exc:
+        return _json_error(str(exc))
+
+    if changed_fields:
+        _record_api_user_update_audit(request.user, user, changed_fields, request)
+
+    return JsonResponse({"user": _serialize_user(user)})
+
+
+def _stored_user_role(user) -> PortalRole | None:
+    try:
+        return PortalRole(user.portal_profile.role)
+    except (PortalUserProfile.DoesNotExist, ValueError):
+        return None
 
 
 def _serialize_user(user) -> dict:
@@ -2006,6 +2109,26 @@ def _record_api_key_audit(actor, action: AuditAction, api_key: APIKey, *, detail
         target=f"api_keys/{api_key.id}",
         outcome=AuditOutcome.SUCCESS,
         details=audit_details,
+    )
+
+
+def _record_api_user_update_audit(actor, user, changed_fields: list[str], request) -> None:
+    details = {
+        "user_id": user.id,
+        "username": user.get_username(),
+        "changed_fields": sorted(changed_fields),
+        "actor_username": actor.get_username() if getattr(actor, "is_authenticated", False) else "anonymous",
+    }
+    api_key = getattr(request, "api_key", None)
+    if api_key is not None:
+        details.update({"api_key_id": api_key.id, "api_key_prefix": api_key.prefix})
+
+    record_audit(
+        actor=actor,
+        action=AuditAction.API_USER_UPDATE,
+        target=f"users/{user.id}",
+        outcome=AuditOutcome.SUCCESS,
+        details=details,
     )
 
 

@@ -107,6 +107,7 @@ class AuditAction(models.TextChoices):
     API_KEY_CREATE = "api_key_create", "API key create"
     API_KEY_ROTATE = "api_key_rotate", "API key rotate"
     API_KEY_REVOKE = "api_key_revoke", "API key revoke"
+    API_USER_UPDATE = "api_user_update", "API user update"
     BACKUP_CREATE = "backup_create", "Backup create"
     BACKUP_DOWNLOAD = "backup_download", "Backup download"
 
