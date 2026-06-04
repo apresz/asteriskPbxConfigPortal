@@ -41,6 +41,7 @@ from .agent_client import (
     report_telemetry_once,
     run_telemetry_loop,
 )
+from .agent_ws import update_active_config_report, update_agent_telemetry_report
 from .ami_telemetry import (
     parse_active_calls,
     parse_ami_messages,
@@ -3068,6 +3069,397 @@ class FakeDeploymentRunner:
             }
         )
         return DeploymentCommandResult(command=f"upload bundle to {staging_path}")
+
+
+class PBXWorkflowIntegrationTests(TestCase):
+    maxDiff = None
+
+    def setUp(self):
+        self.operator = User.objects.create_user(username="pbx-integration-operator", password="portal-pass")
+        self.hq = Location.objects.create(
+            **location_model_data(
+                name="Integration HQ",
+                slug="integration-hq",
+                lan_subnet="10.50.0.0/24",
+                pbx_lan_ip="10.50.0.10",
+                pbx_warp_ip="100.64.50.10",
+                sip_bind_ip="10.50.0.10",
+                iax_bind_ip="10.50.0.10",
+                default_did="+15551205000",
+                emergency_caller_id="+15551205999",
+                recording_retention_days=120,
+                deployment_staging_path="/srv/pbx/releases",
+                deployment_asterisk_path="/srv/pbx/current/asterisk",
+                deployment_tftp_path="/srv/pbx/current/tftp",
+                deployment_reload_command="asterisk -rx 'core reload'",
+                agent_secret="hq-agent-secret",
+            )
+        )
+        self.warehouse = Location.objects.create(
+            **location_model_data(
+                name="Integration Warehouse",
+                slug="warehouse-integration",
+                lan_subnet="10.60.0.0/24",
+                pbx_lan_ip="10.60.0.10",
+                pbx_warp_ip="100.64.60.10",
+                sip_bind_ip="10.60.0.10",
+                iax_bind_ip="10.60.0.10",
+                default_did="+15551206000",
+                emergency_caller_id="+15551206999",
+                agent_secret="warehouse-agent-secret",
+            )
+        )
+        self.reception = Extension.objects.create(
+            location=self.hq,
+            number="3000",
+            display_name="HQ Reception",
+            email="reception.integration@example.test",
+            sip_username="3000",
+            sip_password="sip-secret-3000",
+            voicemail_pin="1234",
+            caller_id_name="HQ Reception",
+            caller_id_number="+15551205000",
+            emergency_calling_enabled=True,
+            recording_policy=Extension.RecordingPolicy.ALWAYS,
+        )
+        self.support_agent = Extension.objects.create(
+            location=self.hq,
+            number="3001",
+            display_name="Support Agent",
+            sip_username="3001",
+            sip_password="sip-secret-3001",
+            emergency_calling_enabled=True,
+        )
+        self.remote_extension = Extension.objects.create(
+            location=self.warehouse,
+            number="4000",
+            display_name="Warehouse Desk",
+            sip_username="4000",
+            sip_password="sip-secret-4000",
+        )
+        provider = Provider.objects.create(
+            name="Integration SIP",
+            slug="integration-sip",
+            provider_type=Provider.ProviderType.SIP,
+        )
+        primary_trunk = Trunk.objects.create(
+            location=self.hq,
+            provider=provider,
+            name="Primary SIP",
+            trunk_type=Trunk.TrunkType.SIP,
+            host="sip.primary.integration.test",
+            username="primary-user",
+            password="primary-secret",
+            is_emergency_capable=True,
+        )
+        outbound_route = OutboundRoute.objects.create(
+            location=self.hq,
+            name="National",
+            dial_pattern="NXXNXXXXXX",
+            priority=1,
+            caller_id_source=OutboundRoute.CallerIdSource.LOCATION_DEFAULT,
+            recording_policy=OutboundRoute.RecordingPolicy.ALWAYS,
+        )
+        OutboundRouteTrunk.objects.create(outbound_route=outbound_route, trunk=primary_trunk, priority=1)
+        add_emergency_route(self.hq)
+
+        self.reception_destination = InboundDestination.objects.create(
+            location=self.hq,
+            name="Reception",
+            destination_type=InboundDestination.DestinationType.EXTENSION,
+            extension=self.reception,
+        )
+        self.hq.default_inbound_destination = self.reception_destination
+        self.hq.save(update_fields=["default_inbound_destination", "updated_at"])
+        self.queue = CallQueue.objects.create(
+            location=self.hq,
+            name="Support Queue",
+            strategy=CallQueue.Strategy.ROUND_ROBIN,
+            timeout_seconds=45,
+            retry_seconds=7,
+            music_on_hold="support-hold",
+            overflow_destination=self.reception_destination,
+            recording_policy=CallQueue.RecordingPolicy.ON_DEMAND,
+        )
+        QueueMember.objects.create(queue=self.queue, extension=self.reception, penalty=0)
+        QueueMember.objects.create(queue=self.queue, extension=self.support_agent, penalty=1)
+        self.queue_destination = InboundDestination.objects.create(
+            location=self.hq,
+            name="Support Queue",
+            destination_type=InboundDestination.DestinationType.QUEUE,
+            queue=self.queue,
+        )
+        self.ivr = IVR.objects.create(
+            location=self.hq,
+            name="Main IVR",
+            prompt_name="custom/main-menu",
+            timeout_seconds=6,
+            business_hours_destination=self.queue_destination,
+            after_hours_destination=self.reception_destination,
+            timeout_destination=self.reception_destination,
+            invalid_destination=self.reception_destination,
+        )
+        self.ivr_destination = InboundDestination.objects.create(
+            location=self.hq,
+            name="Main IVR",
+            destination_type=InboundDestination.DestinationType.IVR,
+            ivr=self.ivr,
+        )
+        IVRMenuOption.objects.create(
+            ivr=self.ivr,
+            digit="1",
+            label="Support",
+            destination=self.queue_destination,
+        )
+        DID.objects.create(
+            location=self.hq,
+            number="+15551205000",
+            provider=provider,
+            trunk=primary_trunk,
+            direct_extension=self.reception,
+            default_destination=self.reception_destination,
+            label="Reception DID",
+        )
+        DID.objects.create(
+            location=self.hq,
+            number="+15551205001",
+            provider=provider,
+            trunk=primary_trunk,
+            label="Fallback DID",
+        )
+        self.paging_group = PagingGroup.objects.create(location=self.hq, name="HQ Page", page_code="7100")
+        PagingGroupMember.objects.create(paging_group=self.paging_group, extension=self.reception)
+        PagingGroupMember.objects.create(paging_group=self.paging_group, extension=self.support_agent)
+
+    def test_generated_configs_cover_registration_routing_trunks_did_ivr_queue_paging_and_recording(self):
+        location_config = build_location_config(self.hq)
+        configs = location_config["asterisk_configs"]
+        inbound = location_config["inbound"]
+
+        with self.subTest("local TCP PJSIP registration"):
+            self.assertIn("[transport-tcp]", configs["pjsip.conf"])
+            self.assertIn("protocol=tcp", configs["pjsip.conf"])
+            self.assertIn("bind=10.50.0.10:5060", configs["pjsip.conf"])
+            self.assertIn("[3000]\ntype=endpoint\ntransport=transport-tcp\ncontext=from-pjsip", configs["pjsip.conf"])
+            self.assertIn("max_contacts=5", configs["pjsip.conf"])
+            self.assertIn("permit=10.50.0.0/255.255.255.0", configs["pjsip.conf"])
+
+        with self.subTest("remote IAX2 extension routing"):
+            self.assertIn("[warehouse-integration]", configs["iax.conf"])
+            self.assertIn("host=100.64.60.10", configs["iax.conf"])
+            self.assertIn("trunk=yes", configs["iax.conf"])
+            self.assertIn("exten => 4000,1,NoOp(Remote extension 4000 owned by warehouse-integration)", configs["extensions.conf"])
+            self.assertIn(" same => n,Dial(IAX2/warehouse-integration/${EXTEN},30)", configs["extensions.conf"])
+
+        with self.subTest("provider trunk generation"):
+            self.assertIn("[trunk-primary-sip]", configs["pjsip.conf"])
+            self.assertIn("outbound_auth=auth-trunk-primary-sip", configs["pjsip.conf"])
+            self.assertIn("from_domain=sip.primary.integration.test", configs["pjsip.conf"])
+            self.assertIn("contact=sip:sip.primary.integration.test", configs["pjsip.conf"])
+
+        with self.subTest("DID fallback routing"):
+            fallback_did = next(route for route in inbound["dids"] if route["number"] == "+15551205001")
+            self.assertEqual(fallback_did["route_source"], "location_default")
+            self.assertEqual(fallback_did["effective_destination"]["target"]["number"], "3000")
+            self.assertIn("exten => +15551205001,1,NoOp(Inbound DID +15551205001)", configs["extensions.conf"])
+            self.assertIn(" same => n,Goto(local-extensions,3000,1)", configs["extensions.conf"])
+
+        with self.subTest("IVR hours destinations"):
+            ivr_config = next(ivr for ivr in inbound["ivrs"] if ivr["name"] == "Main IVR")
+            self.assertEqual(ivr_config["business_hours_destination"]["target"]["name"], "Support Queue")
+            self.assertEqual(ivr_config["after_hours_destination"]["target"]["number"], "3000")
+            self.assertIn("exten => main-ivr,1,NoOp(IVR Main IVR)", configs["extensions.conf"])
+            self.assertIn(" same => n,Background(custom/main-menu)", configs["extensions.conf"])
+            self.assertIn("exten => 1,1,NoOp(IVR option 1 Support)", configs["extensions.conf"])
+
+        with self.subTest("queue overflow"):
+            self.assertIn("[support-queue]", configs["queues.conf"])
+            self.assertIn("strategy=rrmemory", configs["queues.conf"])
+            self.assertIn("member => PJSIP/3000,0,3000", configs["queues.conf"])
+            self.assertIn("member => PJSIP/3001,1,3001", configs["queues.conf"])
+            self.assertIn("exten => support-queue,1,NoOp(Queue Support Queue)", configs["extensions.conf"])
+            self.assertIn(" same => n,Queue(support-queue,t,,,45)", configs["extensions.conf"])
+            self.assertIn(" same => n,Goto(local-extensions,3000,1)", configs["extensions.conf"])
+
+        with self.subTest("paging"):
+            self.assertIn("exten => 7100,1,NoOp(Page HQ Page)", configs["extensions.conf"])
+            self.assertIn(" same => n,Page(PJSIP/3000&PJSIP/3001)", configs["extensions.conf"])
+
+        with self.subTest("recording policies"):
+            self.assertIn("retention_days=120", configs["recording.conf"])
+            self.assertIn("[extension-3000]\npolicy=always", configs["recording.conf"])
+            self.assertIn("[queue-support-queue]\npolicy=on_demand", configs["recording.conf"])
+            self.assertIn("[route-national]\npolicy=always", configs["recording.conf"])
+
+    def test_agent_harness_covers_recording_metadata_active_version_and_reconnect(self):
+        checksum = "d" * 64
+        update_active_config_report(
+            self.hq.id,
+            {
+                "type": "active_config",
+                "version": 9,
+                "checksum": checksum,
+                "timestamp": "2026-06-04T03:45:00Z",
+            },
+        )
+        update_agent_telemetry_report(
+            self.hq.id,
+            {
+                "type": "telemetry",
+                "timestamp": "2026-06-04T03:46:00Z",
+                "location_health": {"location_slug": self.hq.slug, "ami_connected": True},
+                "phone_registrations": [{"extension": "3000", "transport": "tcp", "status": "reachable"}],
+                "trunk_status": [{"name": "trunk-primary-sip", "status": "available"}],
+                "active_calls": [],
+                "queue_status": [{"name": "support-queue", "calls_waiting": 0}],
+                "recent_calls": [],
+                "call_events": [],
+                "recording_metadata": [
+                    {
+                        "recording_id": "call-3000",
+                        "filename": "call-3000.wav",
+                        "path": "/var/spool/asterisk/monitor/call-3000.wav",
+                        "size_bytes": 4096,
+                    }
+                ],
+                "telemetry_errors": [],
+            },
+        )
+
+        self.hq.refresh_from_db()
+        self.assertEqual(self.hq.active_config_version_number, 9)
+        self.assertEqual(self.hq.active_config_checksum, checksum)
+        self.assertEqual(self.hq.agent_telemetry["recording_metadata"][0]["filename"], "call-3000.wav")
+        self.assertEqual(self.hq.agent_telemetry["phone_registrations"][0]["transport"], "tcp")
+
+        calls = []
+
+        async def collector(config):
+            return {
+                "type": "telemetry",
+                "timestamp": "2026-06-04T03:47:00Z",
+                "location_health": {"location_slug": config.location_slug, "ami_connected": True},
+                "phone_registrations": [],
+                "trunk_status": [],
+                "active_calls": [],
+                "queue_status": [],
+                "recent_calls": [],
+                "call_events": [],
+                "recording_metadata": [],
+                "telemetry_errors": [],
+            }
+
+        async def flaky_exchange(url, payload, headers):
+            calls.append((url, payload, headers))
+            if len(calls) == 1:
+                raise ConnectionError("portal dropped connection")
+            return {"type": "telemetry_ack", "location": self.hq.slug}
+
+        async def no_sleep(_seconds):
+            return None
+
+        asyncio.run(
+            run_telemetry_loop(
+                AgentConfig(
+                    websocket_url="wss://portal.warp.test/api/agent/ws/",
+                    token=self.hq.agent_token,
+                    secret=self.hq.agent_secret,
+                    marker_path=Path("/tmp/unused-marker.json"),
+                    location_slug=self.hq.slug,
+                    telemetry_interval_seconds=0,
+                ),
+                collector=collector,
+                websocket_exchange=flaky_exchange,
+                sleep=no_sleep,
+                iterations=2,
+                reconnect_delay_seconds=0,
+            )
+        )
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][0], "wss://portal.warp.test/api/agent/ws/")
+        self.assertEqual(calls[1][1]["location_health"]["location_slug"], self.hq.slug)
+        self.assertEqual(calls[1][2]["X-PBX-Agent-Token"], self.hq.agent_token)
+
+    def test_deployment_harness_covers_ssh_reload_and_rollback(self):
+        previous_version = create_config_version(self.hq, exported_by=self.operator)
+        current_version = create_config_version(self.hq, exported_by=self.operator)
+        deploy_runner = FakeDeploymentRunner()
+        rollback_runner = FakeDeploymentRunner()
+
+        deploy_record = deploy_config_version(
+            current_version,
+            operator=self.operator,
+            reload_confirmed=True,
+            runner=deploy_runner,
+        )
+        rollback_record = deploy_config_version(
+            previous_version,
+            operator=self.operator,
+            reload_confirmed=True,
+            rollback=True,
+            runner=rollback_runner,
+        )
+
+        deploy_record.refresh_from_db()
+        rollback_record.refresh_from_db()
+        previous_version.refresh_from_db()
+        current_version.refresh_from_db()
+        self.hq.refresh_from_db()
+        self.assertEqual(deploy_record.action, DeploymentRecord.Action.DEPLOY)
+        self.assertEqual(deploy_record.status, DeploymentRecord.Status.SUCCESS)
+        self.assertEqual(deploy_record.target_host, self.hq.deployment_ssh_host)
+        self.assertEqual(deploy_record.reload_result, DeploymentRecord.ReloadResult.SUCCESS)
+        self.assertEqual(deploy_record.reload_output, "Reload OK")
+        self.assertEqual(
+            [step["name"] for step in deploy_record.details["steps"]],
+            ["prepare_staging", "upload_bundle", "verify_staging", "swap_volumes", "reload_asterisk"],
+        )
+        self.assertIn("asterisk/pjsip.conf", deploy_runner.uploads[0]["asterisk_files"])
+        self.assertIn("tftp/company-directory.xml", deploy_runner.uploads[0]["tftp_files"])
+        self.assertIn("/srv/pbx/current/asterisk", deploy_runner.remote_commands[2])
+        self.assertIn("/srv/pbx/current/tftp", deploy_runner.remote_commands[2])
+        self.assertEqual(current_version.deployment_status, ConfigVersion.DeploymentStatus.DEPLOYED)
+        self.assertEqual(rollback_record.action, DeploymentRecord.Action.ROLLBACK)
+        self.assertEqual(rollback_record.config_version, previous_version)
+        self.assertEqual(rollback_record.rollback_source_version, previous_version)
+        self.assertEqual(previous_version.deployment_status, ConfigVersion.DeploymentStatus.ROLLED_BACK)
+        self.assertEqual(self.hq.deployment_status, Location.DeploymentStatus.DEPLOYED)
+
+    def test_audio_conversion_harness_covers_wav_mp3_and_m4a(self):
+        commands = []
+
+        def fake_ffmpeg(command, *, capture_output, text, check):
+            commands.append(command)
+            Path(command[-1]).write_bytes(b"RIFFasterisk-wav")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            prompts = [
+                create_audio_prompt_from_upload(
+                    location=self.hq,
+                    uploaded_file=SimpleUploadedFile(filename, b"source-audio", content_type=content_type),
+                    runner=fake_ffmpeg,
+                )
+                for filename, content_type in (
+                    ("integration-menu.wav", "audio/wav"),
+                    ("integration-menu.mp3", "audio/mpeg"),
+                    ("integration-menu.m4a", "audio/mp4"),
+                )
+            ]
+
+        self.assertEqual([prompt.source_format for prompt in prompts], ["wav", "mp3", "m4a"])
+        self.assertEqual([prompt.converted_format for prompt in prompts], ["wav", "wav", "wav"])
+        for prompt in prompts:
+            self.assertEqual(prompt.sample_rate_hz, 8000)
+            self.assertEqual(prompt.channels, 1)
+            self.assertTrue(prompt.converted_file.name.endswith(".wav"))
+        for command in commands:
+            self.assertIn("pcm_s16le", command)
+            self.assertIn("-ar", command)
+            self.assertIn("8000", command)
+            self.assertIn("-ac", command)
+            self.assertIn("1", command)
 
 
 class ConfigDeploymentServiceTests(TestCase):
