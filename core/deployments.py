@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from io import BytesIO
 import hashlib
-import os
 from pathlib import Path, PurePosixPath
 import posixpath
 import shlex
@@ -17,6 +16,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from .audit import record_audit
+from .file_permissions import ensure_restricted_directory, write_restricted_bytes, write_restricted_text
 from .models import AuditAction, AuditOutcome, ConfigVersion, DeploymentRecord, Location
 
 
@@ -73,14 +73,14 @@ class SSHDeploymentRunner:
 
     @classmethod
     def from_location(cls, location: Location, workspace: Path) -> "SSHDeploymentRunner":
+        ensure_restricted_directory(workspace)
         key_path = workspace / "deployment_key"
-        key_path.write_text(_trailing_newline(location.deployment_ssh_private_key), encoding="utf-8")
-        os.chmod(key_path, 0o600)
+        write_restricted_text(key_path, _trailing_newline(location.deployment_ssh_private_key))
 
         known_hosts_path = None
         if location.deployment_ssh_known_hosts.strip():
             known_hosts_path = workspace / "known_hosts"
-            known_hosts_path.write_text(_trailing_newline(location.deployment_ssh_known_hosts), encoding="utf-8")
+            write_restricted_text(known_hosts_path, _trailing_newline(location.deployment_ssh_known_hosts))
 
         return cls(
             host=location.deployment_ssh_host,
@@ -135,7 +135,16 @@ class SSHDeploymentRunner:
                 stderr=_decode(tar_completed.stderr),
             )
 
-        remote_command = f"mkdir -p {_q(staging_path)} && tar -xzf - -C {_q(staging_path)}"
+        remote_command = "\n".join(
+            [
+                "set -eu",
+                "umask 077",
+                f"mkdir -p -m 700 {_q(staging_path)}",
+                f"chmod 700 {_q(staging_path)}",
+                f"tar -xzf - -C {_q(staging_path)}",
+                f"chmod -R go-rwx {_q(staging_path)}",
+            ]
+        )
         return self.run(
             remote_command,
             input_bytes=tar_completed.stdout,
@@ -249,7 +258,7 @@ def deploy_config_version(
 
 
 def extract_deployment_bundle(version: ConfigVersion, target_dir: Path) -> list[str]:
-    target_dir.mkdir(parents=True, exist_ok=True)
+    ensure_restricted_directory(target_dir)
     extracted_paths: list[str] = []
     with zipfile.ZipFile(BytesIO(bytes(version.archive))) as archive:
         _verify_archive_checksums(archive)
@@ -265,10 +274,10 @@ def extract_deployment_bundle(version: ConfigVersion, target_dir: Path) -> list[
         for info in members:
             destination = _safe_member_destination(target_dir, info.filename)
             if info.is_dir():
-                destination.mkdir(parents=True, exist_ok=True)
+                ensure_restricted_directory(destination)
                 continue
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(archive.read(info.filename))
+            ensure_restricted_directory(destination.parent)
+            write_restricted_bytes(destination, archive.read(info.filename))
             extracted_paths.append(info.filename)
     return extracted_paths
 
@@ -459,8 +468,10 @@ def _prepare_staging_command(staging_path: str) -> str:
     return "\n".join(
         [
             "set -eu",
+            "umask 077",
             f"rm -rf {_q(staging_path)}",
-            f"mkdir -p {_q(staging_path)}",
+            f"mkdir -p -m 700 {_q(staging_path)}",
+            f"chmod 700 {_q(staging_path)}",
         ]
     )
 

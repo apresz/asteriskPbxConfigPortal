@@ -10,6 +10,7 @@ from core.config_export import (
     create_config_version,
     write_config_version_directory,
 )
+from core.file_permissions import write_restricted_bytes
 from core.models import AuditAction, AuditOutcome, Location
 
 
@@ -61,7 +62,7 @@ class Command(BaseCommand):
         if options["output_dir"]:
             write_config_version_directory(version, Path(options["output_dir"]))
         if options["zip_output"]:
-            Path(options["zip_output"]).write_bytes(bytes(version.archive))
+            write_restricted_bytes(Path(options["zip_output"]), bytes(version.archive))
 
         record_audit(
             actor=None,

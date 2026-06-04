@@ -19,6 +19,7 @@ from django.db import connection
 from django.utils import timezone
 
 from .config_export import build_location_config
+from .file_permissions import RESTRICTED_FILE_MODE
 from .models import AdminBackup, AuditLog, ConfigVersion, Location
 
 
@@ -124,6 +125,20 @@ def build_admin_backup_archive(*, generated_at, generated_by=None) -> BackupArch
             "This archive is designed for off-host storage. It contains PBX configuration, "
             "audit history, uploaded media, and secrets needed for recovery."
         ),
+        "security_notes": [
+            (
+                "PostgreSQL dumps and Django fixture dumps can contain plaintext telecom secrets, "
+                "including SIP, AMI, SMTP, deployment SSH, and PBX agent credentials."
+            ),
+            (
+                "Exported configuration archives and backup ZIPs must stay on encrypted storage "
+                "with administrator-only access."
+            ),
+            (
+                "Administrators remain responsible for emergency calling configuration and call "
+                "recording consent/retention compliance before restoring or redeploying data."
+            ),
+        ],
         "files": manifest_files,
     }
     files.append(("manifest.json", _json_bytes(manifest), "application/json"))
@@ -361,8 +376,9 @@ def _readme() -> str:
             "",
             "This archive is suitable for off-host storage.",
             "It contains operational PBX configuration, uploaded media/audio, export metadata, audit logs, and database data.",
-            "Treat it as sensitive because configuration records can include credentials and deployment secrets.",
-            "Store retained copies on encrypted storage outside the application host.",
+            "Treat it as sensitive because PostgreSQL or fixture dumps and exported configs can include plaintext telecom secrets.",
+            "Store retained copies on encrypted storage outside the application host with administrator-only access.",
+            "Emergency calling configuration and call recording consent/retention compliance remain administrator responsibilities.",
             "",
         ]
     )
@@ -393,7 +409,7 @@ def _zip_archive(files: list[tuple[str, bytes, str]]) -> bytes:
         for path, content, _content_type in files:
             zip_info = zipfile.ZipInfo(path, ZIP_TIMESTAMP)
             zip_info.compress_type = zipfile.ZIP_DEFLATED
-            zip_info.external_attr = 0o644 << 16
+            zip_info.external_attr = RESTRICTED_FILE_MODE << 16
             archive.writestr(zip_info, content)
     return buffer.getvalue()
 
