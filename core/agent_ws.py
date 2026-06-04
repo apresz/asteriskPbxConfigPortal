@@ -1,3 +1,4 @@
+import asyncio
 import hmac
 import json
 from datetime import timezone as datetime_timezone
@@ -6,6 +7,7 @@ from urllib.parse import parse_qs
 from asgiref.sync import sync_to_async
 from django.utils import dateparse, timezone
 
+from .live_operations import AgentSession, agent_connection_registry
 from .models import Location
 
 
@@ -152,74 +154,135 @@ class AgentWebSocketApplication:
             }
         )
 
-        while True:
-            message = await receive()
-            message_type = message["type"]
-            if message_type == "websocket.disconnect":
-                return
-            if message_type != "websocket.receive":
-                await _send_error(send, "Unsupported WebSocket event.")
-                continue
+        agent_session = agent_connection_registry.register(location_id=location.id, location_slug=location.slug)
+        try:
+            await self._message_loop(
+                location=location,
+                agent_session=agent_session,
+                receive=receive,
+                send=send,
+            )
+        finally:
+            agent_connection_registry.unregister(agent_session)
 
-            payload = _payload_from_message(message)
-            if payload is None:
-                await _send_error(send, "Expected a JSON text message.")
-                continue
-            if payload.get("type") == "active_config":
-                try:
-                    updated_location = await sync_to_async(update_active_config_report, thread_sensitive=True)(
-                        location.id,
-                        payload,
-                    )
-                except ActiveConfigReportError as exc:
-                    await _send_error(send, str(exc))
-                    continue
-
-                await send(
-                    {
-                        "type": "websocket.send",
-                        "text": json.dumps(
-                            {
-                                "type": "active_config_ack",
-                                "location": updated_location.slug,
-                                "version": updated_location.active_config_version_number,
-                                "checksum": updated_location.active_config_checksum,
-                                "timestamp": updated_location.active_config_timestamp.isoformat(),
-                            }
-                        ),
-                    }
+    async def _message_loop(
+        self,
+        *,
+        location: Location,
+        agent_session: AgentSession,
+        receive,
+        send,
+    ) -> None:
+        receive_task = asyncio.create_task(receive())
+        outbound_task = asyncio.create_task(asyncio.to_thread(agent_session.wait_for_outbound_message))
+        try:
+            while True:
+                done, _pending = await asyncio.wait(
+                    {receive_task, outbound_task},
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
-                continue
+                if receive_task in done:
+                    message = receive_task.result()
+                    message_type = message["type"]
+                    if message_type == "websocket.disconnect":
+                        return
+                    if message_type != "websocket.receive":
+                        await _send_error(send, "Unsupported WebSocket event.")
+                        receive_task = asyncio.create_task(receive())
+                        continue
 
-            if payload.get("type") == "telemetry":
-                try:
-                    updated_location = await sync_to_async(update_agent_telemetry_report, thread_sensitive=True)(
-                        location.id,
-                        payload,
+                    payload = _payload_from_message(message)
+                    if payload is None:
+                        await _send_error(send, "Expected a JSON text message.")
+                    else:
+                        await _handle_agent_payload(location, agent_session, payload, send)
+                    receive_task = asyncio.create_task(receive())
+
+                if outbound_task in done:
+                    outbound_payload = outbound_task.result()
+                    if outbound_payload is None:
+                        return
+                    await send(
+                        {
+                            "type": "websocket.send",
+                            "text": json.dumps(outbound_payload),
+                        }
                     )
-                except AgentTelemetryReportError as exc:
-                    await _send_error(send, str(exc))
-                    continue
+                    outbound_task = asyncio.create_task(asyncio.to_thread(agent_session.wait_for_outbound_message))
+        finally:
+            agent_session.close()
+            for task in (receive_task, outbound_task):
+                if not task.done():
+                    task.cancel()
 
-                await send(
+
+async def _handle_agent_payload(location: Location, agent_session: AgentSession, payload: dict, send) -> None:
+    if payload.get("type") == "active_config":
+        try:
+            updated_location = await sync_to_async(update_active_config_report, thread_sensitive=True)(
+                location.id,
+                payload,
+            )
+        except ActiveConfigReportError as exc:
+            await _send_error(send, str(exc))
+            return
+
+        await send(
+            {
+                "type": "websocket.send",
+                "text": json.dumps(
                     {
-                        "type": "websocket.send",
-                        "text": json.dumps(
-                            {
-                                "type": "telemetry_ack",
-                                "location": updated_location.slug,
-                                "timestamp": updated_location.agent_telemetry["timestamp"],
-                                "categories": [*TELEMETRY_LIST_FIELDS, "call_events", "location_health"],
-                                "error_count": len(updated_location.agent_telemetry_errors),
-                            }
-                        ),
+                        "type": "active_config_ack",
+                        "location": updated_location.slug,
+                        "version": updated_location.active_config_version_number,
+                        "checksum": updated_location.active_config_checksum,
+                        "timestamp": updated_location.active_config_timestamp.isoformat(),
                     }
-                )
-                continue
+                ),
+            }
+        )
+        return
 
-            if payload.get("type") not in {"active_config", "telemetry"}:
-                await _send_error(send, "Unsupported agent message type.")
-                continue
+    if payload.get("type") == "telemetry":
+        try:
+            updated_location = await sync_to_async(update_agent_telemetry_report, thread_sensitive=True)(
+                location.id,
+                payload,
+            )
+        except AgentTelemetryReportError as exc:
+            await _send_error(send, str(exc))
+            return
+
+        await send(
+            {
+                "type": "websocket.send",
+                "text": json.dumps(
+                    {
+                        "type": "telemetry_ack",
+                        "location": updated_location.slug,
+                        "timestamp": updated_location.agent_telemetry["timestamp"],
+                        "categories": [*TELEMETRY_LIST_FIELDS, "call_events", "location_health"],
+                        "error_count": len(updated_location.agent_telemetry_errors),
+                    }
+                ),
+            }
+        )
+        return
+
+    if payload.get("type") == "live_command_result":
+        command_id = str(payload.get("command_id") or "")
+        if not command_id or not agent_connection_registry.resolve_result(agent_session, command_id, payload):
+            await _send_error(send, "Unknown live command result.")
+            return
+        await send(
+            {
+                "type": "websocket.send",
+                "text": json.dumps({"type": "live_command_result_ack", "command_id": command_id}),
+            }
+        )
+        return
+
+    await _send_error(send, "Unsupported agent message type.")
 
 
 def _credentials_from_scope(scope) -> tuple[str | None, str | None]:
