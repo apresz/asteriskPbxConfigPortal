@@ -40,6 +40,11 @@ from .config_archive import (
 )
 from .file_permissions import ensure_restricted_directory, write_restricted_bytes
 from .rtp_config import RTP_CONFIG_FILENAME, RTPRangeError, render_rtp_conf, validate_location_rtp_range
+from .ring_group_dialplan import (
+    RingGroupDialplanValidationError,
+    render_ring_group_dialplan_lines,
+    validate_ring_group_dialplan_payload,
+)
 from .models import (
     AudioPrompt,
     ConfigVersion,
@@ -647,6 +652,7 @@ def validate_location_routing(location: Location, *, require_emergency: bool = F
                 "message": "At least one active emergency outbound route is required.",
             }
         )
+    errors.extend(ring_group_routing_errors(location))
 
     warning_trunks = {
         warning["trunk"]: warning
@@ -674,6 +680,42 @@ def validate_location_routing(location: Location, *, require_emergency: bool = F
         errors.extend(emergency_trunk_missing_credential_errors(route.name, route_trunks, warning_trunks))
 
     return {"warnings": warnings, "errors": errors}
+
+
+def ring_group_routing_errors(location: Location) -> list[dict[str, Any]]:
+    errors: list[dict[str, Any]] = []
+    ring_groups = (
+        location.ring_groups.filter(is_active=True)
+        .prefetch_related("members__extension")
+        .order_by("name")
+    )
+    for ring_group in ring_groups:
+        payload = {
+            "name": ring_group.name,
+            "strategy": ring_group.strategy,
+            "timeout_seconds": ring_group.timeout_seconds,
+            "members": [
+                {
+                    "extension": member.extension.number,
+                    "priority": member.priority,
+                }
+                for member in ring_group.members.select_related("extension").order_by(
+                    "priority",
+                    "extension__number",
+                )
+            ],
+        }
+        try:
+            validate_ring_group_dialplan_payload(payload)
+        except RingGroupDialplanValidationError as exc:
+            errors.append(
+                {
+                    "code": "invalid_ring_group",
+                    "ring_group": ring_group.name,
+                    "message": str(exc),
+                }
+            )
+    return errors
 
 
 def export_validation_warnings(location: Location) -> list[dict[str, Any]]:
@@ -1813,17 +1855,7 @@ def _append_destination_contexts(lines: list[str], inbound_config: dict[str, Any
 
     lines.append("[ring-groups]")
     for ring_group in inbound_config["ring_groups"]:
-        members = "&".join(f"PJSIP/{member['extension']}" for member in ring_group["members"])
-        if not members:
-            members = "Local/s@invalid"
-        lines.extend(
-            [
-                f"exten => {_slug(ring_group['name'])},1,NoOp(Ring group {ring_group['name']})",
-                f" same => n,Dial({members},{ring_group['timeout_seconds']})",
-                " same => n,Hangup()",
-                "",
-            ]
-        )
+        lines.extend(render_ring_group_dialplan_lines(ring_group, slugify=_slug))
 
     lines.append("[queues]")
     for queue in inbound_config["queues"]:
