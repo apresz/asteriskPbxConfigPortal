@@ -1,0 +1,45 @@
+<section class="page-heading" data-area="audit-log">
+  <p class="eyebrow">Audit Log</p>
+  <h1>Recent Activity</h1>
+  <p>Portal, API, deployment, backup, and recording actions retained by the audit log.</p>
+</section>
+
+{% if audit_entries %}
+  <section class="table-panel" aria-label="Audit Log">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th scope="col">Time</th>
+          <th scope="col">Action</th>
+          <th scope="col">Actor</th>
+          <th scope="col">Target</th>
+          <th scope="col">Outcome</th>
+          <th scope="col">Details</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in audit_entries %}
+          <tr>
+            <td>{{ entry.timestamp|date:"Y-m-d H:i" }}</td>
+            <td>{{ entry.get_action_display }}</td>
+            <td>{% if entry.actor %}{{ entry.actor.get_username }}{% else %}system{% endif %}</td>
+            <td><code>{{ entry.target }}</code></td>
+            <td><span class="status-badge{% if entry.outcome != 'success' %} status-badge--warning{% endif %}">{{ entry.get_outcome_display }}</span></td>
+            <td>
+              {% for key, value in entry.details.items %}
+                <span class="stacked-value"><strong>{{ key }}</strong>: {{ value }}</span>
+              {% empty %}
+                <span class="table-meta">No details</span>
+              {% endfor %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% else %}
+  <section class="empty-state" data-area="audit-log">
+    <h2>No audit entries</h2>
+    <p class="restricted-copy">Sensitive portal actions will appear here.</p>
+  </section>
+{% endif %}

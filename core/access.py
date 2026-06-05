@@ -7,23 +7,12 @@ from django.core.exceptions import PermissionDenied
 from django.http import HttpRequest, HttpResponse, JsonResponse
 
 from .models import PortalPermission, PortalRole, PortalUserProfile
+from .portal_area_access import ROLE_PERMISSIONS as ROLE_PERMISSION_VALUES
 
 
 ROLE_PERMISSIONS = {
-    PortalRole.VIEWER: frozenset({PortalPermission.VIEW}),
-    PortalRole.EDITOR: frozenset({PortalPermission.VIEW, PortalPermission.EDIT_CONFIG}),
-    PortalRole.OPERATOR: frozenset(
-        {PortalPermission.VIEW, PortalPermission.RUN_LIVE_OPERATIONS, PortalPermission.ACCESS_RECORDINGS}
-    ),
-    PortalRole.ADMIN: frozenset(
-        {
-            PortalPermission.VIEW,
-            PortalPermission.EDIT_CONFIG,
-            PortalPermission.RUN_LIVE_OPERATIONS,
-            PortalPermission.ACCESS_RECORDINGS,
-            PortalPermission.ADMINISTER,
-        }
-    ),
+    PortalRole(role): frozenset(PortalPermission(permission) for permission in permissions)
+    for role, permissions in ROLE_PERMISSION_VALUES.items()
 }
 
 

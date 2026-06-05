@@ -1,0 +1,78 @@
+<section data-area="backups">
+  <div class="page-heading page-heading--actions">
+    <span>
+      <p class="eyebrow">Backups</p>
+      <h1>Backup Archives</h1>
+      <p>Downloadable archives for off-host storage. Treat PostgreSQL data and generated archives as plaintext telecom secret material.</p>
+    </span>
+    <form method="post" action="{% url 'admin-backup-create' %}">
+      {% csrf_token %}
+      <button class="button" type="submit">Generate backup</button>
+    </form>
+  </div>
+
+  <section class="notice-panel notice-panel--warning" aria-label="Backup security and compliance notes">
+    <h2>Security and Compliance</h2>
+    <ul>
+      <li>PostgreSQL records and backup ZIPs can contain plaintext SIP, AMI, SMTP, deployment SSH, and PBX agent secrets.</li>
+      <li>Keep portal access and backup handling limited to LAN/WARP administrator paths and encrypted restricted storage.</li>
+      <li>Admins are responsible for emergency calling configuration and call recording consent/retention compliance before restore or redeploy.</li>
+    </ul>
+  </section>
+
+  <div class="summary-grid">
+    <div class="summary-tile">
+      <span>Archive data</span>
+      <strong>Database, media, exports, config, audit logs</strong>
+    </div>
+    <div class="summary-tile">
+      <span>Storage</span>
+      <strong>Suitable for off-host storage</strong>
+    </div>
+    <div class="summary-tile">
+      <span>Audit actions</span>
+      <strong>Backup create/download</strong>
+    </div>
+  </div>
+
+  {% if backups %}
+    <div class="table-panel">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Generated</th>
+            <th>File</th>
+            <th>Database dump</th>
+            <th>Size</th>
+            <th>Checksum</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for backup in backups %}
+            <tr>
+              <td>
+                {{ backup.generated_at|date:"Y-m-d H:i" }}
+                <span class="table-meta">
+                  {% if backup.generated_by %}{{ backup.generated_by.get_username }}{% else %}system{% endif %}
+                </span>
+              </td>
+              <td>{{ backup.filename }}</td>
+              <td>{{ backup.database_dump_method }}</td>
+              <td>{{ backup.archive_size_bytes|filesizeformat }}</td>
+              <td><code>{{ backup.checksum }}</code></td>
+              <td class="table-actions">
+                <a class="button button--secondary" href="{% url 'admin-backup-download' backup.id %}">Download</a>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="empty-state" data-area="backups">
+      <h2>No backups generated</h2>
+      <p class="restricted-copy">Generated archives will appear here for Admin download.</p>
+    </div>
+  {% endif %}
+</section>

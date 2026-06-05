@@ -1,0 +1,130 @@
+<section class="page-heading" data-area="api-keys">
+  <p class="eyebrow">API Keys</p>
+  <h1>Automation Credentials</h1>
+  <p>User and service-identity keys with audited create, rotate, and revoke actions.</p>
+</section>
+
+{% if error_message %}
+  <section class="notice-panel notice-panel--error" aria-label="API key error">
+    <p>{{ error_message }}</p>
+  </section>
+{% endif %}
+
+{% if issued_secret %}
+  <section class="notice-panel notice-panel--success" aria-label="New API key secret">
+    <h2>New secret</h2>
+    <p><code>{{ issued_secret }}</code></p>
+    {% if issued_api_key %}<p class="table-meta">{{ issued_api_key.name }} - {{ issued_api_key.scope_label }}</p>{% endif %}
+  </section>
+{% endif %}
+
+<section class="detail-panel" data-area="api-keys">
+  <p class="eyebrow">Create API Key</p>
+  <form method="post" action="{% url 'api-keys' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
+    {% csrf_token %}
+    <div class="form-grid">
+      <label class="form-field">
+        Name
+        <input class="form-control" type="text" name="name" required>
+      </label>
+      <label class="form-field">
+        Scope
+        <select class="form-control" name="scope" required>
+          <optgroup label="Users">
+            {% for user in api_key_users %}
+              <option value="user:{{ user.id }}">{{ user.get_username }}</option>
+            {% endfor %}
+          </optgroup>
+          <optgroup label="Service identities">
+            {% for identity in service_identities %}
+              <option value="service_identity:{{ identity.id }}">{{ identity.name }}</option>
+            {% endfor %}
+          </optgroup>
+        </select>
+      </label>
+    </div>
+    <div class="form-actions">
+      <button type="submit">Issue API Key</button>
+    </div>
+  </form>
+</section>
+
+<section class="table-panel" aria-label="API Keys">
+  <div class="table-panel__header">
+    <h2>Keys</h2>
+  </div>
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th scope="col">Key</th>
+        <th scope="col">Scope</th>
+        <th scope="col">Status</th>
+        <th scope="col">Activity</th>
+        <th scope="col">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for api_key in api_keys %}
+        <tr>
+          <td>
+            {{ api_key.name }}
+            <span class="table-meta"><code>{{ api_key.prefix }}</code></span>
+          </td>
+          <td>{{ api_key.scope_type }}: {{ api_key.scope_label }}</td>
+          <td><span class="status-badge{% if not api_key.is_active %} status-badge--muted{% endif %}">{{ api_key.is_active|yesno:"Active,Revoked" }}</span></td>
+          <td>
+            <span class="stacked-value">Created {{ api_key.created_at|date:"Y-m-d H:i" }}</span>
+            <span class="table-meta">Last used {{ api_key.last_used_at|date:"Y-m-d H:i"|default:"never" }}</span>
+            {% if api_key.last_rotated_at %}<span class="table-meta">Rotated {{ api_key.last_rotated_at|date:"Y-m-d H:i" }}</span>{% endif %}
+          </td>
+          <td class="table-actions">
+            {% if api_key.is_active %}
+              <form method="post" action="{% url 'api-key-rotate-ui' api_key.id %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
+                {% csrf_token %}
+                <button class="button button--secondary" type="submit">Rotate</button>
+              </form>
+              <form method="post" action="{% url 'api-key-revoke-ui' api_key.id %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
+                {% csrf_token %}
+                <button class="button button--danger" type="submit">Revoke</button>
+              </form>
+            {% else %}
+              <span class="table-meta">Revoked {{ api_key.revoked_at|date:"Y-m-d H:i" }}</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% empty %}
+        <tr>
+          <td colspan="5">No API keys issued.</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="table-panel" aria-label="Service identities">
+  <div class="table-panel__header">
+    <h2>Service Identities</h2>
+  </div>
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th scope="col">Name</th>
+        <th scope="col">Slug</th>
+        <th scope="col">Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for identity in service_identities %}
+        <tr>
+          <td>{{ identity.name }}</td>
+          <td><code>{{ identity.slug }}</code></td>
+          <td><span class="status-badge{% if not identity.is_active %} status-badge--muted{% endif %}">{{ identity.is_active|yesno:"Active,Inactive" }}</span></td>
+        </tr>
+      {% empty %}
+        <tr>
+          <td colspan="3">No service identities configured.</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
