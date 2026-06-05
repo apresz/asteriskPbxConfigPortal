@@ -26,7 +26,7 @@ try:
     from django.utils import timezone
 except ModuleNotFoundError as exc:
     if exc.name == "django":
-        raise unittest.SkipTest("Django is not installed in this pure-Python validation environment.")
+        raise unittest.SkipTest("Django is not installed in this pure-Python validation environment.") from exc
     raise
 
 from .access import (
@@ -2169,6 +2169,8 @@ class AsteriskConfigGenerationTests(TestCase):
         configs = build_location_config(self.hq)["asterisk_configs"]
 
         self.assertEqual(set(configs), set(ASTERISK_CONFIG_FILENAMES))
+        self.assertIn("rtpstart=10000", configs["rtp.conf"])
+        self.assertIn("rtpend=20000", configs["rtp.conf"])
         self.assertIn("[transport-tcp]", configs["pjsip.conf"])
         self.assertIn("protocol=tcp", configs["pjsip.conf"])
         self.assertIn("hook=/usr/local/sbin/pbx-recording-retention", configs["retention.conf"])
@@ -2176,7 +2178,7 @@ class AsteriskConfigGenerationTests(TestCase):
     def test_pjsip_iax_dialplan_queue_and_voicemail_golden_files(self):
         configs = build_asterisk_config_files(self.hq)
 
-        for filename in ("pjsip.conf", "iax.conf", "extensions.conf", "queues.conf", "voicemail.conf"):
+        for filename in ("pjsip.conf", "rtp.conf", "iax.conf", "extensions.conf", "queues.conf", "voicemail.conf"):
             with self.subTest(filename=filename):
                 self.assertEqual(configs[filename], self._golden(filename))
 
@@ -2997,6 +2999,7 @@ class ConfigVersionExportTests(TestCase):
                     "asterisk/queues.conf",
                     "asterisk/recording.conf",
                     "asterisk/retention.conf",
+                    "asterisk/rtp.conf",
                     "asterisk/voicemail.conf",
                     "docker-compose.yml",
                     "manifest.json",
@@ -3026,6 +3029,7 @@ class ConfigVersionExportTests(TestCase):
         )
         self.assertTrue(any(line.endswith("  manifest.json") for line in checksums))
         self.assertTrue(any(line.endswith("  asterisk/pjsip.conf") for line in checksums))
+        self.assertTrue(any(line.endswith("  asterisk/rtp.conf") for line in checksums))
         self.assertEqual(version.checksum, hashlib.sha256(bytes(version.archive)).hexdigest())
         self.assertEqual(
             {file["path"] for file in version.file_manifest},
