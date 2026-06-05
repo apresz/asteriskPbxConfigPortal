@@ -34,6 +34,12 @@
     },
     {
       "content_type": "text/plain",
+      "path": "asterisk/rtp.conf",
+      "sha256": "703678f9a8e9fd5d1f0ac0ae49e4b0076404292f221f89b667283f0625423022",
+      "size": 109
+    },
+    {
+      "content_type": "text/plain",
       "path": "asterisk/iax.conf",
       "sha256": "e344768f164e6e59bfe28337a014f21c0de6803cc6dd35a4ae7024c5a6da4465",
       "size": 208

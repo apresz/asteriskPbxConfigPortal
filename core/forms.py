@@ -4,6 +4,7 @@ from django.forms import BaseInlineFormSet
 
 from .extension_management import sync_extension_relationships
 from .audio_prompts import AudioPromptValidationError, validate_audio_prompt_upload
+from .rtp_config import RTP_PORT_MAX, RTP_PORT_MIN, RTPRangeError, validate_rtp_port_range
 from .models import (
     AudioPrompt,
     CallQueue,
@@ -39,7 +40,8 @@ def _configure_standard_widgets(fields):
         if field_name.endswith("_seconds") or field_name in {"timeout_seconds", "retry_seconds", "penalty", "priority"}:
             field.widget.attrs.setdefault("min", "1")
         if field_name in {"priority", "deployment_ssh_port", "sip_port", "rtp_port_start", "rtp_port_end", "iax_port"}:
-            field.widget.attrs.setdefault("min", "1")
+            field.widget.attrs.setdefault("min", str(RTP_PORT_MIN))
+            field.widget.attrs.setdefault("max", str(RTP_PORT_MAX))
 
 def _selected_location_from_form(form):
     if form.is_bound:
@@ -253,11 +255,11 @@ class LocationForm(forms.ModelForm):
             else:
                 field.widget.attrs.setdefault("class", "form-control")
             if field_name.endswith("_port"):
-                field.widget.attrs.setdefault("min", "1")
-                field.widget.attrs.setdefault("max", "65535")
+                field.widget.attrs.setdefault("min", str(RTP_PORT_MIN))
+                field.widget.attrs.setdefault("max", str(RTP_PORT_MAX))
             if field_name in {"rtp_port_start", "rtp_port_end"}:
-                field.widget.attrs.setdefault("min", "1")
-                field.widget.attrs.setdefault("max", "65535")
+                field.widget.attrs.setdefault("min", str(RTP_PORT_MIN))
+                field.widget.attrs.setdefault("max", str(RTP_PORT_MAX))
             if field_name == "recording_retention_days":
                 field.widget.attrs.setdefault("min", "1")
 
@@ -283,6 +285,17 @@ class LocationForm(forms.ModelForm):
             for legend, field_names in self.FIELDSETS
             if any(field_name in self.fields for field_name in field_names)
         ]
+
+    def clean(self):
+        cleaned_data = super().clean()
+        if "rtp_port_start" in self.fields and "rtp_port_end" in self.fields:
+            try:
+                validate_rtp_port_range(cleaned_data.get("rtp_port_start"), cleaned_data.get("rtp_port_end"))
+            except RTPRangeError as exc:
+                for field_name, message in exc.field_errors.items():
+                    if field_name in self.fields and field_name not in self.errors:
+                        self.add_error(field_name, message)
+        return cleaned_data
 
     def save(self, commit=True):
         instance = super().save(commit=False)
