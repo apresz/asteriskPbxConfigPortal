@@ -3001,6 +3001,7 @@ class ConfigVersionExportTests(TestCase):
                     "asterisk/retention.conf",
                     "asterisk/rtp.conf",
                     "asterisk/voicemail.conf",
+                    "active-config/var/lib/pbx/active.json",
                     "docker-compose.yml",
                     "manifest.json",
                     "tftp/company-directory.xml",
@@ -3018,6 +3019,9 @@ class ConfigVersionExportTests(TestCase):
         self.assertIn(f"PBX_AGENT_TOKEN={self.location.agent_token}", env_example)
         self.assertIn("PBX_AGENT_SECRET=agent-secret", env_example)
         self.assertIn("PBX_ACTIVE_CONFIG_MARKER=/var/lib/pbx/active.json", env_example)
+        self.assertEqual(manifest["active_config_marker"]["path"], "active-config/var/lib/pbx/active.json")
+        self.assertEqual(manifest["active_config_marker"]["configured_path"], "/var/lib/pbx/active.json")
+        self.assertIn("active-config/var/lib/pbx/active.json", names)
         self.assertIn(
             {
                 "path": "docker-compose.yml",
@@ -3030,6 +3034,7 @@ class ConfigVersionExportTests(TestCase):
         self.assertTrue(any(line.endswith("  manifest.json") for line in checksums))
         self.assertTrue(any(line.endswith("  asterisk/pjsip.conf") for line in checksums))
         self.assertTrue(any(line.endswith("  asterisk/rtp.conf") for line in checksums))
+        self.assertTrue(any(line.endswith("  active-config/var/lib/pbx/active.json") for line in checksums))
         self.assertEqual(version.checksum, hashlib.sha256(bytes(version.archive)).hexdigest())
         self.assertEqual(
             {file["path"] for file in version.file_manifest},
@@ -3066,6 +3071,7 @@ class ConfigVersionExportTests(TestCase):
         self.assertIn('      PBX_AGENT_TOKEN: "${PBX_AGENT_TOKEN:?PBX_AGENT_TOKEN is required}"', services["pbx-agent"])
         self.assertIn('      PBX_AGENT_SECRET: "${PBX_AGENT_SECRET:?PBX_AGENT_SECRET is required}"', services["pbx-agent"])
         self.assertIn("      PBX_ACTIVE_CONFIG_MARKER: ${PBX_ACTIVE_CONFIG_MARKER:-/etc/asterisk/pbx-active-config.json}", services["pbx-agent"])
+        self.assertIn("      - ./asterisk:/etc/asterisk:ro", services["pbx-agent"])
 
     def _runtime_golden(self, filename):
         return (Path(__file__).with_name("testdata") / "runtime_bundle" / filename).read_text(encoding="utf-8")
@@ -3462,6 +3468,7 @@ class PBXWorkflowIntegrationTests(TestCase):
             ["prepare_staging", "upload_bundle", "verify_staging", "swap_volumes", "reload_asterisk"],
         )
         self.assertIn("asterisk/pjsip.conf", deploy_runner.uploads[0]["asterisk_files"])
+        self.assertIn("asterisk/pbx-active-config.json", deploy_runner.uploads[0]["asterisk_files"])
         self.assertIn("tftp/company-directory.xml", deploy_runner.uploads[0]["tftp_files"])
         self.assertIn("/srv/pbx/current/asterisk", deploy_runner.remote_commands[2])
         self.assertIn("/srv/pbx/current/tftp", deploy_runner.remote_commands[2])
@@ -3562,6 +3569,7 @@ class ConfigDeploymentServiceTests(TestCase):
         )
         self.assertEqual(len(runner.uploads), 1)
         self.assertIn("asterisk/pjsip.conf", runner.uploads[0]["asterisk_files"])
+        self.assertIn("asterisk/pbx-active-config.json", runner.uploads[0]["asterisk_files"])
         self.assertIn("tftp/company-directory.xml", runner.uploads[0]["tftp_files"])
         self.assertIn("/srv/pbx/current/asterisk", runner.remote_commands[2])
         self.assertIn("/srv/pbx/current/tftp", runner.remote_commands[2])
@@ -3636,6 +3644,7 @@ class ConfigDeploymentServiceTests(TestCase):
             self.assertTrue(runner.key_path.exists())
             self.assertTrue(runner.known_hosts_path.exists())
             self.assertIn("asterisk/pjsip.conf", extracted)
+            self.assertIn("asterisk/pbx-active-config.json", extracted)
             self.assertIn("tftp/company-directory.xml", extracted)
             if os.name == "posix":
                 self.assertEqual(runner.key_path.stat().st_mode & 0o777, 0o600)

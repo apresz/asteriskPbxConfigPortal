@@ -1,4 +1,11 @@
 {
+  "active_config_marker": {
+    "checksum": "863068bd392e134ec5555a1c31b4d74bb2ac4479847f42745208fd61b36db3e1",
+    "checksum_type": "config-payload-sha256",
+    "configured_path": "/etc/asterisk/pbx-active-config.json",
+    "content_type": "application/json",
+    "path": "asterisk/pbx-active-config.json"
+  },
   "deployment": {
     "last_deployed_at": null,
     "location_deployment_status": "ready",
@@ -17,8 +24,8 @@
     {
       "content_type": "application/x-yaml",
       "path": "docker-compose.yml",
-      "sha256": "fa765bc7e887043b347ae89abce10bc41e844d44e577d45d6b0cedef291c6ba3",
-      "size": 2658
+      "sha256": "8a02d95e9f6c20a4c3152d1721d5514ec82f11fff64417b9ba78c840ff2d1c9b",
+      "size": 2694
     },
     {
       "content_type": "text/plain",
@@ -121,6 +128,12 @@
       "path": "tftp/firmware/README-no-firmware-bundled.txt",
       "sha256": "011de78ace2753d1eae16e5785e588a1ac64f972a783018f74860bfe5d00674b",
       "size": 157
+    },
+    {
+      "content_type": "application/json",
+      "path": "asterisk/pbx-active-config.json",
+      "sha256": "a1c96f1e2621d646fc1d62e8882c0df86161fd99f80fd0c8972849b0bd414c41",
+      "size": 1066
     }
   ],
   "format": "pbx-config-export/v1",

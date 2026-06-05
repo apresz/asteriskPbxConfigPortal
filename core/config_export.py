@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
 import ipaddress
-import json
 from pathlib import Path
 import re
 from io import BytesIO
@@ -25,7 +23,22 @@ from .asterisk_config_helpers import (
     provider_credential_warnings_for_trunks,
     trunk_section_name,
 )
-from .file_permissions import RESTRICTED_FILE_MODE, ensure_restricted_directory, write_restricted_bytes
+from .config_archive import (
+    ACTIVE_CONFIG_MARKER_CONTENT_TYPE,
+    CONFIG_PAYLOAD_CHECKSUM_TYPE,
+    DEFAULT_ACTIVE_CONFIG_MARKER_PATH,
+    ArchiveFile,
+    active_config_marker_bundle_path,
+    active_config_marker_volume_mount,
+    build_active_config_marker,
+    json_bytes,
+    manifest_entry,
+    payload_files_checksum,
+    sha256,
+    sha256sums,
+    zip_archive,
+)
+from .file_permissions import ensure_restricted_directory, write_restricted_bytes
 from .rtp_config import RTP_CONFIG_FILENAME, RTPRangeError, render_rtp_conf, validate_location_rtp_range
 from .models import (
     AudioPrompt,
@@ -77,8 +90,6 @@ CISCO_MODEL_PRODUCTS = {
     Phone.PhoneModel.CISCO_9951: "Cisco CP-9951",
     Phone.PhoneModel.CISCO_8961: "Cisco CP-8961",
 }
-
-ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
 
 @dataclass(frozen=True)
@@ -337,8 +348,30 @@ def build_config_export_archive(
     validation = validation or validate_location_routing(location, require_emergency=require_emergency)
     config = build_location_config(location, require_emergency=require_emergency, validation=validation)
     exported_by_username = exported_by.get_username() if getattr(exported_by, "is_authenticated", False) else "system"
+    location_snapshot = _location_snapshot(location)
+    deployment_snapshot = _deployment_snapshot(location)
+    marker_path = _active_config_marker_path()
+    marker_bundle_path = active_config_marker_bundle_path(marker_path)
     files = _export_payload_files(location, config)
-    payload_manifest = [_manifest_entry(path, content, content_type) for path, content, content_type in files]
+    payload_checksum = payload_files_checksum(files)
+    marker = build_active_config_marker(
+        location=location_snapshot,
+        version_number=version_number,
+        exported_at=exported_at,
+        exported_by=exported_by_username,
+        checksum=payload_checksum,
+        marker_path=marker_path,
+        bundle_path=marker_bundle_path,
+        deployment={
+            **deployment_snapshot,
+            "staging_path": location.deployment_staging_path,
+            "asterisk_path": location.deployment_asterisk_path,
+            "tftp_path": location.deployment_tftp_path,
+            "reload_command": location.deployment_reload_command,
+        },
+    )
+    files.append((marker_bundle_path, json_bytes(marker), ACTIVE_CONFIG_MARKER_CONTENT_TYPE))
+    payload_manifest = [manifest_entry(path, content, content_type) for path, content, content_type in files]
     manifest = {
         "format": "pbx-config-export/v1",
         "version": {
@@ -346,37 +379,34 @@ def build_config_export_archive(
             "exported_at": exported_at.isoformat(),
             "exported_by": exported_by_username,
         },
-        "location": {
-            "id": location.id,
-            "slug": location.slug,
-            "name": location.name,
-            "timezone": location.timezone,
-        },
+        "location": location_snapshot,
         "emergency_status": _emergency_status(validation, require_emergency=require_emergency),
         "warnings": validation["warnings"],
-        "deployment": _deployment_snapshot(location),
+        "deployment": deployment_snapshot,
+        "active_config_marker": {
+            "path": marker_bundle_path,
+            "configured_path": marker_path,
+            "content_type": ACTIVE_CONFIG_MARKER_CONTENT_TYPE,
+            "checksum": payload_checksum,
+            "checksum_type": CONFIG_PAYLOAD_CHECKSUM_TYPE,
+        },
         "files": payload_manifest,
     }
-    manifest_content = _json_bytes(manifest)
+    manifest_content = json_bytes(manifest)
     archive_files = [
         *files,
         ("manifest.json", manifest_content, "application/json"),
     ]
-    checksum_lines = [
-        f"{_sha256(content)}  {path}"
-        for path, content, _content_type in archive_files
-    ]
-    checksum_content = ("\n".join(checksum_lines) + "\n").encode("utf-8")
-    archive_files.append(("SHA256SUMS", checksum_content, "text/plain"))
+    archive_files.append(("SHA256SUMS", sha256sums(archive_files), "text/plain"))
 
-    archive_bytes = _zip_archive(archive_files)
+    archive_bytes = zip_archive(archive_files)
     file_manifest = [
-        _manifest_entry(path, content, content_type)
+        manifest_entry(path, content, content_type)
         for path, content, content_type in archive_files
     ]
     return ConfigExportArchive(
         archive_bytes=archive_bytes,
-        checksum=_sha256(archive_bytes),
+        checksum=sha256(archive_bytes),
         file_manifest=file_manifest,
         manifest=manifest,
     )
@@ -395,8 +425,8 @@ def write_config_version_directory(version: ConfigVersion, output_dir: str | Pat
             write_restricted_bytes(destination, archive.read(zip_info.filename))
 
 
-def _export_payload_files(location: Location, config: dict[str, Any]) -> list[tuple[str, bytes, str]]:
-    files: list[tuple[str, bytes, str]] = [
+def _export_payload_files(location: Location, config: dict[str, Any]) -> list[ArchiveFile]:
+    files: list[ArchiveFile] = [
         ("docker-compose.yml", _docker_compose_yml(location).encode("utf-8"), "application/x-yaml"),
         (".env.example", _env_example(location).encode("utf-8"), "text/plain"),
     ]
@@ -420,6 +450,9 @@ def _export_payload_files(location: Location, config: dict[str, Any]) -> list[tu
 
 
 def _docker_compose_yml(location: Location) -> str:
+    marker_path = _active_config_marker_path()
+    marker_bundle_path = active_config_marker_bundle_path(marker_path)
+    marker_volume_mount = active_config_marker_volume_mount(marker_path, marker_bundle_path)
     return "\n".join(
         [
             "services:",
@@ -480,6 +513,7 @@ def _docker_compose_yml(location: Location) -> str:
             "      PBX_AGENT_TELEMETRY_INTERVAL_SECONDS: ${PBX_AGENT_TELEMETRY_INTERVAL_SECONDS:-60}",
             "      PORTAL_API_BASE_URL: ${PORTAL_API_BASE_URL:-}",
             "    volumes:",
+            f"      - {marker_volume_mount}",
             "      - asterisk-log:/var/log/asterisk:ro",
             "      - asterisk-spool:/var/spool/asterisk:ro",
             "    depends_on:",
@@ -496,6 +530,7 @@ def _docker_compose_yml(location: Location) -> str:
 
 def _env_example(location: Location) -> str:
     ami_username = location.ami_username or f"ami-{location.slug}"
+    marker_path = _active_config_marker_path()
     return "\n".join(
         [
             f"PBX_LOCATION_SLUG={location.slug}",
@@ -524,12 +559,25 @@ def _env_example(location: Location) -> str:
             f"PBX_AGENT_WS_URL={portal_url_to_websocket_url(getattr(settings, 'PBX_AGENT_PORTAL_URL', ''))}",
             f"PBX_AGENT_TOKEN={location.agent_token}",
             f"PBX_AGENT_SECRET={location.agent_secret or 'change-me'}",
-            f"PBX_ACTIVE_CONFIG_MARKER={getattr(settings, 'PBX_ACTIVE_CONFIG_MARKER', '/etc/asterisk/pbx-active-config.json')}",
+            f"PBX_ACTIVE_CONFIG_MARKER={marker_path}",
             "PBX_AGENT_TELEMETRY_INTERVAL_SECONDS=60",
             "PORTAL_API_BASE_URL=",
             "",
         ]
     )
+
+
+def _active_config_marker_path() -> str:
+    return str(getattr(settings, "PBX_ACTIVE_CONFIG_MARKER", "") or DEFAULT_ACTIVE_CONFIG_MARKER_PATH)
+
+
+def _location_snapshot(location: Location) -> dict[str, Any]:
+    return {
+        "id": location.id,
+        "slug": location.slug,
+        "name": location.name,
+        "timezone": location.timezone,
+    }
 
 
 def _deployment_snapshot(location: Location) -> dict[str, Any]:
@@ -556,34 +604,6 @@ def _emergency_status(
         "error_codes": error_codes,
         "warning_codes": warning_codes,
     }
-
-
-def _manifest_entry(path: str, content: bytes, content_type: str) -> dict[str, Any]:
-    return {
-        "path": path,
-        "size": len(content),
-        "sha256": _sha256(content),
-        "content_type": content_type,
-    }
-
-
-def _json_bytes(payload: dict[str, Any]) -> bytes:
-    return (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
-
-
-def _sha256(content: bytes) -> str:
-    return hashlib.sha256(content).hexdigest()
-
-
-def _zip_archive(files: list[tuple[str, bytes, str]]) -> bytes:
-    output = BytesIO()
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for path, content, _content_type in files:
-            zip_info = zipfile.ZipInfo(path, date_time=ZIP_TIMESTAMP)
-            zip_info.compress_type = zipfile.ZIP_DEFLATED
-            zip_info.external_attr = RESTRICTED_FILE_MODE << 16
-            archive.writestr(zip_info, content)
-    return output.getvalue()
 
 
 def validate_location_routing(location: Location, *, require_emergency: bool = False) -> dict[str, list[dict[str, Any]]]:

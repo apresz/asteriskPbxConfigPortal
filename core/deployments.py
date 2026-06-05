@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from io import BytesIO
 import hashlib
+import json
 from pathlib import Path, PurePosixPath
 import posixpath
 import shlex
@@ -29,6 +30,12 @@ class DeploymentCommandResult:
     returncode: int = 0
     stdout: str = ""
     stderr: str = ""
+
+
+@dataclass(frozen=True)
+class ActiveConfigMarkerDeployment:
+    bundle_path: str
+    configured_path: str
 
 
 class DeploymentError(Exception):
@@ -118,9 +125,12 @@ class SSHDeploymentRunner:
         )
 
     def upload_bundle(self, bundle_dir: Path, staging_path: str) -> DeploymentCommandResult:
+        bundle_roots = ["asterisk", "tftp"]
+        if (bundle_dir / "active-config").exists():
+            bundle_roots.append("active-config")
         try:
             tar_completed = subprocess.run(
-                ["tar", "-C", str(bundle_dir), "-czf", "-", "asterisk", "tftp"],
+                ["tar", "-C", str(bundle_dir), "-czf", "-", *bundle_roots],
                 capture_output=True,
                 check=False,
             )
@@ -219,6 +229,7 @@ def deploy_config_version(
         with tempfile.TemporaryDirectory() as temp_name:
             workspace = Path(temp_name)
             bundle_dir = workspace / "bundle"
+            active_marker = deployment_bundle_active_marker(version)
             extract_deployment_bundle(version, bundle_dir)
             active_runner = runner or SSHDeploymentRunner.from_location(location, workspace)
 
@@ -233,6 +244,7 @@ def deploy_config_version(
                         staging_path=staging_path,
                         asterisk_path=location.deployment_asterisk_path,
                         tftp_path=location.deployment_tftp_path,
+                        active_config_marker=active_marker,
                     )
                 ),
             )
@@ -262,10 +274,18 @@ def extract_deployment_bundle(version: ConfigVersion, target_dir: Path) -> list[
     extracted_paths: list[str] = []
     with zipfile.ZipFile(BytesIO(bytes(version.archive))) as archive:
         _verify_archive_checksums(archive)
+        active_marker = _archive_active_marker(archive)
+        archive_names = set(archive.namelist())
+        if active_marker and active_marker.bundle_path not in archive_names:
+            raise DeploymentArchiveError(
+                f"Export archive manifest references missing active marker: {active_marker.bundle_path}"
+            )
         members = [
             info
             for info in archive.infolist()
-            if info.filename.startswith("asterisk/") or info.filename.startswith("tftp/")
+            if info.filename.startswith("asterisk/")
+            or info.filename.startswith("tftp/")
+            or (active_marker is not None and info.filename == active_marker.bundle_path)
         ]
         if not any(info.filename.startswith("asterisk/") and not info.is_dir() for info in members):
             raise DeploymentArchiveError("Export archive does not contain deployable asterisk files.")
@@ -280,6 +300,11 @@ def extract_deployment_bundle(version: ConfigVersion, target_dir: Path) -> list[
             write_restricted_bytes(destination, archive.read(info.filename))
             extracted_paths.append(info.filename)
     return extracted_paths
+
+
+def deployment_bundle_active_marker(version: ConfigVersion) -> ActiveConfigMarkerDeployment | None:
+    with zipfile.ZipFile(BytesIO(bytes(version.archive))) as archive:
+        return _archive_active_marker(archive)
 
 
 def _validate_deployment_target(location: Location) -> None:
@@ -490,7 +515,13 @@ def _verify_staging_command(staging_path: str) -> str:
     )
 
 
-def _swap_volumes_command(*, staging_path: str, asterisk_path: str, tftp_path: str) -> str:
+def _swap_volumes_command(
+    *,
+    staging_path: str,
+    asterisk_path: str,
+    tftp_path: str,
+    active_config_marker: ActiveConfigMarkerDeployment | None = None,
+) -> str:
     commands = ["set -eu"]
     for staged_name, active_path in (("asterisk", asterisk_path), ("tftp", tftp_path)):
         staged_path = posixpath.join(staging_path, staged_name)
@@ -504,7 +535,62 @@ def _swap_volumes_command(*, staging_path: str, asterisk_path: str, tftp_path: s
                 f"mv {_q(staged_path)} {_q(active_path)}",
             ]
         )
+    if active_config_marker and active_config_marker.configured_path.startswith("/"):
+        source_path = _active_marker_source_path(
+            staging_path=staging_path,
+            asterisk_path=asterisk_path,
+            tftp_path=tftp_path,
+            bundle_path=active_config_marker.bundle_path,
+        )
+        target_path = posixpath.normpath(active_config_marker.configured_path)
+        commands.extend(_install_active_marker_commands(source_path, target_path))
     return "\n".join(commands)
+
+
+def _archive_active_marker(archive: zipfile.ZipFile) -> ActiveConfigMarkerDeployment | None:
+    try:
+        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+    except KeyError:
+        return None
+    marker = manifest.get("active_config_marker")
+    if not isinstance(marker, dict):
+        return None
+
+    bundle_path = _safe_bundle_member_path(str(marker.get("path") or marker.get("bundle_path") or ""))
+    configured_path = str(marker.get("configured_path") or marker.get("marker_path") or "").strip()
+    if not configured_path:
+        raise DeploymentArchiveError("Export archive active marker is missing configured_path.")
+    return ActiveConfigMarkerDeployment(bundle_path=bundle_path, configured_path=configured_path)
+
+
+def _safe_bundle_member_path(member_name: str) -> str:
+    member_path = PurePosixPath(member_name)
+    if member_path.is_absolute() or not member_path.parts or ".." in member_path.parts:
+        raise DeploymentArchiveError(f"Unsafe active marker bundle path: {member_name}")
+    return member_path.as_posix()
+
+
+def _active_marker_source_path(*, staging_path: str, asterisk_path: str, tftp_path: str, bundle_path: str) -> str:
+    if bundle_path.startswith("asterisk/"):
+        return posixpath.join(asterisk_path, bundle_path.removeprefix("asterisk/"))
+    if bundle_path.startswith("tftp/"):
+        return posixpath.join(tftp_path, bundle_path.removeprefix("tftp/"))
+    return posixpath.join(staging_path, bundle_path)
+
+
+def _install_active_marker_commands(source_path: str, target_path: str) -> list[str]:
+    if posixpath.normpath(source_path) == target_path:
+        return [f"chmod go-rwx {_q(target_path)}"]
+
+    parent = posixpath.dirname(target_path.rstrip("/")) or "/"
+    backup_path = f"{target_path}.previous"
+    return [
+        f"mkdir -p {_q(parent)}",
+        f"rm -rf {_q(backup_path)}",
+        f"if [ -e {_q(target_path)} ]; then mv {_q(target_path)} {_q(backup_path)}; fi",
+        f"cp {_q(source_path)} {_q(target_path)}",
+        f"chmod go-rwx {_q(target_path)}",
+    ]
 
 
 def _captured_output(result: DeploymentCommandResult) -> str:
