@@ -15,6 +15,7 @@ from django.db.models import Max
 from django.utils import timezone
 
 from .agent_client import portal_url_to_websocket_url
+from .ami_credentials import render_manager_conf
 from .asterisk_config_helpers import (
     active_route_trunks,
     dial_target,
@@ -1755,24 +1756,7 @@ def _render_queues_conf(location: Location) -> str:
 
 
 def _render_manager_conf(location: Location) -> str:
-    username = location.ami_username or f"ami-{location.slug}"
-    lines = _header(location, "Asterisk Manager Interface")
-    lines.extend(
-        [
-            "[general]",
-            "enabled=yes",
-            f"port={location.ami_port}",
-            f"bindaddr={location.ami_host}",
-            "webenabled=no",
-            "",
-            f"[{username}]",
-            f"secret={location.ami_secret}",
-            "read=system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan",
-            "write=system,call,agent,user,config,command,reporting,originate",
-            "permit=127.0.0.1/255.255.255.255",
-        ]
-    )
-    return _render_lines(lines)
+    return render_manager_conf(location, header_lines=_header(location, "Asterisk Manager Interface"))
 
 
 def _render_features_conf(location: Location) -> str:

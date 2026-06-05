@@ -144,6 +144,12 @@
         <div><dt>AMI Secret</dt><dd>{{ location.ami_secret|yesno:"Configured,Missing" }}</dd></div>
       {% endif %}
     </dl>
+    {% if can_manage_location_secrets %}
+      <form method="post" action="{% url 'location-ami-rotate' location.slug %}">
+        {% csrf_token %}
+        <button class="button button--secondary" type="submit">Rotate AMI Credentials</button>
+      </form>
+    {% endif %}
   </article>
 
   <article class="record-section">

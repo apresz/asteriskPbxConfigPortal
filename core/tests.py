@@ -686,8 +686,6 @@ class LocationFormValidationTests(TestCase):
             "smtp_port",
             "ami_host",
             "ami_port",
-            "ami_username",
-            "ami_secret",
             "agent_secret",
         ):
             with self.subTest(field_name=field_name):
@@ -813,6 +811,27 @@ class LocationManagementViewTests(TestCase):
         self.assertEqual(location.deployment_asterisk_path, "/srv/pbx/asterisk")
         self.assertEqual(location.deployment_reload_command, "asterisk -rx 'core reload'")
         self.assertEqual(location.deployment_status, Location.DeploymentStatus.READY)
+
+    def test_admin_can_create_location_without_manual_ami_credentials(self):
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            reverse("location-create"),
+            location_form_data(
+                slug="generated-ami",
+                ami_username="",
+                ami_secret="",
+            ),
+        )
+
+        location = Location.objects.get(slug="generated-ami")
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(location.ami_username.startswith("ami-generated-ami-"))
+        self.assertGreaterEqual(len(location.ami_secret), 40)
+        audit_log = AuditLog.objects.get(action=AuditAction.CONFIG_CHANGE)
+        audit_text = repr(audit_log.details)
+        self.assertIn("ami_access", audit_log.details)
+        self.assertNotIn(location.ami_secret, audit_text)
 
     def test_export_history_actions_follow_role_permissions(self):
         operator = User.objects.create_user(username="location-operator", password="portal-pass")
