@@ -20,7 +20,8 @@ from .access import (
     permission_required,
     user_has_permission,
 )
-from .audit import record_audit
+from .audit import record_audit, record_config_change
+from .audit_helpers import audit_model_summary
 from .audio_prompts import AudioPromptConversionError, create_audio_prompt_from_upload
 from .ami_telemetry import recording_id_for_path
 from .backups import create_admin_backup
@@ -98,6 +99,77 @@ from .phone_csv import (
 User = get_user_model()
 
 
+CONFIG_AUDIT_FORM_SOURCE = "portal_form"
+
+
+def _snapshot_config_instance(instance) -> dict:
+    return audit_model_summary(instance, redact=False)
+
+
+def _save_config_form_with_audit(
+    request,
+    form,
+    *,
+    operation: str,
+    before: dict | None = None,
+    source: str = CONFIG_AUDIT_FORM_SOURCE,
+    extra_details: dict | None = None,
+):
+    with transaction.atomic():
+        instance = form.save()
+        _record_config_change(
+            request,
+            operation,
+            instance,
+            before=before,
+            source=source,
+            extra_details=extra_details,
+        )
+    return instance
+
+
+def _record_config_change(
+    request,
+    operation: str,
+    instance,
+    *,
+    before: dict | None = None,
+    after: dict | None = None,
+    source: str = CONFIG_AUDIT_FORM_SOURCE,
+    extra_details: dict | None = None,
+):
+    return record_config_change(
+        actor=request.user,
+        operation=operation,
+        instance=instance,
+        before=before,
+        after=after,
+        source=source,
+        extra_details=extra_details,
+    )
+
+
+def _delete_config_object_with_audit(
+    request,
+    instance,
+    *,
+    source: str = CONFIG_AUDIT_FORM_SOURCE,
+    extra_details: dict | None = None,
+) -> None:
+    before = _snapshot_config_instance(instance)
+    with transaction.atomic():
+        _record_config_change(
+            request,
+            "delete",
+            instance,
+            before=before,
+            after=None,
+            source=source,
+            extra_details=extra_details,
+        )
+        instance.delete()
+
+
 def health(request):
     return JsonResponse({"status": "ok"})
 
@@ -139,7 +211,7 @@ def provider_create(request):
     if request.method == "POST":
         form = ProviderForm(request.POST)
         if form.is_valid():
-            form.save()
+            _save_config_form_with_audit(request, form, operation="create")
             return redirect("trunks")
     else:
         form = ProviderForm()
@@ -160,9 +232,10 @@ def provider_create(request):
 def provider_update(request, slug: str):
     provider = get_object_or_404(Provider, slug=slug)
     if request.method == "POST":
+        before = _snapshot_config_instance(provider)
         form = ProviderForm(request.POST, instance=provider)
         if form.is_valid():
-            form.save()
+            _save_config_form_with_audit(request, form, operation="update", before=before)
             return redirect("trunks")
     else:
         form = ProviderForm(instance=provider)
@@ -183,7 +256,7 @@ def provider_update(request, slug: str):
 def provider_delete(request, slug: str):
     provider = get_object_or_404(Provider, slug=slug)
     if request.method == "POST":
-        provider.delete()
+        _delete_config_object_with_audit(request, provider)
         return redirect("trunks")
 
     context = _trunk_context(request, {"provider": provider})
@@ -199,7 +272,7 @@ def trunk_create(request):
     if request.method == "POST":
         form = TrunkForm(request.POST)
         if form.is_valid():
-            form.save()
+            _save_config_form_with_audit(request, form, operation="create")
             return redirect("trunks")
     else:
         form = TrunkForm()
@@ -220,9 +293,10 @@ def trunk_create(request):
 def trunk_update(request, trunk_id: int):
     trunk = get_object_or_404(Trunk.objects.select_related("location", "provider"), pk=trunk_id)
     if request.method == "POST":
+        before = _snapshot_config_instance(trunk)
         form = TrunkForm(request.POST, instance=trunk)
         if form.is_valid():
-            form.save()
+            _save_config_form_with_audit(request, form, operation="update", before=before)
             return redirect("trunks")
     else:
         form = TrunkForm(instance=trunk)
@@ -243,7 +317,7 @@ def trunk_update(request, trunk_id: int):
 def trunk_delete(request, trunk_id: int):
     trunk = get_object_or_404(Trunk.objects.select_related("location", "provider"), pk=trunk_id)
     if request.method == "POST":
-        trunk.delete()
+        _delete_config_object_with_audit(request, trunk)
         return redirect("trunks")
 
     context = _trunk_context(request, {"trunk": trunk})
@@ -283,6 +357,7 @@ def outbound_route_create(request):
                 with transaction.atomic():
                     route.save()
                     formset.save()
+                    _record_config_change(request, "create", route)
                 return redirect("dial-plan")
     else:
         form = OutboundRouteForm(instance=route)
@@ -308,6 +383,7 @@ def outbound_route_create(request):
 @permission_required(PortalPermission.EDIT_CONFIG)
 def outbound_route_update(request, route_id: int):
     route = get_object_or_404(OutboundRoute.objects.select_related("location"), pk=route_id)
+    before = _snapshot_config_instance(route) if request.method == "POST" else None
     if request.method == "POST":
         form = OutboundRouteForm(request.POST, instance=route)
         location = _outbound_route_formset_location(request, route)
@@ -325,6 +401,7 @@ def outbound_route_update(request, route_id: int):
                 with transaction.atomic():
                     route.save()
                     formset.save()
+                    _record_config_change(request, "update", route, before=before)
                 return redirect("dial-plan")
     else:
         form = OutboundRouteForm(instance=route)
@@ -351,7 +428,7 @@ def outbound_route_update(request, route_id: int):
 def outbound_route_delete(request, route_id: int):
     route = get_object_or_404(OutboundRoute.objects.select_related("location"), pk=route_id)
     if request.method == "POST":
-        route.delete()
+        _delete_config_object_with_audit(request, route)
         return redirect("dial-plan")
 
     context = _dial_plan_context(request, {"route": route})
@@ -641,7 +718,7 @@ def location_create(request):
     if request.method == "POST":
         form = LocationForm(request.POST, include_sensitive_fields=include_sensitive_fields)
         if form.is_valid():
-            location = form.save()
+            location = _save_config_form_with_audit(request, form, operation="create")
             return redirect("location-detail", slug=location.slug)
     else:
         form = LocationForm(include_sensitive_fields=include_sensitive_fields)
@@ -663,13 +740,14 @@ def location_update(request, slug: str):
     location = get_object_or_404(Location, slug=slug)
     include_sensitive_fields = _can_manage_location_secrets(request)
     if request.method == "POST":
+        before = _snapshot_config_instance(location)
         form = LocationForm(
             request.POST,
             instance=location,
             include_sensitive_fields=include_sensitive_fields,
         )
         if form.is_valid():
-            location = form.save()
+            location = _save_config_form_with_audit(request, form, operation="update", before=before)
             return redirect("location-detail", slug=location.slug)
     else:
         form = LocationForm(instance=location, include_sensitive_fields=include_sensitive_fields)
@@ -690,7 +768,7 @@ def location_update(request, slug: str):
 def location_delete(request, slug: str):
     location = get_object_or_404(Location, slug=slug)
     if request.method == "POST":
-        location.delete()
+        _delete_config_object_with_audit(request, location)
         return redirect("locations")
 
     context = _location_context(request, {"location": location})
@@ -1036,9 +1114,11 @@ def extension_create(request):
         form = ExtensionForm(request.POST, can_disable_911=can_disable_911)
         if form.is_valid():
             logs_911_disable = is_911_disable_change(None, form.cleaned_data["emergency_calling_enabled"])
-            extension = form.save()
-            if logs_911_disable:
-                _record_911_disable(request, extension, AuditOutcome.SUCCESS, "form")
+            with transaction.atomic():
+                extension = form.save()
+                _record_config_change(request, "create", extension)
+                if logs_911_disable:
+                    _record_911_disable(request, extension, AuditOutcome.SUCCESS, "form")
             return redirect("extensions")
         _record_denied_911_if_needed(request, form, "new")
     else:
@@ -1061,13 +1141,16 @@ def extension_update(request, number: str):
     extension = get_object_or_404(Extension, number=number)
     can_disable_911 = _can_disable_911(request)
     if request.method == "POST":
+        before = _snapshot_config_instance(extension)
         original_911_enabled = extension.emergency_calling_enabled
         form = ExtensionForm(request.POST, instance=extension, can_disable_911=can_disable_911)
         if form.is_valid():
             logs_911_disable = original_911_enabled and not form.cleaned_data["emergency_calling_enabled"]
-            extension = form.save()
-            if logs_911_disable:
-                _record_911_disable(request, extension, AuditOutcome.SUCCESS, "form")
+            with transaction.atomic():
+                extension = form.save()
+                _record_config_change(request, "update", extension, before=before)
+                if logs_911_disable:
+                    _record_911_disable(request, extension, AuditOutcome.SUCCESS, "form")
             return redirect("extensions")
         _record_denied_911_if_needed(request, form, extension.number)
     else:
@@ -1089,8 +1172,11 @@ def extension_update(request, number: str):
 def extension_delete(request, number: str):
     extension = get_object_or_404(Extension, number=number)
     if request.method == "POST":
-        clear_extension_relationships(extension)
-        extension.delete()
+        before = _snapshot_config_instance(extension)
+        with transaction.atomic():
+            clear_extension_relationships(extension)
+            _record_config_change(request, "delete", extension, before=before, after=None)
+            extension.delete()
         return redirect("extensions")
 
     context = _extension_context(request, {"extension": extension})
@@ -1170,6 +1256,7 @@ def phone_create(request):
                 speed_dial_formset.instance = phone
                 line_formset.save()
                 speed_dial_formset.save()
+                _record_config_change(request, "create", phone)
             return redirect("phones")
     else:
         form = PhoneForm(instance=phone)
@@ -1197,6 +1284,7 @@ def phone_create(request):
 @permission_required(PortalPermission.EDIT_CONFIG)
 def phone_update(request, mac_address: str):
     phone = get_object_or_404(Phone, mac_address=mac_address)
+    before = _snapshot_config_instance(phone) if request.method == "POST" else None
     if request.method == "POST":
         form = PhoneForm(request.POST, instance=phone)
         location = _phone_formset_location(request, phone)
@@ -1214,6 +1302,7 @@ def phone_update(request, mac_address: str):
                 speed_dial_formset.instance = phone
                 line_formset.save()
                 speed_dial_formset.save()
+                _record_config_change(request, "update", phone, before=before)
             return redirect("phones")
     else:
         form = PhoneForm(instance=phone)
@@ -1242,7 +1331,7 @@ def phone_update(request, mac_address: str):
 def phone_delete(request, mac_address: str):
     phone = get_object_or_404(Phone, mac_address=mac_address)
     if request.method == "POST":
-        phone.delete()
+        _delete_config_object_with_audit(request, phone)
         return redirect("phones")
 
     context = _phone_context(request, {"phone": phone})
@@ -1315,7 +1404,7 @@ def inbound_destination_list(request):
 def inbound_destination_create(request):
     form = InboundDestinationForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
-        form.save()
+        _save_config_form_with_audit(request, form, operation="create")
         return redirect("inbound-destinations")
     return _routing_form_response(
         request,
@@ -1332,9 +1421,10 @@ def inbound_destination_create(request):
 @permission_required(PortalPermission.EDIT_CONFIG)
 def inbound_destination_update(request, destination_id: int):
     destination = get_object_or_404(InboundDestination, pk=destination_id)
+    before = _snapshot_config_instance(destination) if request.method == "POST" else None
     form = InboundDestinationForm(request.POST or None, instance=destination)
     if request.method == "POST" and form.is_valid():
-        form.save()
+        _save_config_form_with_audit(request, form, operation="update", before=before)
         return redirect("inbound-destinations")
     return _routing_form_response(
         request,
@@ -1387,7 +1477,7 @@ def did_list(request):
 def did_create(request):
     form = DIDForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
-        form.save()
+        _save_config_form_with_audit(request, form, operation="create")
         return redirect("dids")
     return _routing_form_response(
         request,
@@ -1404,9 +1494,10 @@ def did_create(request):
 @permission_required(PortalPermission.EDIT_CONFIG)
 def did_update(request, did_id: int):
     did = get_object_or_404(DID, pk=did_id)
+    before = _snapshot_config_instance(did) if request.method == "POST" else None
     form = DIDForm(request.POST or None, instance=did)
     if request.method == "POST" and form.is_valid():
-        form.save()
+        _save_config_form_with_audit(request, form, operation="update", before=before)
         return redirect("dids")
     return _routing_form_response(
         request,
@@ -1470,6 +1561,7 @@ def ivr_create(request):
                 ivr = _save_ivr_with_prompt(form)
                 formset.instance = ivr
                 formset.save()
+                _record_config_change(request, "create", ivr)
             return redirect("ivrs")
         except AudioPromptConversionError as exc:
             form.add_error("prompt_upload", str(exc))
@@ -1490,6 +1582,7 @@ def ivr_create(request):
 @permission_required(PortalPermission.EDIT_CONFIG)
 def ivr_update(request, ivr_id: int):
     ivr = get_object_or_404(IVR, pk=ivr_id)
+    before = _snapshot_config_instance(ivr) if request.method == "POST" else None
     form = IVRForm(request.POST or None, request.FILES or None, instance=ivr)
     formset = IVRMenuOptionFormSet(
         request.POST or None,
@@ -1503,6 +1596,7 @@ def ivr_update(request, ivr_id: int):
                 ivr = _save_ivr_with_prompt(form)
                 formset.instance = ivr
                 formset.save()
+                _record_config_change(request, "update", ivr, before=before)
             return redirect("ivrs")
         except AudioPromptConversionError as exc:
             form.add_error("prompt_upload", str(exc))
@@ -1552,7 +1646,7 @@ def ring_group_list(request):
 def ring_group_create(request):
     form = RingGroupForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
-        form.save()
+        _save_config_form_with_audit(request, form, operation="create")
         return redirect("ring-groups")
     return _routing_form_response(
         request,
@@ -1569,9 +1663,10 @@ def ring_group_create(request):
 @permission_required(PortalPermission.EDIT_CONFIG)
 def ring_group_update(request, ring_group_id: int):
     ring_group = get_object_or_404(RingGroup, pk=ring_group_id)
+    before = _snapshot_config_instance(ring_group) if request.method == "POST" else None
     form = RingGroupForm(request.POST or None, instance=ring_group)
     if request.method == "POST" and form.is_valid():
-        form.save()
+        _save_config_form_with_audit(request, form, operation="update", before=before)
         return redirect("ring-groups")
     return _routing_form_response(
         request,
@@ -1617,7 +1712,7 @@ def queue_list(request):
 def queue_create(request):
     form = CallQueueForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
-        form.save()
+        _save_config_form_with_audit(request, form, operation="create")
         return redirect("queues")
     return _routing_form_response(
         request,
@@ -1634,9 +1729,10 @@ def queue_create(request):
 @permission_required(PortalPermission.EDIT_CONFIG)
 def queue_update(request, queue_id: int):
     queue = get_object_or_404(CallQueue, pk=queue_id)
+    before = _snapshot_config_instance(queue) if request.method == "POST" else None
     form = CallQueueForm(request.POST or None, instance=queue)
     if request.method == "POST" and form.is_valid():
-        form.save()
+        _save_config_form_with_audit(request, form, operation="update", before=before)
         return redirect("queues")
     return _routing_form_response(
         request,
@@ -1682,7 +1778,7 @@ def paging_group_list(request):
 def paging_group_create(request):
     form = PagingGroupForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
-        form.save()
+        _save_config_form_with_audit(request, form, operation="create")
         return redirect("paging-groups")
     return _routing_form_response(
         request,
@@ -1699,9 +1795,10 @@ def paging_group_create(request):
 @permission_required(PortalPermission.EDIT_CONFIG)
 def paging_group_update(request, paging_group_id: int):
     paging_group = get_object_or_404(PagingGroup, pk=paging_group_id)
+    before = _snapshot_config_instance(paging_group) if request.method == "POST" else None
     form = PagingGroupForm(request.POST or None, instance=paging_group)
     if request.method == "POST" and form.is_valid():
-        form.save()
+        _save_config_form_with_audit(request, form, operation="update", before=before)
         return redirect("paging-groups")
     return _routing_form_response(
         request,
@@ -1747,7 +1844,7 @@ def feature_code_list(request):
 def feature_code_create(request):
     form = FeatureCodeForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
-        form.save()
+        _save_config_form_with_audit(request, form, operation="create")
         return redirect("feature-codes")
     return _routing_form_response(
         request,
@@ -1764,9 +1861,10 @@ def feature_code_create(request):
 @permission_required(PortalPermission.EDIT_CONFIG)
 def feature_code_update(request, feature_code_id: int):
     feature_code = get_object_or_404(FeatureCode, pk=feature_code_id)
+    before = _snapshot_config_instance(feature_code) if request.method == "POST" else None
     form = FeatureCodeForm(request.POST or None, instance=feature_code)
     if request.method == "POST" and form.is_valid():
-        form.save()
+        _save_config_form_with_audit(request, form, operation="update", before=before)
         return redirect("feature-codes")
     return _routing_form_response(
         request,
@@ -1851,7 +1949,7 @@ def _routing_form_response(
 
 def _routing_delete_response(request, *, record, area_slug, eyebrow, title, cancel_url):
     if request.method == "POST":
-        record.delete()
+        _delete_config_object_with_audit(request, record)
         return redirect(cancel_url)
 
     context = _routing_context(
