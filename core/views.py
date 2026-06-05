@@ -99,9 +99,13 @@ from .service_principals import (
     service_identity_audit_details,
 )
 from .phone_csv import (
+    PhoneCSVImportError,
     did_template_csv,
     export_phones_csv,
     export_speed_dials_csv,
+    import_dids_csv,
+    import_phones_csv,
+    import_speed_dials_csv,
     phone_template_csv,
     speed_dial_template_csv,
 )
@@ -1432,6 +1436,21 @@ def phone_list(request):
 
 
 @permission_required(PortalPermission.EDIT_CONFIG)
+def phone_import(request):
+    return _csv_import_response(
+        request,
+        import_function=import_phones_csv,
+        context_builder=_phone_context,
+        area_slug="phones",
+        eyebrow="Phones",
+        title="Import Phones",
+        back_url="phones",
+        template_url="phone-template",
+        result_label="phone",
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
 def phone_create(request):
     phone = Phone()
     if request.method == "POST":
@@ -1569,6 +1588,21 @@ def speed_dial_export(request):
     return _csv_response(export_speed_dials_csv(PhoneSpeedDial.objects.select_related("phone")), "speed-dials.csv")
 
 
+@permission_required(PortalPermission.EDIT_CONFIG)
+def speed_dial_import(request):
+    return _csv_import_response(
+        request,
+        import_function=import_speed_dials_csv,
+        context_builder=_phone_context,
+        area_slug="phones",
+        eyebrow="Speed Dials",
+        title="Import Speed Dials",
+        back_url="phones",
+        template_url="speed-dial-template",
+        result_label="speed dial",
+    )
+
+
 @permission_required(PortalPermission.VIEW)
 def speed_dial_template(request):
     return _csv_response(speed_dial_template_csv(), "speed-dials-template.csv")
@@ -1665,6 +1699,23 @@ def did_list(request):
         create_url="did-create",
         edit_url="did-edit",
         empty_label="No DIDs configured",
+        import_url="did-import",
+        template_url="did-template",
+    )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+def did_import(request):
+    return _csv_import_response(
+        request,
+        import_function=import_dids_csv,
+        context_builder=_routing_context,
+        area_slug="dids",
+        eyebrow="DID Routing",
+        title="Import DIDs",
+        back_url="dids",
+        template_url="did-template",
+        result_label="DID",
     )
 
 
@@ -2096,6 +2147,8 @@ def _routing_list_response(
     create_url,
     edit_url,
     empty_label,
+    import_url=None,
+    template_url=None,
 ):
     context = _routing_context(
         request,
@@ -2107,6 +2160,8 @@ def _routing_list_response(
             "create_url": create_url,
             "edit_url": edit_url,
             "empty_label": empty_label,
+            "import_url": import_url,
+            "template_url": template_url,
         },
     )
     return render(request, _template(request, "core/routing/list.html", "core/partials/routing/list_content.html"), context)
@@ -3192,3 +3247,45 @@ def _csv_response(csv_text, filename):
     response = HttpResponse(csv_text, content_type="text/csv")
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
     return response
+
+
+def _csv_import_response(
+    request,
+    *,
+    import_function,
+    context_builder,
+    area_slug,
+    eyebrow,
+    title,
+    back_url,
+    template_url,
+    result_label,
+):
+    dry_run = request.method != "POST" or request.POST.get("dry_run") == "on"
+    context = {
+        "area_slug": area_slug,
+        "eyebrow": eyebrow,
+        "import_title": title,
+        "back_url": back_url,
+        "template_url": template_url,
+        "dry_run": dry_run,
+    }
+    if request.method == "POST":
+        upload = request.FILES.get("csv_file")
+        if upload is None:
+            context["import_errors"] = [f"Choose a {result_label} CSV file."]
+        else:
+            try:
+                result = import_function(upload, actor=request.user, dry_run=dry_run)
+            except PhoneCSVImportError as exc:
+                context["import_errors"] = exc.errors
+            else:
+                verb = "Validated" if result.dry_run else "Imported"
+                context["import_result"] = f"{verb} {result.planned_count} {result_label} row(s)."
+                context["import_changes"] = result.change_messages()
+
+    return render(
+        request,
+        _template(request, "core/csv_import.html", "core/partials/csv_import_content.html"),
+        context_builder(request, context),
+    )
