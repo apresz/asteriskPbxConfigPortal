@@ -10,11 +10,12 @@
 </section>
 
 {% if dial_plan_validation %}
-  <section class="notice-panel notice-panel--error" aria-label="Dial plan validation">
+  <section class="notice-panel{% if dial_plan_validation_has_errors %} notice-panel--error{% else %} notice-panel--warning{% endif %}" aria-label="Dial plan validation">
     <h2>Dial Plan Validation</h2>
     {% for result in dial_plan_validation %}
       <p><strong>{{ result.location.name }}</strong></p>
       {% if result.errors %}
+        <p>Export-blocking errors</p>
         <ul>
           {% for error in result.errors %}
             <li>{{ error.message }}</li>
@@ -22,6 +23,7 @@
         </ul>
       {% endif %}
       {% if result.warnings %}
+        <p>Warnings</p>
         <ul>
           {% for warning in result.warnings %}
             <li>{{ warning.message }}</li>

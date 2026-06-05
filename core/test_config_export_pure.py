@@ -9,6 +9,8 @@ import zipfile
 from .asterisk_config_helpers import (
     REDACTED_VALUE,
     active_route_trunks,
+    emergency_enabled_extensions,
+    emergency_route_validation_issues,
     emergency_trunk_missing_credential_errors,
     iax2_provider_trunk_lines,
     provider_credential_warning,
@@ -57,6 +59,31 @@ def fake_trunk(
 
 def fake_route_trunk(trunk, priority):
     return SimpleNamespace(trunk=trunk, priority=priority)
+
+
+class FakeRelatedManager:
+    def __init__(self, items):
+        self.items = list(items)
+
+    def all(self):
+        return list(self.items)
+
+
+def fake_extension(number, *, active=True, emergency_calling_enabled=True):
+    return SimpleNamespace(number=number, is_active=active, emergency_calling_enabled=emergency_calling_enabled)
+
+
+def fake_emergency_route(
+    name="Emergency",
+    *,
+    caller_id_source="emergency",
+    trunks=(),
+):
+    return SimpleNamespace(
+        name=name,
+        caller_id_source=caller_id_source,
+        route_trunks=FakeRelatedManager([fake_route_trunk(trunk, index + 1) for index, trunk in enumerate(trunks)]),
+    )
 
 
 class Iax2ProviderConfigTests(unittest.TestCase):
@@ -153,6 +180,101 @@ class Iax2ProviderConfigTests(unittest.TestCase):
                 "warnings": [{"missing": ["password"]}],
             },
         )
+
+
+class EmergencyValidationPolicyTests(unittest.TestCase):
+    def test_missing_emergency_route_is_a_hard_block_for_911_enabled_extensions(self):
+        issues = emergency_route_validation_issues(
+            require_emergency=True,
+            emergency_allowed_extensions=[fake_extension("3000")],
+            emergency_routes=[],
+            emergency_caller_id="+15551201000",
+            warning_trunks={},
+        )
+
+        self.assertEqual([error["code"] for error in issues["errors"]], ["missing_emergency_route"])
+        self.assertEqual(issues["errors"][0]["affected_extensions"], ["3000"])
+        self.assertEqual(issues["warnings"], [])
+
+    def test_missing_emergency_caller_id_is_a_hard_block_for_911_enabled_extensions(self):
+        trunk = fake_trunk("Emergency SIP", "sip", emergency_capable=True)
+        route = fake_emergency_route(trunks=[trunk])
+        issues = emergency_route_validation_issues(
+            require_emergency=True,
+            emergency_allowed_extensions=[fake_extension("3000")],
+            emergency_routes=[route],
+            emergency_caller_id="",
+            warning_trunks={},
+        )
+
+        self.assertEqual([error["code"] for error in issues["errors"]], ["missing_emergency_caller_id"])
+        self.assertEqual(issues["errors"][0]["affected_extensions"], ["3000"])
+        self.assertEqual(issues["warnings"], [])
+
+    def test_route_credential_and_capability_issues_are_warnings_when_route_and_caller_id_exist(self):
+        non_capable_trunk = fake_trunk("Standard SIP", "sip", emergency_capable=False)
+        incomplete_emergency_trunk = fake_trunk(
+            "Emergency SIP",
+            "sip",
+            password="",
+            emergency_capable=True,
+        )
+        warning = provider_credential_warning(incomplete_emergency_trunk)
+        issues = emergency_route_validation_issues(
+            require_emergency=True,
+            emergency_allowed_extensions=[fake_extension("3000")],
+            emergency_routes=[
+                fake_emergency_route("Bad Caller ID", caller_id_source="location_default", trunks=[non_capable_trunk]),
+                fake_emergency_route("Missing Credentials", trunks=[incomplete_emergency_trunk]),
+            ],
+            emergency_caller_id="+15551201000",
+            warning_trunks={warning["trunk"]: warning},
+        )
+
+        self.assertEqual(issues["errors"], [])
+        self.assertEqual(
+            {warning["code"] for warning in issues["warnings"]},
+            {
+                "emergency_route_caller_id_source",
+                "missing_emergency_capable_trunk",
+                "emergency_trunk_missing_credentials",
+            },
+        )
+
+    def test_911_disabled_extensions_are_excluded_from_required_hard_blocks(self):
+        allowed_extensions = emergency_enabled_extensions(
+            [
+                fake_extension("3000", emergency_calling_enabled=False),
+                fake_extension("3001", active=False, emergency_calling_enabled=True),
+            ]
+        )
+        issues = emergency_route_validation_issues(
+            require_emergency=True,
+            emergency_allowed_extensions=allowed_extensions,
+            emergency_routes=[],
+            emergency_caller_id="",
+            warning_trunks={},
+        )
+
+        self.assertEqual(allowed_extensions, [])
+        self.assertEqual(issues, {"warnings": [], "errors": []})
+
+    def test_django_export_adapter_routes_emergency_policy_warnings_without_importing_django(self):
+        source = (PROJECT_ROOT / "core" / "config_export.py").read_text(encoding="utf-8")
+
+        self.assertIn("emergency_issues = emergency_route_validation_issues(", source)
+        self.assertIn('warnings.extend(emergency_issues["warnings"])', source)
+        self.assertIn('errors.extend(emergency_issues["errors"])', source)
+        self.assertNotIn("errors.extend(emergency_trunk_missing_credential_errors", source)
+
+    def test_dial_plan_validation_template_labels_blocking_errors_and_warnings(self):
+        source = (PROJECT_ROOT / "templates" / "core" / "partials" / "dial_plan" / "list_content.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("dial_plan_validation_has_errors", source)
+        self.assertIn("Export-blocking errors", source)
+        self.assertIn("Warnings", source)
 
 
 class ActiveConfigMarkerArchiveTests(unittest.TestCase):
