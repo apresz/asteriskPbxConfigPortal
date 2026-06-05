@@ -3062,6 +3062,7 @@ class ConfigVersionExportTests(TestCase):
         self.assertIn("    image: ${PBX_ASTERISK_IMAGE:-ghcr.io/apresz/asterisk:22-lts}", services["asterisk"])
         self.assertIn("    network_mode: host", services["asterisk"])
         self.assertIn("      - ./asterisk:/etc/asterisk:ro", services["asterisk"])
+        self.assertIn("      - ./asterisk/sounds:/var/lib/asterisk/sounds:ro", services["asterisk"])
         self.assertIn("      - ./tftp:/srv/tftp:ro", services["tftp"])
         self.assertIn('      - "${PROVISIONING_TFTP_PORT:-69}:69/udp"', services["tftp"])
         self.assertIn("      - ./tftp:/usr/share/nginx/html/cisco:ro", services["provisioning-http"])
@@ -3320,8 +3321,12 @@ class PBXWorkflowIntegrationTests(TestCase):
             ivr_config = next(ivr for ivr in inbound["ivrs"] if ivr["name"] == "Main IVR")
             self.assertEqual(ivr_config["business_hours_destination"]["target"]["name"], "Support Queue")
             self.assertEqual(ivr_config["after_hours_destination"]["target"]["number"], "3000")
-            self.assertIn("exten => main-ivr,1,NoOp(IVR Main IVR)", configs["extensions.conf"])
-            self.assertIn(" same => n,Background(custom/main-menu)", configs["extensions.conf"])
+            self.assertEqual(ivr_config["business_hours_schedule"]["times"], "09:00-17:00")
+            self.assertIn("exten => main-ivr,1,Goto(ivr-main-ivr,s,1)", configs["extensions.conf"])
+            self.assertIn(" same => n,GotoIfTime(09:00-17:00,mon-fri,*,*?business-hours,1)", configs["extensions.conf"])
+            self.assertIn("exten => business-hours,1,NoOp(IVR Main IVR business hours)", configs["extensions.conf"])
+            self.assertIn(" same => n,Goto(queues,support-queue,1)", configs["extensions.conf"])
+            self.assertIn("exten => after-hours,1,NoOp(IVR Main IVR after hours)", configs["extensions.conf"])
             self.assertIn("exten => 1,1,NoOp(IVR option 1 Support)", configs["extensions.conf"])
 
         with self.subTest("queue overflow"):
