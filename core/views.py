@@ -23,6 +23,7 @@ from .access import (
 )
 from .audit import record_audit, record_config_change
 from .audit_helpers import audit_model_summary
+from .ami_credentials import ami_credentials_audit_payload, ensure_location_ami_credentials
 from .audio_prompts import AudioPromptConversionError, create_audio_prompt_from_upload
 from .ami_telemetry import recording_id_for_path
 from .backups import create_admin_backup
@@ -128,6 +129,12 @@ def _save_config_form_with_audit(
 ):
     with transaction.atomic():
         instance = form.save()
+        ami_update = getattr(instance, "_ami_credentials_update", None)
+        if ami_update is not None and getattr(ami_update, "changed", False):
+            extra_details = {
+                **(extra_details or {}),
+                "ami_access": ami_credentials_audit_payload(ami_update),
+            }
         _record_config_change(
             request,
             operation,
@@ -944,6 +951,24 @@ def location_update(request, slug: str):
         },
     )
     return render(request, _template(request, "core/locations/form.html", "core/partials/location_form.html"), context)
+
+
+@permission_required(PortalPermission.ADMINISTER)
+@require_POST
+def location_ami_rotate(request, slug: str):
+    location = get_object_or_404(Location, slug=slug)
+    before = _snapshot_config_instance(location)
+    update = ensure_location_ami_credentials(location, rotate=True)
+    with transaction.atomic():
+        location.save(update_fields=["ami_username", "ami_secret", "updated_at"])
+        _record_config_change(
+            request,
+            "rotate_ami_credentials",
+            location,
+            before=before,
+            extra_details={"ami_access": ami_credentials_audit_payload(update)},
+        )
+    return redirect("location-detail", slug=location.slug)
 
 
 @permission_required(PortalPermission.EDIT_CONFIG)

@@ -9,6 +9,7 @@ urlpatterns = [
     path("locations/new/", views.location_create, name="location-create"),
     path("locations/<slug:slug>/", views.location_detail, name="location-detail"),
     path("locations/<slug:slug>/edit/", views.location_update, name="location-edit"),
+    path("locations/<slug:slug>/ami/rotate/", views.location_ami_rotate, name="location-ami-rotate"),
     path("locations/<slug:slug>/delete/", views.location_delete, name="location-delete"),
     path("locations/<slug:slug>/live/", views.location_live_operation, name="location-live-operation"),
     path(

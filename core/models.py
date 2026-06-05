@@ -9,6 +9,7 @@ from django.core.validators import MaxValueValidator, MinValueValidator, RegexVa
 from django.db import models
 from django.utils import timezone
 
+from .ami_credentials import ensure_location_ami_credentials
 from .rtp_config import RTPRangeError, validate_rtp_port_range
 from .service_principals import ServicePermissionError, normalize_service_permissions
 
@@ -599,6 +600,11 @@ class Location(TimestampedModel):
 
         if errors:
             raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        if self._state.adding:
+            self._ami_credentials_update = ensure_location_ami_credentials(self)
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.name
