@@ -1,0 +1,49 @@
+<section class="record-header" data-area="{{ area_slug }}">
+  <span>
+    <p class="eyebrow">{{ eyebrow }}</p>
+    <h1>{{ import_title }}</h1>
+  </span>
+  <span class="button-row">
+    <a class="button button--secondary" href="{% url template_url %}">CSV Template</a>
+    <a class="button button--secondary" href="{% url back_url %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Back</a>
+  </span>
+</section>
+
+{% if import_result %}
+  <section class="notice-panel notice-panel--success">
+    <p>{{ import_result }}</p>
+    {% if import_changes %}
+      <ul>
+        {% for change in import_changes %}
+          <li>{{ change }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </section>
+{% endif %}
+
+{% if import_errors %}
+  <section class="notice-panel notice-panel--error">
+    <h2>Import Errors</h2>
+    <ul>
+      {% for error in import_errors %}
+        <li>{{ error }}</li>
+      {% endfor %}
+    </ul>
+  </section>
+{% endif %}
+
+<form class="import-form" method="post" enctype="multipart/form-data">
+  {% csrf_token %}
+  <label class="form-field" for="id_csv_file">
+    <span>CSV file</span>
+    <input class="form-control" id="id_csv_file" name="csv_file" type="file" accept=".csv,text/csv">
+  </label>
+  <label class="checkbox-row" for="id_dry_run">
+    <input id="id_dry_run" name="dry_run" type="checkbox"{% if dry_run %} checked{% endif %}>
+    <span>Validate only</span>
+  </label>
+  <div class="form-actions">
+    <button class="button" type="submit">Import</button>
+  </div>
+</form>

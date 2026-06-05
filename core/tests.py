@@ -686,8 +686,6 @@ class LocationFormValidationTests(TestCase):
             "smtp_port",
             "ami_host",
             "ami_port",
-            "ami_username",
-            "ami_secret",
             "agent_secret",
         ):
             with self.subTest(field_name=field_name):
@@ -813,6 +811,27 @@ class LocationManagementViewTests(TestCase):
         self.assertEqual(location.deployment_asterisk_path, "/srv/pbx/asterisk")
         self.assertEqual(location.deployment_reload_command, "asterisk -rx 'core reload'")
         self.assertEqual(location.deployment_status, Location.DeploymentStatus.READY)
+
+    def test_admin_can_create_location_without_manual_ami_credentials(self):
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            reverse("location-create"),
+            location_form_data(
+                slug="generated-ami",
+                ami_username="",
+                ami_secret="",
+            ),
+        )
+
+        location = Location.objects.get(slug="generated-ami")
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(location.ami_username.startswith("ami-generated-ami-"))
+        self.assertGreaterEqual(len(location.ami_secret), 40)
+        audit_log = AuditLog.objects.get(action=AuditAction.CONFIG_CHANGE)
+        audit_text = repr(audit_log.details)
+        self.assertIn("ami_access", audit_log.details)
+        self.assertNotIn(location.ami_secret, audit_text)
 
     def test_export_history_actions_follow_role_permissions(self):
         operator = User.objects.create_user(username="location-operator", password="portal-pass")
@@ -3076,6 +3095,7 @@ class ConfigVersionExportTests(TestCase):
             "    image: ${PBX_TFTP_IMAGE:?PBX_TFTP_IMAGE must include an immutable digest}",
             services["tftp"],
         )
+        self.assertIn("      - ./asterisk/sounds:/var/lib/asterisk/sounds:ro", services["asterisk"])
         self.assertIn("      - ./tftp:/srv/tftp:ro", services["tftp"])
         self.assertIn('      - "${PROVISIONING_TFTP_PORT:-69}:69/udp"', services["tftp"])
         self.assertIn("      - ./tftp:/usr/share/nginx/html/cisco:ro", services["provisioning-http"])
@@ -3338,8 +3358,12 @@ class PBXWorkflowIntegrationTests(TestCase):
             ivr_config = next(ivr for ivr in inbound["ivrs"] if ivr["name"] == "Main IVR")
             self.assertEqual(ivr_config["business_hours_destination"]["target"]["name"], "Support Queue")
             self.assertEqual(ivr_config["after_hours_destination"]["target"]["number"], "3000")
-            self.assertIn("exten => main-ivr,1,NoOp(IVR Main IVR)", configs["extensions.conf"])
-            self.assertIn(" same => n,Background(custom/main-menu)", configs["extensions.conf"])
+            self.assertEqual(ivr_config["business_hours_schedule"]["times"], "09:00-17:00")
+            self.assertIn("exten => main-ivr,1,Goto(ivr-main-ivr,s,1)", configs["extensions.conf"])
+            self.assertIn(" same => n,GotoIfTime(09:00-17:00,mon-fri,*,*?business-hours,1)", configs["extensions.conf"])
+            self.assertIn("exten => business-hours,1,NoOp(IVR Main IVR business hours)", configs["extensions.conf"])
+            self.assertIn(" same => n,Goto(queues,support-queue,1)", configs["extensions.conf"])
+            self.assertIn("exten => after-hours,1,NoOp(IVR Main IVR after hours)", configs["extensions.conf"])
             self.assertIn("exten => 1,1,NoOp(IVR option 1 Support)", configs["extensions.conf"])
 
         with self.subTest("queue overflow"):

@@ -11,6 +11,8 @@
     <a class="button button--secondary" href="{% url 'phone-export' %}">Export Phones</a>
     <a class="button button--secondary" href="{% url 'speed-dial-export' %}">Export Speed Dials</a>
     {% if can_edit_phones %}
+      <a class="button button--secondary" href="{% url 'phone-import' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Import Phones</a>
+      <a class="button button--secondary" href="{% url 'speed-dial-import' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Import Speed Dials</a>
       <a class="button" href="{% url 'phone-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Phone</a>
     {% endif %}
   </span>

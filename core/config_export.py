@@ -15,6 +15,7 @@ from django.db.models import Max
 from django.utils import timezone
 
 from .agent_client import portal_url_to_websocket_url
+from .ami_credentials import render_manager_conf
 from .asterisk_config_helpers import (
     active_route_trunks,
     dial_target,
@@ -41,6 +42,16 @@ from .config_archive import (
     zip_archive,
 )
 from .file_permissions import ensure_restricted_directory, write_restricted_bytes
+from .ivr_audio_export import (
+    AudioPromptPayloadError,
+    audio_prompt_archive_files,
+    audio_prompt_payload_errors,
+)
+from .ivr_dialplan import (
+    default_ivr_business_hours_schedule,
+    incomplete_ivr_hours_destination_errors,
+    render_ivr_dialplan_lines,
+)
 from .rtp_config import RTP_CONFIG_FILENAME, RTPRangeError, render_rtp_conf, validate_location_rtp_range
 from .ring_group_dialplan import (
     RingGroupDialplanValidationError,
@@ -380,7 +391,7 @@ def build_config_export_archive(
     }
     marker_path = _active_config_marker_path()
     marker_bundle_path = active_config_marker_bundle_path(marker_path)
-    files = _export_payload_files(location, config, runtime_images=runtime_images)
+    files = _export_payload_files(location, config, runtime_images=runtime_images, validation=validation)
     files.append(
         (
             RUNTIME_IMAGE_MANIFEST_FILENAME,
@@ -471,6 +482,7 @@ def _export_payload_files(
     config: dict[str, Any],
     *,
     runtime_images: tuple[RuntimeImage, ...],
+    validation: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[ArchiveFile]:
     files: list[ArchiveFile] = [
         (
@@ -488,6 +500,17 @@ def _export_payload_files(
         )
         for filename in ASTERISK_CONFIG_FILENAMES
     )
+    try:
+        files.extend(_audio_prompt_archive_files(location))
+    except AudioPromptPayloadError as exc:
+        existing_errors = list((validation or {}).get("errors", []))
+        new_errors = [error for error in exc.errors if error not in existing_errors]
+        raise ConfigExportValidationError(
+            {
+                "warnings": list((validation or {}).get("warnings", [])),
+                "errors": [*existing_errors, *new_errors],
+            }
+        ) from exc
     files.extend(
         (
             f"tftp/{file['path'].lstrip('/')}",
@@ -497,6 +520,40 @@ def _export_payload_files(
         for file in config["tftp"]["files"]
     )
     return files
+
+
+def _audio_prompt_archive_files(location: Location) -> list[ArchiveFile]:
+    active_ivrs = list(
+        location.ivrs.filter(is_active=True, prompt__isnull=False)
+        .select_related("prompt")
+        .order_by("name")
+    )
+    return audio_prompt_archive_files(_ivr_audio_prompt_refs(active_ivrs))
+
+
+def _ivr_audio_prompt_refs(ivrs) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+    for ivr in ivrs:
+        if not ivr.prompt_id:
+            continue
+        prompt = ivr.prompt
+        refs.append(
+            {
+                "ivr": ivr.name,
+                "prompt_name": prompt.name,
+                "converted_file": prompt.converted_file.name,
+                "converted_file_path": _file_field_path(prompt.converted_file),
+                "asterisk_path": prompt.asterisk_path,
+            }
+        )
+    return refs
+
+
+def _file_field_path(file_field) -> str:
+    try:
+        return str(file_field.path)
+    except (NotImplementedError, ValueError):
+        return ""
 
 
 def _docker_compose_yml(location: Location, *, runtime_images: tuple[RuntimeImage, ...] | None = None) -> str:
@@ -519,6 +576,7 @@ def _docker_compose_yml(location: Location, *, runtime_images: tuple[RuntimeImag
             "    volumes:",
             "      - ./asterisk:/etc/asterisk:ro",
             "      - asterisk-lib:/var/lib/asterisk",
+            "      - ./asterisk/sounds:/var/lib/asterisk/sounds:ro",
             "      - asterisk-log:/var/log/asterisk",
             "      - asterisk-spool:/var/spool/asterisk",
             "",
@@ -745,8 +803,29 @@ def validate_location_routing(location: Location, *, require_emergency: bool = F
     warnings.extend(emergency_issues["warnings"])
     errors.extend(emergency_issues["errors"])
     errors.extend(ring_group_routing_errors(location))
+    errors.extend(ivr_export_errors(location))
 
     return {"warnings": warnings, "errors": errors}
+
+
+def ivr_export_errors(location: Location) -> list[dict[str, Any]]:
+    active_ivrs = list(
+        location.ivrs.filter(is_active=True)
+        .select_related("prompt")
+        .order_by("name")
+    )
+    hours_payloads = [
+        {
+            "name": ivr.name,
+            "business_hours_destination": ivr.business_hours_destination_id,
+            "after_hours_destination": ivr.after_hours_destination_id,
+        }
+        for ivr in active_ivrs
+    ]
+    return [
+        *incomplete_ivr_hours_destination_errors(hours_payloads),
+        *audio_prompt_payload_errors(_ivr_audio_prompt_refs(active_ivrs)),
+    ]
 
 
 def ring_group_routing_errors(location: Location) -> list[dict[str, Any]]:
@@ -1229,7 +1308,7 @@ def build_inbound_config(location: Location) -> dict[str, Any]:
             .order_by("number")
         ],
         "ivrs": [
-            _ivr_config(ivr)
+            _ivr_config(ivr, timezone_name=location.timezone)
             for ivr in location.ivrs.filter(is_active=True)
             .select_related(
                 "prompt",
@@ -1320,14 +1399,20 @@ def _did_route(did) -> dict[str, Any]:
     }
 
 
-def _ivr_config(ivr) -> dict[str, Any]:
+def _ivr_config(ivr, *, timezone_name: str = "") -> dict[str, Any]:
     prompt = _audio_prompt_ref(ivr.prompt) if ivr.prompt_id else None
+    has_hours_routing = bool(ivr.business_hours_destination_id or ivr.after_hours_destination_id)
     return {
         "name": ivr.name,
         "prompt_name": prompt["playback_name"] if prompt else ivr.prompt_name,
         "prompt": prompt,
         "business_hours_destination": _destination_ref(ivr.business_hours_destination),
         "after_hours_destination": _destination_ref(ivr.after_hours_destination),
+        "business_hours_schedule": (
+            default_ivr_business_hours_schedule(timezone_name)
+            if has_hours_routing
+            else None
+        ),
         "timeout_seconds": ivr.timeout_seconds,
         "timeout_destination": _destination_ref(ivr.timeout_destination),
         "invalid_destination": _destination_ref(ivr.invalid_destination),
@@ -1759,24 +1844,7 @@ def _render_queues_conf(location: Location) -> str:
 
 
 def _render_manager_conf(location: Location) -> str:
-    username = location.ami_username or f"ami-{location.slug}"
-    lines = _header(location, "Asterisk Manager Interface")
-    lines.extend(
-        [
-            "[general]",
-            "enabled=yes",
-            f"port={location.ami_port}",
-            f"bindaddr={location.ami_host}",
-            "webenabled=no",
-            "",
-            f"[{username}]",
-            f"secret={location.ami_secret}",
-            "read=system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan",
-            "write=system,call,agent,user,config,command,reporting,originate",
-            "permit=127.0.0.1/255.255.255.255",
-        ]
-    )
-    return _render_lines(lines)
+    return render_manager_conf(location, header_lines=_header(location, "Asterisk Manager Interface"))
 
 
 def _render_features_conf(location: Location) -> str:
@@ -1913,26 +1981,13 @@ def _append_destination_contexts(lines: list[str], inbound_config: dict[str, Any
     recording_hooks_enabled = False
     lines.append("[ivrs]")
     for ivr in inbound_config["ivrs"]:
-        ivr_name = _slug(ivr["name"])
-        prompt = ivr["prompt_name"] or "silence/1"
         lines.extend(
-            [
-                f"exten => {ivr_name},1,NoOp(IVR {ivr['name']})",
-                f" same => n,Background({prompt})",
-                f" same => n,WaitExten({ivr['timeout_seconds']})",
-            ]
-        )
-        if ivr["timeout_destination"]:
-            lines.append(f" same => n,{_destination_app(ivr['timeout_destination'])}")
-        lines.append("")
-        for option in ivr["menu_options"]:
-            lines.extend(
-                [
-                    f"exten => {option['digit']},1,NoOp(IVR option {option['digit']} {option['label']})",
-                    f" same => n,{_destination_app(option['destination'])}",
-                    "",
-                ]
+            render_ivr_dialplan_lines(
+                ivr,
+                slugify=_slug,
+                destination_app=_destination_app,
             )
+        )
 
     lines.append("[ring-groups]")
     for ring_group in inbound_config["ring_groups"]:

@@ -116,8 +116,6 @@ class LocationForm(forms.ModelForm):
         "deployment_ssh_host",
         "deployment_ssh_username",
         "deployment_ssh_private_key",
-        "ami_username",
-        "ami_secret",
         "agent_secret",
     )
     PRESERVED_SECRET_FIELDS = (

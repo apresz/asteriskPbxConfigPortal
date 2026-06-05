@@ -11,6 +11,7 @@ services:
     volumes:
       - ./asterisk:/etc/asterisk:ro
       - asterisk-lib:/var/lib/asterisk
+      - ./asterisk/sounds:/var/lib/asterisk/sounds:ro
       - asterisk-log:/var/log/asterisk
       - asterisk-spool:/var/spool/asterisk
 
