@@ -9,6 +9,8 @@ from django.core.validators import MaxValueValidator, MinValueValidator, RegexVa
 from django.db import models
 from django.utils import timezone
 
+from .rtp_config import RTPRangeError, validate_rtp_port_range
+
 
 def cidr_network_validator(value):
     try:
@@ -555,8 +557,10 @@ class Location(TimestampedModel):
                 if pbx_lan_ip not in network:
                     errors["pbx_lan_ip"] = "PBX LAN IP must be inside the LAN subnet."
 
-        if self.rtp_port_start and self.rtp_port_end and self.rtp_port_start > self.rtp_port_end:
-            errors["rtp_port_end"] = "RTP port end must be greater than or equal to RTP port start."
+        try:
+            validate_rtp_port_range(self.rtp_port_start, self.rtp_port_end)
+        except RTPRangeError as exc:
+            errors.update(exc.field_errors)
 
         for field_name in (
             "deployment_staging_path",

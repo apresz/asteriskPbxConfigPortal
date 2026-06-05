@@ -26,6 +26,7 @@ from .asterisk_config_helpers import (
     trunk_section_name,
 )
 from .file_permissions import RESTRICTED_FILE_MODE, ensure_restricted_directory, write_restricted_bytes
+from .rtp_config import RTP_CONFIG_FILENAME, RTPRangeError, render_rtp_conf, validate_location_rtp_range
 from .models import (
     AudioPrompt,
     ConfigVersion,
@@ -42,6 +43,7 @@ PHONE_APPEARANCE_WARNING_LIMIT = 5
 
 ASTERISK_CONFIG_FILENAMES = (
     "pjsip.conf",
+    RTP_CONFIG_FILENAME,
     "iax.conf",
     "extensions.conf",
     "voicemail.conf",
@@ -169,6 +171,7 @@ def build_asterisk_config_files(location: Location) -> dict[str, str]:
     """Return rendered Asterisk config files for a location export."""
     renderers = {
         "pjsip.conf": _render_pjsip_conf,
+        RTP_CONFIG_FILENAME: _render_rtp_conf,
         "iax.conf": _render_iax_conf,
         "extensions.conf": _render_extensions_conf,
         "voicemail.conf": _render_voicemail_conf,
@@ -587,6 +590,17 @@ def validate_location_routing(location: Location, *, require_emergency: bool = F
     """Return export validation issues without blocking normal config export."""
     warnings = export_validation_warnings(location)
     errors: list[dict[str, Any]] = []
+    try:
+        validate_location_rtp_range(location)
+    except RTPRangeError as exc:
+        errors.append(
+            {
+                "code": "invalid_rtp_port_range",
+                "fields": dict(exc.field_errors),
+                "message": "Location RTP port range must use ports 1-65535 with end greater than or equal to start.",
+            }
+        )
+
     emergency_allowed_extensions = list(
         location.extensions.filter(is_active=True, emergency_calling_enabled=True).order_by("number")
     )
@@ -1405,6 +1419,10 @@ def _render_pjsip_conf(location: Location) -> str:
         )
 
     return _render_lines(lines)
+
+
+def _render_rtp_conf(location: Location) -> str:
+    return render_rtp_conf(location)
 
 
 def _render_iax_conf(location: Location) -> str:
