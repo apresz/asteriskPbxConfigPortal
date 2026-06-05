@@ -17,6 +17,14 @@ from django.db.models import Max
 from django.utils import timezone
 
 from .agent_client import portal_url_to_websocket_url
+from .asterisk_config_helpers import (
+    active_route_trunks,
+    dial_target,
+    emergency_trunk_missing_credential_errors,
+    iax2_provider_trunk_lines,
+    provider_credential_warnings_for_trunks,
+    trunk_section_name,
+)
 from .file_permissions import RESTRICTED_FILE_MODE, ensure_restricted_directory, write_restricted_bytes
 from .models import (
     AudioPrompt,
@@ -629,18 +637,7 @@ def validate_location_routing(location: Location, *, require_emergency: bool = F
                     "message": "Emergency routes must include an emergency-capable trunk.",
                 }
             )
-        for trunk in route_trunks:
-            warning = warning_trunks.get(trunk.name)
-            if warning:
-                errors.append(
-                    {
-                        "code": "emergency_trunk_missing_credentials",
-                        "route": route.name,
-                        "trunk": trunk.name,
-                        "missing": warning["missing"],
-                        "message": "Emergency-capable trunks need complete provider credentials.",
-                    }
-                )
+        errors.extend(emergency_trunk_missing_credential_errors(route.name, route_trunks, warning_trunks))
 
     return {"warnings": warnings, "errors": errors}
 
@@ -658,28 +655,8 @@ def export_validation_warnings(location: Location) -> list[dict[str, Any]]:
 
 
 def provider_credential_warnings(location: Location) -> list[dict[str, Any]]:
-    warnings = []
-    for trunk in location.trunks.select_related("provider").filter(is_active=True).order_by("name"):
-        missing = []
-        if not trunk.host:
-            missing.append("host")
-        if not trunk.username:
-            missing.append("username")
-        if not trunk.password:
-            missing.append("password")
-        if missing:
-            warnings.append(
-                {
-                    "code": "provider_trunk_missing_credentials",
-                    "provider": trunk.provider.name,
-                    "trunk": trunk.name,
-                    "trunk_type": trunk.trunk_type,
-                    "missing": missing,
-                    "emergency_capable": trunk.is_emergency_capable,
-                    "message": f"{trunk.name} is missing {', '.join(missing)}.",
-                }
-            )
-    return warnings
+    trunks = location.trunks.select_related("provider").filter(is_active=True).order_by("name")
+    return provider_credential_warnings_for_trunks(trunks)
 
 
 def suspicious_did_warnings(location: Location) -> list[dict[str, Any]]:
@@ -1464,6 +1441,8 @@ def _render_iax_conf(location: Location) -> str:
                 "",
             ]
         )
+    for trunk in _active_iax2_trunks(location):
+        lines.extend(iax2_provider_trunk_lines(trunk))
     return _render_lines(lines)
 
 
@@ -1738,7 +1717,7 @@ def _append_route_lines(lines: list[str], route: OutboundRoute, label: str) -> N
     caller_id = select_route_caller_id(route)
     if caller_id:
         lines.append(f" same => n,Set(CALLERID(num)={caller_id})")
-    route_trunks = [route_trunk for route_trunk in route.route_trunks.all() if route_trunk.trunk.is_active]
+    route_trunks = active_route_trunks(route.route_trunks.all())
     if not route_trunks:
         lines.extend([" same => n,Playback(all-circuits-busy-now)", " same => n,Hangup(34)", ""])
         return
@@ -1830,6 +1809,14 @@ def _active_sip_trunks(location: Location) -> list[Trunk]:
     )
 
 
+def _active_iax2_trunks(location: Location) -> list[Trunk]:
+    return list(
+        location.trunks.select_related("provider")
+        .filter(is_active=True, trunk_type=Trunk.TrunkType.IAX2)
+        .order_by("name")
+    )
+
+
 def _active_outbound_routes(location: Location, emergency: bool | None = None) -> list[OutboundRoute]:
     routes = (
         location.outbound_routes.prefetch_related("route_trunks__trunk__provider")
@@ -1860,7 +1847,7 @@ def _iax_shared_secret(location: Location, remote_location: Location) -> str:
 
 
 def _trunk_section_name(trunk: Trunk) -> str:
-    return f"trunk-{_slug(trunk.name)}"
+    return trunk_section_name(trunk)
 
 
 def _queue_name(name: str) -> str:
@@ -1868,9 +1855,7 @@ def _queue_name(name: str) -> str:
 
 
 def _dial_target(trunk: Trunk) -> str:
-    if trunk.trunk_type == Trunk.TrunkType.IAX2:
-        return f"IAX2/{_trunk_section_name(trunk)}/${{EXTEN}}"
-    return f"PJSIP/${{EXTEN}}@{_trunk_section_name(trunk)}"
+    return dial_target(trunk)
 
 
 def _destination_app(destination: dict[str, Any] | None) -> str:
