@@ -6,6 +6,12 @@
   </span>
   {% if can_edit_routing %}
     <span class="button-row">
+      {% if template_url %}
+        <a class="button button--secondary" href="{% url template_url %}">CSV Template</a>
+      {% endif %}
+      {% if import_url %}
+        <a class="button button--secondary" href="{% url import_url %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Import</a>
+      {% endif %}
       <a class="button" href="{% url create_url %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New</a>
     </span>
   {% endif %}
