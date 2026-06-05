@@ -29,6 +29,16 @@ from .config_archive import (
     sha256sums,
     zip_archive,
 )
+from .runtime_images import (
+    ASTERISK_22_LTS_IMAGE,
+    RUNTIME_IMAGE_TAG_POLICY_BLOCK,
+    RUNTIME_IMAGE_TAG_POLICY_WARN,
+    RuntimeImage,
+    configured_runtime_images,
+    parse_image_reference,
+    runtime_image_metadata,
+    runtime_image_validation_issues,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -84,6 +94,147 @@ def fake_emergency_route(
         caller_id_source=caller_id_source,
         route_trunks=FakeRelatedManager([fake_route_trunk(trunk, index + 1) for index, trunk in enumerate(trunks)]),
     )
+
+
+class RuntimeImageReferenceTests(unittest.TestCase):
+    def test_parse_image_reference_splits_registry_tag_and_digest(self):
+        digest = "sha256:" + "a" * 64
+        reference = f"ghcr.io/apresz/asterisk:22-lts@{digest}"
+
+        parsed = parse_image_reference(reference)
+
+        self.assertEqual(parsed.registry, "ghcr.io")
+        self.assertEqual(parsed.repository, "ghcr.io/apresz/asterisk")
+        self.assertEqual(parsed.tag, "22-lts")
+        self.assertEqual(parsed.digest, digest)
+        self.assertTrue(parsed.digest_pinned)
+        self.assertFalse(parsed.tag_only)
+
+    def test_parse_image_reference_handles_registry_port_without_tag(self):
+        digest = "sha256:" + "b" * 64
+
+        parsed = parse_image_reference(f"localhost:5000/pbx/asterisk@{digest}")
+
+        self.assertEqual(parsed.registry, "localhost:5000")
+        self.assertEqual(parsed.repository, "localhost:5000/pbx/asterisk")
+        self.assertIsNone(parsed.tag)
+        self.assertEqual(parsed.digest, digest)
+
+    def test_invalid_digest_is_rejected(self):
+        with self.assertRaises(ValueError):
+            parse_image_reference("ghcr.io/apresz/asterisk:22-lts@sha256:not-a-digest")
+
+
+class RuntimeImageValidationTests(unittest.TestCase):
+    def test_custom_tag_only_images_warn_or_block_by_policy(self):
+        image = RuntimeImage(
+            service="asterisk",
+            env_var="PBX_ASTERISK_IMAGE",
+            reference=ASTERISK_22_LTS_IMAGE,
+            custom=True,
+        )
+
+        warning_issues = runtime_image_validation_issues([image], tag_policy=RUNTIME_IMAGE_TAG_POLICY_WARN)
+        blocking_issues = runtime_image_validation_issues([image], tag_policy=RUNTIME_IMAGE_TAG_POLICY_BLOCK)
+
+        self.assertEqual(warning_issues["errors"], [])
+        self.assertEqual(warning_issues["warnings"][0]["code"], "runtime_image_tag_only")
+        self.assertEqual(blocking_issues["warnings"], [])
+        self.assertEqual(blocking_issues["errors"][0]["code"], "runtime_image_tag_only")
+
+    def test_non_custom_tag_only_image_is_allowed(self):
+        image = RuntimeImage(
+            service="provisioning-http",
+            env_var="PBX_HTTP_IMAGE",
+            reference="docker.io/nginx:1.27-alpine",
+            custom=False,
+        )
+
+        self.assertEqual(
+            runtime_image_validation_issues([image], tag_policy=RUNTIME_IMAGE_TAG_POLICY_BLOCK),
+            {"warnings": [], "errors": []},
+        )
+
+    def test_resolved_digest_metadata_makes_custom_image_immutable(self):
+        digest = "sha256:" + "c" * 64
+        images = configured_runtime_images(
+            {
+                "asterisk": {
+                    "reference": ASTERISK_22_LTS_IMAGE,
+                    "resolved_digest": digest,
+                    "digest_source": "release-lock",
+                }
+            }
+        )
+        asterisk = next(image for image in images if image.service == "asterisk")
+
+        self.assertEqual(asterisk.compose_default, f"{ASTERISK_22_LTS_IMAGE}@{digest}")
+        self.assertEqual(
+            runtime_image_validation_issues([asterisk], tag_policy=RUNTIME_IMAGE_TAG_POLICY_BLOCK),
+            {"warnings": [], "errors": []},
+        )
+        self.assertIn(
+            {
+                "service": "asterisk",
+                "env_var": "PBX_ASTERISK_IMAGE",
+                "reference": ASTERISK_22_LTS_IMAGE,
+                "compose_reference": f"{ASTERISK_22_LTS_IMAGE}@{digest}",
+                "repository": "ghcr.io/apresz/asterisk",
+                "registry": "ghcr.io",
+                "tag": "22-lts",
+                "digest": digest,
+                "digest_source": "release-lock",
+                "custom": True,
+                "immutable": True,
+                "requires_env_override": False,
+            },
+            runtime_image_metadata([asterisk]),
+        )
+
+
+class RuntimeBundleImageGoldenTests(unittest.TestCase):
+    def test_compose_golden_requires_digest_for_custom_runtime_images(self):
+        fixture_dir = PROJECT_ROOT / "core" / "testdata" / "runtime_bundle"
+        compose = (fixture_dir / "docker-compose.yml").read_text(encoding="utf-8")
+        env_example = (fixture_dir / ".env.example").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "image: ${PBX_ASTERISK_IMAGE:?PBX_ASTERISK_IMAGE must include an immutable digest}",
+            compose,
+        )
+        self.assertIn(
+            "image: ${PBX_TFTP_IMAGE:?PBX_TFTP_IMAGE must include an immutable digest}",
+            compose,
+        )
+        self.assertIn(
+            "image: ${PBX_AGENT_IMAGE:?PBX_AGENT_IMAGE must include an immutable digest}",
+            compose,
+        )
+        self.assertIn("image: ${PBX_HTTP_IMAGE:-docker.io/nginx:1.27-alpine}", compose)
+        self.assertNotIn("image: ${PBX_ASTERISK_IMAGE:-ghcr.io/apresz/asterisk:22-lts}", compose)
+        self.assertIn("# Custom PBX runtime images must include an immutable digest.", env_example)
+        self.assertIn("PBX_ASTERISK_IMAGE=\n", env_example)
+        self.assertIn("PBX_TFTP_IMAGE=\n", env_example)
+        self.assertIn("PBX_AGENT_IMAGE=\n", env_example)
+
+    def test_runtime_image_manifest_golden_exposes_digest_fields(self):
+        manifest = json.loads(
+            (PROJECT_ROOT / "core" / "testdata" / "runtime_bundle" / "runtime-images.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        images = {image["service"]: image for image in manifest["images"]}
+
+        self.assertEqual(manifest["format"], "pbx-runtime-images/v1")
+        self.assertEqual(manifest["tag_policy"], "warn")
+        self.assertEqual(set(images), {"asterisk", "tftp", "provisioning-http", "pbx-agent"})
+        self.assertTrue(images["asterisk"]["custom"])
+        self.assertFalse(images["asterisk"]["immutable"])
+        self.assertTrue(images["asterisk"]["requires_env_override"])
+        self.assertIn("digest", images["asterisk"])
+        self.assertIsNone(images["asterisk"]["digest"])
+        self.assertEqual(images["asterisk"]["reference"], ASTERISK_22_LTS_IMAGE)
+        self.assertEqual(images["provisioning-http"]["compose_reference"], "docker.io/nginx:1.27-alpine")
 
 
 class Iax2ProviderConfigTests(unittest.TestCase):
@@ -403,10 +554,21 @@ class ActiveConfigMarkerArchiveTests(unittest.TestCase):
             "/etc/asterisk/pbx-active-config.json",
         )
         self.assertIn("asterisk/pbx-active-config.json", manifest_paths)
+        self.assertEqual(manifest["runtime_images"]["path"], "runtime-images.json")
+        self.assertEqual(manifest["runtime_images"]["tag_policy"], "warn")
+        self.assertIn("runtime-images.json", manifest_paths)
+        self.assertIn("runtime_image_tag_only", manifest["emergency_status"]["warning_codes"])
+        self.assertEqual(manifest["deployment"]["runtime_images"]["tag_policy"], "warn")
         self.assertIn("  asterisk/pbx-active-config.json", (fixture_dir / "SHA256SUMS").read_text(encoding="utf-8"))
+        self.assertIn("  runtime-images.json", (fixture_dir / "SHA256SUMS").read_text(encoding="utf-8"))
         self.assertIn("asterisk/pbx-active-config.json|", (fixture_dir / "zip-layout.txt").read_text(encoding="utf-8"))
+        self.assertIn("runtime-images.json|", (fixture_dir / "zip-layout.txt").read_text(encoding="utf-8"))
         self.assertIn(
             "asterisk/pbx-active-config.json|",
+            (fixture_dir / "staging-layout.txt").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "runtime-images.json|",
             (fixture_dir / "staging-layout.txt").read_text(encoding="utf-8"),
         )
 

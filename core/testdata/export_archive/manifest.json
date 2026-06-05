@@ -1,6 +1,6 @@
 {
   "active_config_marker": {
-    "checksum": "863068bd392e134ec5555a1c31b4d74bb2ac4479847f42745208fd61b36db3e1",
+    "checksum": "d45abe7dfa161d5296562498418fa04a5a821daf580adf2c26cfbd6c39aa7f88",
     "checksum_type": "config-payload-sha256",
     "configured_path": "/etc/asterisk/pbx-active-config.json",
     "content_type": "application/json",
@@ -9,6 +9,67 @@
   "deployment": {
     "last_deployed_at": null,
     "location_deployment_status": "ready",
+    "runtime_images": {
+      "images": [
+        {
+          "compose_reference": null,
+          "custom": true,
+          "digest": null,
+          "digest_source": null,
+          "env_var": "PBX_ASTERISK_IMAGE",
+          "immutable": false,
+          "reference": "ghcr.io/apresz/asterisk:22-lts",
+          "registry": "ghcr.io",
+          "repository": "ghcr.io/apresz/asterisk",
+          "requires_env_override": true,
+          "service": "asterisk",
+          "tag": "22-lts"
+        },
+        {
+          "compose_reference": null,
+          "custom": true,
+          "digest": null,
+          "digest_source": null,
+          "env_var": "PBX_TFTP_IMAGE",
+          "immutable": false,
+          "reference": "ghcr.io/apresz/tftp:1.0.0",
+          "registry": "ghcr.io",
+          "repository": "ghcr.io/apresz/tftp",
+          "requires_env_override": true,
+          "service": "tftp",
+          "tag": "1.0.0"
+        },
+        {
+          "compose_reference": "docker.io/nginx:1.27-alpine",
+          "custom": false,
+          "digest": null,
+          "digest_source": null,
+          "env_var": "PBX_HTTP_IMAGE",
+          "immutable": false,
+          "reference": "docker.io/nginx:1.27-alpine",
+          "registry": "docker.io",
+          "repository": "docker.io/nginx",
+          "requires_env_override": false,
+          "service": "provisioning-http",
+          "tag": "1.27-alpine"
+        },
+        {
+          "compose_reference": null,
+          "custom": true,
+          "digest": null,
+          "digest_source": null,
+          "env_var": "PBX_AGENT_IMAGE",
+          "immutable": false,
+          "reference": "ghcr.io/apresz/pbx-agent:0.1.0",
+          "registry": "ghcr.io",
+          "repository": "ghcr.io/apresz/pbx-agent",
+          "requires_env_override": true,
+          "service": "pbx-agent",
+          "tag": "0.1.0"
+        }
+      ],
+      "tag_policy": "warn"
+    },
     "ssh_host_configured": true,
     "ssh_known_hosts_configured": true,
     "ssh_private_key_configured": true,
@@ -18,20 +79,24 @@
     "blocked": false,
     "error_codes": [],
     "required": true,
-    "warning_codes": []
+    "warning_codes": [
+      "runtime_image_tag_only",
+      "runtime_image_tag_only",
+      "runtime_image_tag_only"
+    ]
   },
   "files": [
     {
       "content_type": "application/x-yaml",
       "path": "docker-compose.yml",
-      "sha256": "8a02d95e9f6c20a4c3152d1721d5514ec82f11fff64417b9ba78c840ff2d1c9b",
-      "size": 2694
+      "sha256": "129d397d05fc68ef0ee80a67059707dac64a333351e969e26a54c19405188521",
+      "size": 2755
     },
     {
       "content_type": "text/plain",
       "path": ".env.example",
-      "sha256": "b87280a204d4eaa2d82078e8985eca0e62b4223031f4571d98d22c995a6a311b",
-      "size": 911
+      "sha256": "7c91d15b66677e9ff310c59f22ecbd19ebc44dbeb0cf0a9819ce7632eaf7c7b5",
+      "size": 888
     },
     {
       "content_type": "text/plain",
@@ -131,9 +196,15 @@
     },
     {
       "content_type": "application/json",
+      "path": "runtime-images.json",
+      "sha256": "ecb839c26d452048556f3d171a6413ba6e237879a2f04ac970a5abf33c43cc3f",
+      "size": 1694
+    },
+    {
+      "content_type": "application/json",
       "path": "asterisk/pbx-active-config.json",
-      "sha256": "a1c96f1e2621d646fc1d62e8882c0df86161fd99f80fd0c8972849b0bd414c41",
-      "size": 1066
+      "sha256": "1017c223f8319dfdad70172aa3e935fa8d44827175aa54f283a0da802029273d",
+      "size": 2986
     }
   ],
   "format": "pbx-config-export/v1",
@@ -143,10 +214,104 @@
     "slug": "golden-hq",
     "timezone": "America/Los_Angeles"
   },
+  "runtime_images": {
+    "content_type": "application/json",
+    "images": [
+      {
+        "compose_reference": null,
+        "custom": true,
+        "digest": null,
+        "digest_source": null,
+        "env_var": "PBX_ASTERISK_IMAGE",
+        "immutable": false,
+        "reference": "ghcr.io/apresz/asterisk:22-lts",
+        "registry": "ghcr.io",
+        "repository": "ghcr.io/apresz/asterisk",
+        "requires_env_override": true,
+        "service": "asterisk",
+        "tag": "22-lts"
+      },
+      {
+        "compose_reference": null,
+        "custom": true,
+        "digest": null,
+        "digest_source": null,
+        "env_var": "PBX_TFTP_IMAGE",
+        "immutable": false,
+        "reference": "ghcr.io/apresz/tftp:1.0.0",
+        "registry": "ghcr.io",
+        "repository": "ghcr.io/apresz/tftp",
+        "requires_env_override": true,
+        "service": "tftp",
+        "tag": "1.0.0"
+      },
+      {
+        "compose_reference": "docker.io/nginx:1.27-alpine",
+        "custom": false,
+        "digest": null,
+        "digest_source": null,
+        "env_var": "PBX_HTTP_IMAGE",
+        "immutable": false,
+        "reference": "docker.io/nginx:1.27-alpine",
+        "registry": "docker.io",
+        "repository": "docker.io/nginx",
+        "requires_env_override": false,
+        "service": "provisioning-http",
+        "tag": "1.27-alpine"
+      },
+      {
+        "compose_reference": null,
+        "custom": true,
+        "digest": null,
+        "digest_source": null,
+        "env_var": "PBX_AGENT_IMAGE",
+        "immutable": false,
+        "reference": "ghcr.io/apresz/pbx-agent:0.1.0",
+        "registry": "ghcr.io",
+        "repository": "ghcr.io/apresz/pbx-agent",
+        "requires_env_override": true,
+        "service": "pbx-agent",
+        "tag": "0.1.0"
+      }
+    ],
+    "path": "runtime-images.json",
+    "tag_policy": "warn"
+  },
   "version": {
     "exported_at": "2026-01-02T03:04:05+00:00",
     "exported_by": "exporter",
     "number": 1
   },
-  "warnings": []
+  "warnings": [
+    {
+      "code": "runtime_image_tag_only",
+      "env_var": "PBX_ASTERISK_IMAGE",
+      "message": "Custom PBX runtime images must include an immutable digest or resolved digest record.",
+      "policy": "warn",
+      "reference": "ghcr.io/apresz/asterisk:22-lts",
+      "repository": "ghcr.io/apresz/asterisk",
+      "service": "asterisk",
+      "tag": "22-lts"
+    },
+    {
+      "code": "runtime_image_tag_only",
+      "env_var": "PBX_TFTP_IMAGE",
+      "message": "Custom PBX runtime images must include an immutable digest or resolved digest record.",
+      "policy": "warn",
+      "reference": "ghcr.io/apresz/tftp:1.0.0",
+      "repository": "ghcr.io/apresz/tftp",
+      "service": "tftp",
+      "tag": "1.0.0"
+    },
+    {
+      "code": "runtime_image_tag_only",
+      "env_var": "PBX_AGENT_IMAGE",
+      "message": "Custom PBX runtime images must include an immutable digest or resolved digest record.",
+      "policy": "warn",
+      "reference": "ghcr.io/apresz/pbx-agent:0.1.0",
+      "repository": "ghcr.io/apresz/pbx-agent",
+      "service": "pbx-agent",
+      "tag": "0.1.0"
+    }
+  ]
 }

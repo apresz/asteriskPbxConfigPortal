@@ -3004,6 +3004,7 @@ class ConfigVersionExportTests(TestCase):
                     "active-config/var/lib/pbx/active.json",
                     "docker-compose.yml",
                     "manifest.json",
+                    "runtime-images.json",
                     "tftp/company-directory.xml",
                     "tftp/firmware/CISCO-FIRMWARE-CHECKLIST.txt",
                     "tftp/firmware/README-no-firmware-bundled.txt",
@@ -3021,7 +3022,10 @@ class ConfigVersionExportTests(TestCase):
         self.assertIn("PBX_ACTIVE_CONFIG_MARKER=/var/lib/pbx/active.json", env_example)
         self.assertEqual(manifest["active_config_marker"]["path"], "active-config/var/lib/pbx/active.json")
         self.assertEqual(manifest["active_config_marker"]["configured_path"], "/var/lib/pbx/active.json")
+        self.assertEqual(manifest["runtime_images"]["path"], "runtime-images.json")
+        self.assertEqual(manifest["runtime_images"]["tag_policy"], "warn")
         self.assertIn("active-config/var/lib/pbx/active.json", names)
+        self.assertIn("runtime-images.json", names)
         self.assertIn(
             {
                 "path": "docker-compose.yml",
@@ -3035,6 +3039,7 @@ class ConfigVersionExportTests(TestCase):
         self.assertTrue(any(line.endswith("  asterisk/pjsip.conf") for line in checksums))
         self.assertTrue(any(line.endswith("  asterisk/rtp.conf") for line in checksums))
         self.assertTrue(any(line.endswith("  active-config/var/lib/pbx/active.json") for line in checksums))
+        self.assertTrue(any(line.endswith("  runtime-images.json") for line in checksums))
         self.assertEqual(version.checksum, hashlib.sha256(bytes(version.archive)).hexdigest())
         self.assertEqual(
             {file["path"] for file in version.file_manifest},
@@ -3048,9 +3053,11 @@ class ConfigVersionExportTests(TestCase):
         with zipfile.ZipFile(BytesIO(bytes(version.archive))) as archive:
             docker_compose = archive.read("docker-compose.yml").decode("utf-8")
             env_example = archive.read(".env.example").decode("utf-8")
+            runtime_images = archive.read("runtime-images.json").decode("utf-8")
 
         self.assertEqual(docker_compose, self._runtime_golden("docker-compose.yml"))
         self.assertEqual(env_example, self._runtime_golden(".env.example"))
+        self.assertEqual(runtime_images, self._runtime_golden("runtime-images.json"))
 
     def test_runtime_bundle_compose_services_and_volume_paths(self):
         version = create_config_version(self.location, exported_by=self.user)
@@ -3059,13 +3066,24 @@ class ConfigVersionExportTests(TestCase):
             services = self._compose_service_blocks(archive.read("docker-compose.yml").decode("utf-8"))
 
         self.assertEqual(set(services), {"asterisk", "tftp", "provisioning-http", "pbx-agent"})
-        self.assertIn("    image: ${PBX_ASTERISK_IMAGE:-ghcr.io/apresz/asterisk:22-lts}", services["asterisk"])
+        self.assertIn(
+            "    image: ${PBX_ASTERISK_IMAGE:?PBX_ASTERISK_IMAGE must include an immutable digest}",
+            services["asterisk"],
+        )
         self.assertIn("    network_mode: host", services["asterisk"])
         self.assertIn("      - ./asterisk:/etc/asterisk:ro", services["asterisk"])
+        self.assertIn(
+            "    image: ${PBX_TFTP_IMAGE:?PBX_TFTP_IMAGE must include an immutable digest}",
+            services["tftp"],
+        )
         self.assertIn("      - ./tftp:/srv/tftp:ro", services["tftp"])
         self.assertIn('      - "${PROVISIONING_TFTP_PORT:-69}:69/udp"', services["tftp"])
         self.assertIn("      - ./tftp:/usr/share/nginx/html/cisco:ro", services["provisioning-http"])
         self.assertIn('      - "${PROVISIONING_HTTP_PORT:-80}:80/tcp"', services["provisioning-http"])
+        self.assertIn(
+            "    image: ${PBX_AGENT_IMAGE:?PBX_AGENT_IMAGE must include an immutable digest}",
+            services["pbx-agent"],
+        )
         self.assertIn("    network_mode: host", services["pbx-agent"])
         self.assertIn('      PBX_AGENT_WS_URL: "${PBX_AGENT_WS_URL:?PBX_AGENT_WS_URL is required}"', services["pbx-agent"])
         self.assertIn('      PBX_AGENT_TOKEN: "${PBX_AGENT_TOKEN:?PBX_AGENT_TOKEN is required}"', services["pbx-agent"])
