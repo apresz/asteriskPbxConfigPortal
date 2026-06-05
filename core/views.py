@@ -57,9 +57,12 @@ from .live_operations import (
     AgentCommandTimeoutError,
     AgentUnavailableError,
     UnsupportedLiveCommandError,
+    build_live_operation_audit_details,
+    canonical_live_command_name,
     run_location_live_command,
     run_location_recording_playback,
     supported_live_commands,
+    validate_live_command_parameters,
 )
 from .models import (
     APIKey,
@@ -918,9 +921,7 @@ def api_channel_control(request, slug: str):
 
 def _execute_live_operation(request, location: Location, payload: dict) -> tuple[dict, int]:
     command_name = str(payload.get("command") or "").strip()
-    parameters = payload.get("parameters") or {}
-    if not isinstance(parameters, dict):
-        parameters = {}
+    parameters = payload.get("parameters", {})
 
     if not user_has_permission(request.user, PortalPermission.RUN_LIVE_OPERATIONS):
         response_payload = {
@@ -935,11 +936,17 @@ def _execute_live_operation(request, location: Location, payload: dict) -> tuple
             command_name,
             AuditOutcome.DENIED,
             response_payload,
+            request=request,
+            parameters=parameters,
         )
         return response_payload, 403
 
+    audit_command_name = command_name
+    audit_parameters = parameters
     try:
-        result = run_location_live_command(location, command_name, parameters)
+        audit_command_name = canonical_live_command_name(command_name)
+        audit_parameters = validate_live_command_parameters(audit_command_name, parameters)
+        result = run_location_live_command(location, audit_command_name, audit_parameters)
     except UnsupportedLiveCommandError as exc:
         result = {"status": "failure", "error": str(exc)}
         outcome = AuditOutcome.FAILURE
@@ -962,11 +969,19 @@ def _execute_live_operation(request, location: Location, payload: dict) -> tuple
 
     response_payload = {
         "location": location.slug,
-        "command": command_name,
+        "command": audit_command_name,
         "status": result.get("status", "failure"),
         "result": result,
     }
-    _record_live_operation_audit(request.user, location, command_name, outcome, response_payload)
+    _record_live_operation_audit(
+        request.user,
+        location,
+        audit_command_name,
+        outcome,
+        response_payload,
+        request=request,
+        parameters=audit_parameters,
+    )
     return response_payload, status
 
 
@@ -2596,20 +2611,23 @@ def _record_live_operation_audit(
     command_name: str,
     outcome: AuditOutcome,
     result: dict,
+    *,
+    request=None,
+    parameters: dict | None = None,
 ) -> None:
-    actor_username = actor.get_username() if getattr(actor, "is_authenticated", False) else "anonymous"
     record_audit(
         actor=actor,
         action=AuditAction.LIVE_PBX_ACTION,
         target=f"locations/{location.slug}/live/{command_name or 'missing'}",
         outcome=outcome,
-        details={
-            "command": command_name,
-            "actor_username": actor_username,
-            "location_id": location.id,
-            "location_slug": location.slug,
-            "result": result,
-        },
+        details=build_live_operation_audit_details(
+            actor=actor,
+            location=location,
+            command_name=command_name,
+            parameters=parameters,
+            result=result,
+            api_key=getattr(request, "api_key", None),
+        ),
     )
 
 
