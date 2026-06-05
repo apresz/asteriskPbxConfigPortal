@@ -21,6 +21,8 @@ from .asterisk_config_helpers import (
     emergency_trunk_missing_credential_errors,
     iax2_provider_trunk_lines,
     provider_credential_warnings_for_trunks,
+    recording_hook_context_lines,
+    recording_policy_hook_lines,
     trunk_section_name,
 )
 from .config_archive import (
@@ -1157,6 +1159,7 @@ def build_inbound_config(location: Location) -> dict[str, Any]:
                 "timeout_seconds": queue.timeout_seconds,
                 "retry_seconds": queue.retry_seconds,
                 "music_on_hold": queue.music_on_hold,
+                "recording_policy": queue.recording_policy,
                 "overflow_destination": _destination_ref(queue.overflow_destination),
                 "members": [
                     {
@@ -1488,6 +1491,7 @@ def _render_extensions_conf(location: Location) -> str:
     inbound_config = build_inbound_config(location)
     route_choices = build_route_generation_choices(location)
     lines = _header(location, "Dialplan")
+    recording_hooks_enabled = False
     lines.extend(
         [
             "[globals]",
@@ -1512,12 +1516,16 @@ def _render_extensions_conf(location: Location) -> str:
     )
     for choice in route_choices["local_extensions"]:
         extension = location.extensions.get(number=choice["number"])
+        recording_hook_lines = recording_policy_hook_lines("extension", extension.number, extension.recording_policy)
         lines.extend(
             [
                 f"exten => {extension.number},1,NoOp(Local extension {extension.number} {extension.display_name})",
-                f" same => n,Dial({choice['target']},30)",
             ]
         )
+        if recording_hook_lines:
+            recording_hooks_enabled = True
+            lines.extend(recording_hook_lines)
+        lines.append(f" same => n,Dial({choice['target']},30)")
         if extension.voicemail_enabled:
             lines.append(f" same => n,VoiceMail({extension.number}@default,u)")
         lines.extend([" same => n,Hangup()", ""])
@@ -1556,7 +1564,7 @@ def _render_extensions_conf(location: Location) -> str:
 
     lines.append("[outbound]")
     for route in _active_outbound_routes(location, emergency=False):
-        _append_route_lines(lines, route, "Outbound")
+        recording_hooks_enabled = _append_route_lines(lines, route, "Outbound") or recording_hooks_enabled
 
     lines.append("[emergency]")
     for block in route_choices["emergency_blocks"]:
@@ -1570,7 +1578,7 @@ def _render_extensions_conf(location: Location) -> str:
                 ]
             )
     for route in _active_outbound_routes(location, emergency=True):
-        _append_route_lines(lines, route, "Emergency")
+        recording_hooks_enabled = _append_route_lines(lines, route, "Emergency") or recording_hooks_enabled
 
     lines.extend(["[voicemail]", "exten => *97,1,VoiceMailMain(${CALLERID(num)}@default)", " same => n,Hangup()"])
     lines.extend(["exten => *98,1,VoiceMailMain(@default)", " same => n,Hangup()", ""])
@@ -1593,7 +1601,9 @@ def _render_extensions_conf(location: Location) -> str:
     for feature_code in inbound_config["feature_codes"]:
         _append_feature_code_lines(lines, feature_code)
 
-    _append_destination_contexts(lines, inbound_config)
+    recording_hooks_enabled = _append_destination_contexts(lines, inbound_config) or recording_hooks_enabled
+    if recording_hooks_enabled:
+        lines.extend(recording_hook_context_lines())
     return _render_lines(lines)
 
 
@@ -1749,7 +1759,7 @@ def _render_retention_conf(location: Location) -> str:
     return _render_lines(lines)
 
 
-def _append_route_lines(lines: list[str], route: OutboundRoute, label: str) -> None:
+def _append_route_lines(lines: list[str], route: OutboundRoute, label: str) -> bool:
     pattern = _asterisk_pattern(route.dial_pattern)
     lines.extend([f"exten => {pattern},1,NoOp({label} route {route.name})"])
     caller_id = select_route_caller_id(route)
@@ -1758,10 +1768,14 @@ def _append_route_lines(lines: list[str], route: OutboundRoute, label: str) -> N
     route_trunks = active_route_trunks(route.route_trunks.all())
     if not route_trunks:
         lines.extend([" same => n,Playback(all-circuits-busy-now)", " same => n,Hangup(34)", ""])
-        return
+        return False
+    recording_hook_lines = recording_policy_hook_lines("route", _slug(route.name), route.recording_policy)
+    if recording_hook_lines:
+        lines.extend(recording_hook_lines)
     for route_trunk in route_trunks:
         lines.append(f" same => n,Dial({_dial_target(route_trunk.trunk)},60)")
     lines.extend([" same => n,Hangup()", ""])
+    return bool(recording_hook_lines)
 
 
 def _append_feature_code_lines(lines: list[str], feature_code: dict[str, Any]) -> None:
@@ -1787,7 +1801,8 @@ def _append_feature_code_lines(lines: list[str], feature_code: dict[str, Any]) -
     lines.extend([" same => n,Hangup()", ""])
 
 
-def _append_destination_contexts(lines: list[str], inbound_config: dict[str, Any]) -> None:
+def _append_destination_contexts(lines: list[str], inbound_config: dict[str, Any]) -> bool:
+    recording_hooks_enabled = False
     lines.append("[ivrs]")
     for ivr in inbound_config["ivrs"]:
         ivr_name = _slug(ivr["name"])
@@ -1828,15 +1843,20 @@ def _append_destination_contexts(lines: list[str], inbound_config: dict[str, Any
     lines.append("[queues]")
     for queue in inbound_config["queues"]:
         queue_name = _queue_name(queue["name"])
+        recording_hook_lines = recording_policy_hook_lines("queue", queue_name, queue.get("recording_policy"))
         lines.extend(
             [
                 f"exten => {queue_name},1,NoOp(Queue {queue['name']})",
-                f" same => n,Queue({queue_name},t,,,{queue['timeout_seconds']})",
             ]
         )
+        if recording_hook_lines:
+            recording_hooks_enabled = True
+            lines.extend(recording_hook_lines)
+        lines.append(f" same => n,Queue({queue_name},t,,,{queue['timeout_seconds']})")
         if queue["overflow_destination"]:
             lines.append(f" same => n,{_destination_app(queue['overflow_destination'])}")
         lines.extend([" same => n,Hangup()", ""])
+    return recording_hooks_enabled
 
 
 def _active_sip_trunks(location: Location) -> list[Trunk]:

@@ -6,6 +6,8 @@ from typing import Any, Iterable
 SIP_TRUNK_TYPE = "sip"
 IAX2_TRUNK_TYPE = "iax2"
 REDACTED_VALUE = "[redacted]"
+RECORDING_ROOT = "/var/spool/asterisk/monitor"
+RECORDING_ENABLED_POLICIES = frozenset({"always", "on_demand"})
 SENSITIVE_DETAIL_KEYS = frozenset(
     {
         "api_key",
@@ -54,6 +56,54 @@ def active_route_trunks(route_trunk_links: Iterable[Any]) -> list[Any]:
 
 def route_dial_targets(route_trunk_links: Iterable[Any]) -> list[str]:
     return [dial_target(link.trunk) for link in active_route_trunks(route_trunk_links)]
+
+
+def recording_policy_value(policy: Any) -> str:
+    raw_value = getattr(policy, "value", policy)
+    return str(raw_value or "").strip().lower()
+
+
+def recording_policy_requires_mixmonitor(policy: Any) -> bool:
+    return recording_policy_value(policy) in RECORDING_ENABLED_POLICIES
+
+
+def recording_policy_hook_lines(
+    source_type: str,
+    source_id: str,
+    policy: Any,
+    *,
+    include_context: bool = False,
+) -> list[str]:
+    policy_value = recording_policy_value(policy)
+    if policy_value not in RECORDING_ENABLED_POLICIES:
+        return []
+
+    lines = [
+        f" same => n,Gosub(recording-hooks,s,1({slug(source_type)},{slug(source_id)},{policy_value}))",
+    ]
+    if include_context:
+        lines.extend(recording_hook_context_lines())
+    return lines
+
+
+def recording_hook_context_lines(recording_root: str = RECORDING_ROOT) -> list[str]:
+    root = str(recording_root or RECORDING_ROOT).rstrip("/") or RECORDING_ROOT
+    return [
+        "[recording-hooks]",
+        "exten => s,1,NoOp(Recording policy ${ARG3} for ${ARG1}-${ARG2})",
+        ' same => n,GotoIf($["${RECORDING_ACTIVE}"="1"]?done)',
+        " same => n,Set(__RECORDING_ACTIVE=1)",
+        " same => n,Set(__RECORDING_SOURCE=${ARG1}-${ARG2})",
+        " same => n,Set(__RECORDING_POLICY=${ARG3})",
+        " same => n,Set(__RECORDING_FILE=${UNIQUEID}-${LOCAL_PBX}-${RECORDING_SOURCE}-${RECORDING_POLICY}.wav)",
+        (
+            " same => n,Set(CDR(userfield)=recording_file=${RECORDING_FILE} "
+            "recording_source=${RECORDING_SOURCE} recording_policy=${RECORDING_POLICY})"
+        ),
+        f" same => n,MixMonitor({root}/${{RECORDING_FILE}},b)",
+        " same => n(done),Return()",
+        "",
+    ]
 
 
 def iax2_provider_trunk_lines(trunk: Any) -> list[str]:
