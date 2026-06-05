@@ -102,6 +102,29 @@ ASTERISK_SOUNDS_ROOT = os.environ.get("ASTERISK_SOUNDS_ROOT", "/var/lib/asterisk
 ASTERISK_PROMPT_DIRECTORY = os.environ.get("ASTERISK_PROMPT_DIRECTORY", "custom/ivr")
 PBX_AGENT_PORTAL_URL = os.environ.get("PBX_AGENT_PORTAL_URL", "https://portal.example.test")
 PBX_ACTIVE_CONFIG_MARKER = os.environ.get("PBX_ACTIVE_CONFIG_MARKER", "/etc/asterisk/pbx-active-config.json")
+PBX_RUNTIME_IMAGE_TAG_POLICY = os.environ.get("PBX_RUNTIME_IMAGE_TAG_POLICY", "")
+PBX_RUNTIME_IMAGES = {
+    "asterisk": {
+        "reference": os.environ.get("PBX_ASTERISK_IMAGE", ""),
+        "resolved_digest": os.environ.get("PBX_ASTERISK_IMAGE_DIGEST", ""),
+        "digest_source": os.environ.get("PBX_ASTERISK_IMAGE_DIGEST_SOURCE", ""),
+    },
+    "tftp": {
+        "reference": os.environ.get("PBX_TFTP_IMAGE", ""),
+        "resolved_digest": os.environ.get("PBX_TFTP_IMAGE_DIGEST", ""),
+        "digest_source": os.environ.get("PBX_TFTP_IMAGE_DIGEST_SOURCE", ""),
+    },
+    "provisioning-http": {
+        "reference": os.environ.get("PBX_HTTP_IMAGE", ""),
+        "resolved_digest": os.environ.get("PBX_HTTP_IMAGE_DIGEST", ""),
+        "digest_source": os.environ.get("PBX_HTTP_IMAGE_DIGEST_SOURCE", ""),
+    },
+    "pbx-agent": {
+        "reference": os.environ.get("PBX_AGENT_IMAGE", ""),
+        "resolved_digest": os.environ.get("PBX_AGENT_IMAGE_DIGEST", ""),
+        "digest_source": os.environ.get("PBX_AGENT_IMAGE_DIGEST_SOURCE", ""),
+    },
+}
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 

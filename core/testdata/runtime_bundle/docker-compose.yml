@@ -1,6 +1,6 @@
 services:
   asterisk:
-    image: ${PBX_ASTERISK_IMAGE:-ghcr.io/apresz/asterisk:22-lts}
+    image: ${PBX_ASTERISK_IMAGE:?PBX_ASTERISK_IMAGE must include an immutable digest}
     container_name: pbx-${PBX_LOCATION_SLUG:-version-hq}-asterisk
     restart: unless-stopped
     network_mode: host
@@ -16,7 +16,7 @@ services:
       - asterisk-spool:/var/spool/asterisk
 
   tftp:
-    image: ${PBX_TFTP_IMAGE:-ghcr.io/apresz/tftp:1.0.0}
+    image: ${PBX_TFTP_IMAGE:?PBX_TFTP_IMAGE must include an immutable digest}
     container_name: pbx-${PBX_LOCATION_SLUG:-version-hq}-tftp
     restart: unless-stopped
     ports:
@@ -34,7 +34,7 @@ services:
       - ./tftp:/usr/share/nginx/html/cisco:ro
 
   pbx-agent:
-    image: ${PBX_AGENT_IMAGE:-ghcr.io/apresz/pbx-agent:0.1.0}
+    image: ${PBX_AGENT_IMAGE:?PBX_AGENT_IMAGE must include an immutable digest}
     container_name: pbx-${PBX_LOCATION_SLUG:-version-hq}-agent
     restart: unless-stopped
     network_mode: host

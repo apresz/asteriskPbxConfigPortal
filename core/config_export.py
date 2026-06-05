@@ -58,6 +58,19 @@ from .ring_group_dialplan import (
     render_ring_group_dialplan_lines,
     validate_ring_group_dialplan_payload,
 )
+from .runtime_images import (
+    ASTERISK_22_LTS_IMAGE,
+    HTTP_STATIC_SERVICE_IMAGE,
+    PBX_AGENT_IMAGE,
+    RUNTIME_IMAGE_TAG_POLICY_BLOCK,
+    RUNTIME_IMAGE_TAG_POLICY_WARN,
+    RuntimeImage,
+    TFTP_SERVICE_IMAGE,
+    configured_runtime_images,
+    normalize_tag_policy,
+    runtime_image_metadata,
+    runtime_image_validation_issues,
+)
 from .models import (
     AudioPrompt,
     ConfigVersion,
@@ -92,10 +105,8 @@ CISCO_DIRECTORY_FILENAME = "company-directory.xml"
 CISCO_FIRMWARE_CHECKLIST_FILENAME = "firmware/CISCO-FIRMWARE-CHECKLIST.txt"
 CISCO_FIRMWARE_PLACEHOLDER_FILENAME = "firmware/README-no-firmware-bundled.txt"
 CISCO_TRANSPORT_LAYER_PROTOCOL = "TCP"
-ASTERISK_22_LTS_IMAGE = "ghcr.io/apresz/asterisk:22-lts"
-TFTP_SERVICE_IMAGE = "ghcr.io/apresz/tftp:1.0.0"
-HTTP_STATIC_SERVICE_IMAGE = "docker.io/nginx:1.27-alpine"
-PBX_AGENT_IMAGE = "ghcr.io/apresz/pbx-agent:0.1.0"
+RUNTIME_IMAGE_MANIFEST_FILENAME = "runtime-images.json"
+RUNTIME_IMAGE_MANIFEST_CONTENT_TYPE = "application/json"
 
 CISCO_PHONE_MODELS = {
     Phone.PhoneModel.CISCO_9971,
@@ -326,6 +337,7 @@ def create_config_version(
 
     with transaction.atomic():
         locked_location = Location.objects.select_for_update().get(pk=location.pk)
+        deployment_snapshot = _deployment_snapshot(locked_location)
         version_number = (
             ConfigVersion.objects.filter(location=locked_location).aggregate(last=Max("version_number"))["last"] or 0
         ) + 1
@@ -347,7 +359,7 @@ def create_config_version(
             warnings=validation["warnings"],
             emergency_status=_emergency_status(validation, require_emergency=require_emergency),
             file_manifest=archive.file_manifest,
-            deployment_snapshot=_deployment_snapshot(locked_location),
+            deployment_snapshot=deployment_snapshot,
             archive=archive.archive_bytes,
             archive_size_bytes=len(archive.archive_bytes),
             rollback_of=rollback_of,
@@ -364,13 +376,29 @@ def build_config_export_archive(
     require_emergency: bool = True,
 ) -> ConfigExportArchive:
     validation = validation or validate_location_routing(location, require_emergency=require_emergency)
+    if validation["errors"]:
+        raise ConfigExportValidationError(validation)
     config = build_location_config(location, require_emergency=require_emergency, validation=validation)
     exported_by_username = exported_by.get_username() if getattr(exported_by, "is_authenticated", False) else "system"
     location_snapshot = _location_snapshot(location)
     deployment_snapshot = _deployment_snapshot(location)
+    runtime_images = _runtime_images()
+    runtime_images_metadata = runtime_image_metadata(runtime_images)
+    runtime_images_manifest = {
+        "format": "pbx-runtime-images/v1",
+        "tag_policy": _runtime_image_tag_policy(),
+        "images": runtime_images_metadata,
+    }
     marker_path = _active_config_marker_path()
     marker_bundle_path = active_config_marker_bundle_path(marker_path)
-    files = _export_payload_files(location, config, validation=validation)
+    files = _export_payload_files(location, config, runtime_images=runtime_images, validation=validation)
+    files.append(
+        (
+            RUNTIME_IMAGE_MANIFEST_FILENAME,
+            json_bytes(runtime_images_manifest),
+            RUNTIME_IMAGE_MANIFEST_CONTENT_TYPE,
+        )
+    )
     payload_checksum = payload_files_checksum(files)
     marker = build_active_config_marker(
         location=location_snapshot,
@@ -407,6 +435,12 @@ def build_config_export_archive(
             "content_type": ACTIVE_CONFIG_MARKER_CONTENT_TYPE,
             "checksum": payload_checksum,
             "checksum_type": CONFIG_PAYLOAD_CHECKSUM_TYPE,
+        },
+        "runtime_images": {
+            "path": RUNTIME_IMAGE_MANIFEST_FILENAME,
+            "content_type": RUNTIME_IMAGE_MANIFEST_CONTENT_TYPE,
+            "tag_policy": _runtime_image_tag_policy(),
+            "images": runtime_images_metadata,
         },
         "files": payload_manifest,
     }
@@ -447,11 +481,16 @@ def _export_payload_files(
     location: Location,
     config: dict[str, Any],
     *,
+    runtime_images: tuple[RuntimeImage, ...],
     validation: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[ArchiveFile]:
     files: list[ArchiveFile] = [
-        ("docker-compose.yml", _docker_compose_yml(location).encode("utf-8"), "application/x-yaml"),
-        (".env.example", _env_example(location).encode("utf-8"), "text/plain"),
+        (
+            "docker-compose.yml",
+            _docker_compose_yml(location, runtime_images=runtime_images).encode("utf-8"),
+            "application/x-yaml",
+        ),
+        (".env.example", _env_example(location, runtime_images=runtime_images).encode("utf-8"), "text/plain"),
     ]
     files.extend(
         (
@@ -517,7 +556,8 @@ def _file_field_path(file_field) -> str:
         return ""
 
 
-def _docker_compose_yml(location: Location) -> str:
+def _docker_compose_yml(location: Location, *, runtime_images: tuple[RuntimeImage, ...] | None = None) -> str:
+    runtime_images_by_service = _runtime_images_by_service(runtime_images or _runtime_images())
     marker_path = _active_config_marker_path()
     marker_bundle_path = active_config_marker_bundle_path(marker_path)
     marker_volume_mount = active_config_marker_volume_mount(marker_path, marker_bundle_path)
@@ -525,7 +565,7 @@ def _docker_compose_yml(location: Location) -> str:
         [
             "services:",
             "  asterisk:",
-            f"    image: ${{PBX_ASTERISK_IMAGE:-{ASTERISK_22_LTS_IMAGE}}}",
+            f"    image: {_compose_image_value(runtime_images_by_service['asterisk'])}",
             f"    container_name: pbx-${{PBX_LOCATION_SLUG:-{location.slug}}}-asterisk",
             "    restart: unless-stopped",
             "    network_mode: host",
@@ -541,7 +581,7 @@ def _docker_compose_yml(location: Location) -> str:
             "      - asterisk-spool:/var/spool/asterisk",
             "",
             "  tftp:",
-            f"    image: ${{PBX_TFTP_IMAGE:-{TFTP_SERVICE_IMAGE}}}",
+            f"    image: {_compose_image_value(runtime_images_by_service['tftp'])}",
             f"    container_name: pbx-${{PBX_LOCATION_SLUG:-{location.slug}}}-tftp",
             "    restart: unless-stopped",
             "    ports:",
@@ -550,7 +590,7 @@ def _docker_compose_yml(location: Location) -> str:
             "      - ./tftp:/srv/tftp:ro",
             "",
             "  provisioning-http:",
-            f"    image: ${{PBX_HTTP_IMAGE:-{HTTP_STATIC_SERVICE_IMAGE}}}",
+            f"    image: {_compose_image_value(runtime_images_by_service['provisioning-http'])}",
             f"    container_name: pbx-${{PBX_LOCATION_SLUG:-{location.slug}}}-http",
             "    restart: unless-stopped",
             "    ports:",
@@ -559,7 +599,7 @@ def _docker_compose_yml(location: Location) -> str:
             "      - ./tftp:/usr/share/nginx/html/cisco:ro",
             "",
             "  pbx-agent:",
-            f"    image: ${{PBX_AGENT_IMAGE:-{PBX_AGENT_IMAGE}}}",
+            f"    image: {_compose_image_value(runtime_images_by_service['pbx-agent'])}",
             f"    container_name: pbx-${{PBX_LOCATION_SLUG:-{location.slug}}}-agent",
             "    restart: unless-stopped",
             "    network_mode: host",
@@ -597,7 +637,8 @@ def _docker_compose_yml(location: Location) -> str:
     )
 
 
-def _env_example(location: Location) -> str:
+def _env_example(location: Location, *, runtime_images: tuple[RuntimeImage, ...] | None = None) -> str:
+    runtime_images_by_service = _runtime_images_by_service(runtime_images or _runtime_images())
     ami_username = location.ami_username or f"ami-{location.slug}"
     marker_path = _active_config_marker_path()
     return "\n".join(
@@ -607,10 +648,11 @@ def _env_example(location: Location) -> str:
             f"PBX_WARP_IP={location.pbx_warp_ip}",
             f"TZ={location.timezone}",
             "",
-            f"PBX_ASTERISK_IMAGE={ASTERISK_22_LTS_IMAGE}",
-            f"PBX_TFTP_IMAGE={TFTP_SERVICE_IMAGE}",
-            f"PBX_HTTP_IMAGE={HTTP_STATIC_SERVICE_IMAGE}",
-            f"PBX_AGENT_IMAGE={PBX_AGENT_IMAGE}",
+            "# Custom PBX runtime images must include an immutable digest.",
+            f"PBX_ASTERISK_IMAGE={_env_image_value(runtime_images_by_service['asterisk'])}",
+            f"PBX_TFTP_IMAGE={_env_image_value(runtime_images_by_service['tftp'])}",
+            f"PBX_HTTP_IMAGE={_env_image_value(runtime_images_by_service['provisioning-http'])}",
+            f"PBX_AGENT_IMAGE={_env_image_value(runtime_images_by_service['pbx-agent'])}",
             "",
             "PROVISIONING_TFTP_PORT=69",
             "PROVISIONING_HTTP_PORT=80",
@@ -636,8 +678,51 @@ def _env_example(location: Location) -> str:
     )
 
 
+def _compose_image_value(image: RuntimeImage) -> str:
+    if image.compose_default is None:
+        return f"${{{image.env_var}:?{image.env_var} must include an immutable digest}}"
+    return f"${{{image.env_var}:-{image.compose_default}}}"
+
+
+def _env_image_value(image: RuntimeImage) -> str:
+    if image.compose_default is None:
+        return ""
+    return image.compose_default
+
+
 def _active_config_marker_path() -> str:
     return str(getattr(settings, "PBX_ACTIVE_CONFIG_MARKER", "") or DEFAULT_ACTIVE_CONFIG_MARKER_PATH)
+
+
+def _runtime_images() -> tuple[RuntimeImage, ...]:
+    return configured_runtime_images(getattr(settings, "PBX_RUNTIME_IMAGES", None))
+
+
+def _runtime_images_by_service(runtime_images: tuple[RuntimeImage, ...]) -> dict[str, RuntimeImage]:
+    return {image.service: image for image in runtime_images}
+
+
+def _runtime_image_tag_policy() -> str:
+    configured_policy = getattr(settings, "PBX_RUNTIME_IMAGE_TAG_POLICY", "")
+    if configured_policy:
+        return normalize_tag_policy(configured_policy)
+    if getattr(settings, "DEBUG", True):
+        return RUNTIME_IMAGE_TAG_POLICY_WARN
+    return RUNTIME_IMAGE_TAG_POLICY_BLOCK
+
+
+def _runtime_image_validation() -> dict[str, list[dict[str, Any]]]:
+    return runtime_image_validation_issues(
+        _runtime_images(),
+        tag_policy=_runtime_image_tag_policy(),
+    )
+
+
+def _runtime_image_snapshot() -> dict[str, Any]:
+    return {
+        "tag_policy": _runtime_image_tag_policy(),
+        "images": runtime_image_metadata(_runtime_images()),
+    }
 
 
 def _location_snapshot(location: Location) -> dict[str, Any]:
@@ -657,6 +742,7 @@ def _deployment_snapshot(location: Location) -> dict[str, Any]:
         "ssh_username_configured": bool(location.deployment_ssh_username),
         "ssh_private_key_configured": bool(location.deployment_ssh_private_key),
         "ssh_known_hosts_configured": bool(location.deployment_ssh_known_hosts),
+        "runtime_images": _runtime_image_snapshot(),
     }
 
 
@@ -679,6 +765,7 @@ def validate_location_routing(location: Location, *, require_emergency: bool = F
     """Return export validation issues without blocking normal config export."""
     warnings = export_validation_warnings(location)
     errors: list[dict[str, Any]] = []
+    errors.extend(_runtime_image_validation()["errors"])
     try:
         validate_location_rtp_range(location)
     except RTPRangeError as exc:
@@ -779,6 +866,7 @@ def ring_group_routing_errors(location: Location) -> list[dict[str, Any]]:
 
 def export_validation_warnings(location: Location) -> list[dict[str, Any]]:
     warnings: list[dict[str, Any]] = []
+    warnings.extend(_runtime_image_validation()["warnings"])
     warnings.extend(provider_credential_warnings(location))
     warnings.extend(suspicious_did_warnings(location))
     warnings.extend(phone_inventory_warnings(location))

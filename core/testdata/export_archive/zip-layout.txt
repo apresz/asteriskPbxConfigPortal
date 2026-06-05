@@ -1,5 +1,5 @@
-docker-compose.yml|size=2748|sha256=01778ffe79ec5acfcb361d3fbf53bf8a7716be8b5a5e44546438743f894c1ecb|date=(1980, 1, 1, 0, 0, 0)|mode=0o600
-.env.example|size=911|sha256=b87280a204d4eaa2d82078e8985eca0e62b4223031f4571d98d22c995a6a311b|date=(1980, 1, 1, 0, 0, 0)|mode=0o600
+docker-compose.yml|size=2809|sha256=416199e9b316762b7fc637bd609ce532c92fed5106634254d2bb29c6868d633c|date=(1980, 1, 1, 0, 0, 0)|mode=0o600
+.env.example|size=888|sha256=7c91d15b66677e9ff310c59f22ecbd19ebc44dbeb0cf0a9819ce7632eaf7c7b5|date=(1980, 1, 1, 0, 0, 0)|mode=0o600
 asterisk/pjsip.conf|size=1183|sha256=87984a1acb4a7eb217e21d0c2184637a8678f5ffee181fc5dbefe261939aafad|date=(1980, 1, 1, 0, 0, 0)|mode=0o600
 asterisk/rtp.conf|size=109|sha256=703678f9a8e9fd5d1f0ac0ae49e4b0076404292f221f89b667283f0625423022|date=(1980, 1, 1, 0, 0, 0)|mode=0o600
 asterisk/iax.conf|size=208|sha256=e344768f164e6e59bfe28337a014f21c0de6803cc6dd35a4ae7024c5a6da4465|date=(1980, 1, 1, 0, 0, 0)|mode=0o600
@@ -16,6 +16,7 @@ asterisk/retention.conf|size=185|sha256=d056ae4794b42fe36a73e5e8f2bdb3bfc237d975
 tftp/company-directory.xml|size=319|sha256=33e55963aeb254274f9837dd44f9cf12bd94931a864c49d7ebb95bd2707eab1c|date=(1980, 1, 1, 0, 0, 0)|mode=0o600
 tftp/firmware/CISCO-FIRMWARE-CHECKLIST.txt|size=447|sha256=d1efb265fde499cc61796597546371b03906575ba8afdd40ab24976073c9a2b5|date=(1980, 1, 1, 0, 0, 0)|mode=0o600
 tftp/firmware/README-no-firmware-bundled.txt|size=157|sha256=011de78ace2753d1eae16e5785e588a1ac64f972a783018f74860bfe5d00674b|date=(1980, 1, 1, 0, 0, 0)|mode=0o600
-asterisk/pbx-active-config.json|size=1066|sha256=4e9d1ded301610e5dac282f232e3573b735a670d78e722eca4d3b8f2cc27293f|date=(1980, 1, 1, 0, 0, 0)|mode=0o600
-manifest.json|size=4664|sha256=10ee9e7d70f51e26cfc0d74eb4d641084493dde6014ab8e239fede767875fd43|date=(1980, 1, 1, 0, 0, 0)|mode=0o600
-SHA256SUMS|size=1794|sha256=761af3a4ba52889e5624de30e04405b7367a22cdb3831aa3735df82833a3f11a|date=(1980, 1, 1, 0, 0, 0)|mode=0o600
+runtime-images.json|size=1694|sha256=ecb839c26d452048556f3d171a6413ba6e237879a2f04ac970a5abf33c43cc3f|date=(1980, 1, 1, 0, 0, 0)|mode=0o600
+asterisk/pbx-active-config.json|size=2986|sha256=a8822236233a91d7ceae0136ee32acdb0dbae868a110ce07151cdffbd82b5154|date=(1980, 1, 1, 0, 0, 0)|mode=0o600
+manifest.json|size=9853|sha256=7238c1783a39f8f57872ff92ae24e432197a2431c149ce9827b6d2322cb7d950|date=(1980, 1, 1, 0, 0, 0)|mode=0o600
+SHA256SUMS|size=1880|sha256=8acbbf32305f357d7e5dc85e5c8470dbb8ead4f24d7d59a73db10f6282bee546|date=(1980, 1, 1, 0, 0, 0)|mode=0o600
