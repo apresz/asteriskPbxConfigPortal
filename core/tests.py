@@ -9,19 +9,25 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import unittest
 from unittest import mock
 import zipfile
 
-from django.contrib.auth import get_user_model
-from django.core.files.base import ContentFile
-from django.core.exceptions import ValidationError
-from django.core.files.uploadedfile import SimpleUploadedFile
-from django.core.management import call_command
-from django.core.management.base import CommandError
-from django.db import IntegrityError, transaction
-from django.test import Client, SimpleTestCase, TestCase, TransactionTestCase, override_settings
-from django.urls import reverse
-from django.utils import timezone
+try:
+    from django.contrib.auth import get_user_model
+    from django.core.files.base import ContentFile
+    from django.core.exceptions import ValidationError
+    from django.core.files.uploadedfile import SimpleUploadedFile
+    from django.core.management import call_command
+    from django.core.management.base import CommandError
+    from django.db import IntegrityError, transaction
+    from django.test import Client, SimpleTestCase, TestCase, TransactionTestCase, override_settings
+    from django.urls import reverse
+    from django.utils import timezone
+except ModuleNotFoundError as exc:
+    if exc.name == "django":
+        raise unittest.SkipTest("Django is not installed in this pure-Python validation environment.")
+    raise
 
 from .access import (
     assign_role,

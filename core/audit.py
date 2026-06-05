@@ -1,3 +1,4 @@
+from .asterisk_config_helpers import redact_sensitive_details
 from .models import AuditAction, AuditLog, AuditOutcome
 
 
@@ -15,5 +16,5 @@ def record_audit(
         action=AuditAction(action),
         target=target,
         outcome=AuditOutcome(outcome),
-        details=details or {},
+        details=redact_sensitive_details(details or {}),
     )
