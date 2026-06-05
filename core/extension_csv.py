@@ -5,7 +5,8 @@ from io import StringIO
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
-from .audit import record_audit
+from .audit import record_audit, record_config_change
+from .audit_helpers import audit_model_summary
 from .extension_management import is_911_disable_change, membership_names, sync_extension_relationships
 from .models import (
     AuditAction,
@@ -162,6 +163,8 @@ def import_extensions_csv(content, *, actor=None, can_disable_911=False) -> int:
 
     with transaction.atomic():
         for prepared in prepared_rows:
+            operation = "update" if prepared.extension.pk else "create"
+            before = audit_model_summary(prepared.extension, redact=False) if prepared.extension.pk else None
             for field_name, value in prepared.field_values.items():
                 setattr(prepared.extension, field_name, value)
             prepared.extension.full_clean()
@@ -172,6 +175,14 @@ def import_extensions_csv(content, *, actor=None, can_disable_911=False) -> int:
                 ring_groups=prepared.ring_groups,
                 queues=prepared.queues,
                 paging_groups=prepared.paging_groups,
+            )
+            record_config_change(
+                actor=actor,
+                operation=operation,
+                instance=prepared.extension,
+                before=before,
+                source="csv_import",
+                extra_details={"row": prepared.row_number},
             )
             if prepared.logs_911_disable:
                 _record_911_audit(actor, prepared.extension.number, AuditOutcome.SUCCESS, prepared.row_number)
