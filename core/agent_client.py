@@ -209,9 +209,7 @@ async def handle_agent_control_message(
 
     command_id = str(message.get("command_id") or "")
     command_name = str(message.get("command") or "")
-    parameters = message.get("parameters") or {}
-    if not isinstance(parameters, dict):
-        parameters = {}
+    parameters = message.get("parameters", {})
 
     executor = command_executor or execute_live_ami_command
     result = await _maybe_await(executor(config, command_name, parameters))
