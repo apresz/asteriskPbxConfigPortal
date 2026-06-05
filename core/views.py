@@ -68,6 +68,7 @@ from .models import (
     APIKey,
     AdminBackup,
     AuditAction,
+    AuditLog,
     AuditOutcome,
     CallQueue,
     ConfigVersion,
@@ -442,6 +443,150 @@ def outbound_route_delete(request, route_id: int):
     )
 
 
+@permission_required(PortalPermission.VIEW)
+@require_GET
+def phone_book(request):
+    contacts = (
+        Extension.objects.select_related("location")
+        .prefetch_related("direct_dids", "phone_appearances__phone")
+        .order_by("number")
+    )
+    context = _portal_area_context(request, "phone-book", {"phone_book_contacts": contacts})
+    return render(request, _template(request, "core/phone_book.html", "core/partials/phone_book_content.html"), context)
+
+
+@permission_required(PortalPermission.ACCESS_RECORDINGS)
+@require_GET
+def recordings(request):
+    locations = [_recordings_location(location, request.user) for location in Location.objects.order_by("name")]
+    context = _portal_area_context(
+        request,
+        "recordings",
+        {
+            "recording_locations": locations,
+            "recording_count": sum(len(location["recordings"]) for location in locations),
+        },
+    )
+    return render(request, _template(request, "core/recordings.html", "core/partials/recordings_content.html"), context)
+
+
+@permission_required(PortalPermission.ADMINISTER)
+@require_GET
+def audit_log(request):
+    entries = AuditLog.objects.select_related("actor").order_by("-timestamp", "-id")[:100]
+    context = _portal_area_context(request, "audit-log", {"audit_entries": entries})
+    return render(request, _template(request, "core/audit_log.html", "core/partials/audit_log_content.html"), context)
+
+
+@permission_required(PortalPermission.ADMINISTER)
+@require_GET
+def users_roles(request):
+    context = _portal_area_context(
+        request,
+        "users-roles",
+        {
+            "user_role_rows": _user_role_rows(),
+            "portal_roles": _portal_role_rows(),
+            "role_options": list(PortalRole),
+        },
+    )
+    return render(request, _template(request, "core/users_roles.html", "core/partials/users_roles_content.html"), context)
+
+
+@permission_required(PortalPermission.ADMINISTER)
+@require_POST
+def user_role_update(request, user_id: int):
+    user = get_object_or_404(User, pk=user_id)
+    try:
+        role = PortalRole(str(request.POST.get("role") or ""))
+    except ValueError:
+        return HttpResponse("Invalid portal role.", status=400)
+
+    changed_fields = []
+    if _stored_user_role(user) != role:
+        changed_fields.append("role")
+
+    with transaction.atomic():
+        user.portal_profile = assign_role(user, role)
+
+    if changed_fields:
+        _record_api_user_update_audit(request.user, user, changed_fields, request)
+    return redirect("users-roles")
+
+
+@permission_required(PortalPermission.ADMINISTER)
+@require_http_methods(["GET", "POST"])
+def api_keys(request):
+    issued_secret = None
+    issued_api_key = None
+    error_message = ""
+    status = 200
+
+    if request.method == "POST":
+        name = str(request.POST.get("name") or "").strip()
+        user, service_identity, error_message = _api_key_scope_from_post(request)
+        if not name:
+            error_message = "API key name is required."
+        if error_message:
+            status = 400
+        else:
+            try:
+                with transaction.atomic():
+                    issued_api_key, issued_secret = APIKey.issue(
+                        name=name,
+                        created_by=request.user,
+                        user=user,
+                        service_identity=service_identity,
+                    )
+                    _record_api_key_audit(request.user, AuditAction.API_KEY_CREATE, issued_api_key)
+                status = 201
+            except (IntegrityError, ValidationError, ValueError) as exc:
+                error_message = str(exc)
+                status = 400
+
+    return _api_keys_page_response(
+        request,
+        issued_secret=issued_secret,
+        issued_api_key=issued_api_key,
+        error_message=error_message,
+        status=status,
+    )
+
+
+@permission_required(PortalPermission.ADMINISTER)
+@require_POST
+def api_key_rotate_ui(request, api_key_id: int):
+    api_key = get_object_or_404(APIKey.objects.select_related("user", "service_identity"), pk=api_key_id)
+    try:
+        with transaction.atomic():
+            old_prefix = api_key.prefix
+            raw_secret = api_key.rotate(request.user)
+            _record_api_key_audit(
+                request.user,
+                AuditAction.API_KEY_ROTATE,
+                api_key,
+                details={"old_prefix": old_prefix},
+            )
+    except ValidationError as exc:
+        return _api_keys_page_response(request, error_message=str(exc), status=400)
+
+    return _api_keys_page_response(request, issued_secret=raw_secret, issued_api_key=api_key)
+
+
+@permission_required(PortalPermission.ADMINISTER)
+@require_POST
+def api_key_revoke_ui(request, api_key_id: int):
+    api_key = get_object_or_404(APIKey.objects.select_related("user", "service_identity"), pk=api_key_id)
+    try:
+        with transaction.atomic():
+            api_key.revoke(request.user)
+            _record_api_key_audit(request.user, AuditAction.API_KEY_REVOKE, api_key)
+    except ValidationError as exc:
+        return _api_keys_page_response(request, error_message=str(exc), status=400)
+
+    return redirect("api-keys")
+
+
 @api_permission_required(PortalPermission.ADMINISTER)
 @require_GET
 def admin_roles(request):
@@ -669,14 +814,20 @@ def admin_api_key_revoke(request, api_key_id: int):
 @permission_required(PortalPermission.ADMINISTER)
 @require_GET
 def settings(request):
-    backups = AdminBackup.objects.select_related("generated_by").order_by("-generated_at", "-id")[:20]
-    context = {
-        "area": PORTAL_AREAS["settings"],
-        "slug": "settings",
-        "areas": visible_portal_areas(request.user),
-        "backups": backups,
-    }
+    context = _portal_area_context(
+        request,
+        "settings",
+        {"settings_links": _settings_links(request.user)},
+    )
     return render(request, _template(request, "core/settings.html", "core/partials/settings_content.html"), context)
+
+
+@permission_required(PortalPermission.ADMINISTER)
+@require_GET
+def backups(request):
+    backups = AdminBackup.objects.select_related("generated_by").order_by("-generated_at", "-id")[:20]
+    context = _portal_area_context(request, "backups", {"backups": backups})
+    return render(request, _template(request, "core/backups.html", "core/partials/backups_content.html"), context)
 
 
 @permission_required(PortalPermission.ADMINISTER)
@@ -686,7 +837,7 @@ def admin_backup_create(request):
     _record_backup_audit(request.user, AuditAction.BACKUP_CREATE, backup)
     if request.headers.get("Accept") == "application/json":
         return JsonResponse({"backup": _serialize_admin_backup(backup)}, status=201)
-    return redirect("settings")
+    return redirect("backups")
 
 
 @permission_required(PortalPermission.ADMINISTER)
@@ -2025,6 +2176,113 @@ def _template(request, full_template: str, partial_template: str) -> str:
     if request.headers.get("HX-Request") == "true":
         return partial_template
     return full_template
+
+
+def _portal_area_context(request, slug: str, extra: dict | None = None) -> dict:
+    context = {
+        "area": PORTAL_AREAS[slug],
+        "slug": slug,
+        "areas": visible_portal_areas(request.user),
+    }
+    if extra:
+        context.update(extra)
+    return context
+
+
+def _settings_links(user) -> list[dict]:
+    visible_areas = visible_portal_areas(user)
+    return [
+        {"slug": slug, "area": PORTAL_AREAS[slug]}
+        for slug in ("users-roles", "api-keys", "audit-log", "backups")
+        if slug in visible_areas
+    ]
+
+
+def _recordings_location(location: Location, user) -> dict:
+    telemetry = location.agent_telemetry if isinstance(location.agent_telemetry, dict) else {}
+    can_access_recordings = user_has_permission(user, PortalPermission.ACCESS_RECORDINGS)
+    recordings = [
+        _recording_context(location, recording, can_access_recordings=can_access_recordings)
+        for recording in _telemetry_list(telemetry, "recording_metadata")
+    ]
+    return {
+        "location": location,
+        "recordings": recordings,
+        "available": sum(1 for recording in recordings if recording["status"] == "available"),
+        "expired": sum(1 for recording in recordings if recording["status"] == "expired"),
+        "unavailable": sum(1 for recording in recordings if recording["status"] == "unavailable"),
+    }
+
+
+def _user_role_rows() -> list[dict]:
+    rows = []
+    for user in User.objects.select_related("portal_profile").order_by("username", "id"):
+        role = get_user_role(user)
+        rows.append(
+            {
+                "user": user,
+                "role": role,
+                "role_label": role.label if role else "No portal role",
+                "is_superuser": user.is_superuser,
+            }
+        )
+    return rows
+
+
+def _portal_role_rows() -> list[dict]:
+    return [{"role": role, "permissions": _role_permissions(role)} for role in PortalRole]
+
+
+def _api_keys_page_response(
+    request,
+    *,
+    issued_secret: str | None = None,
+    issued_api_key: APIKey | None = None,
+    error_message: str = "",
+    status: int = 200,
+):
+    context = _portal_area_context(
+        request,
+        "api-keys",
+        {
+            "api_keys": APIKey.objects.select_related("user", "service_identity").order_by("name", "id"),
+            "service_identities": ServiceIdentity.objects.order_by("name", "id"),
+            "api_key_users": User.objects.order_by("username", "id"),
+            "issued_secret": issued_secret,
+            "issued_api_key": issued_api_key,
+            "error_message": error_message,
+        },
+    )
+    return render(
+        request,
+        _template(request, "core/api_keys.html", "core/partials/api_keys_content.html"),
+        context,
+        status=status,
+    )
+
+
+def _api_key_scope_from_post(request):
+    raw_scope = str(request.POST.get("scope") or "").strip()
+    if ":" not in raw_scope:
+        return None, None, "Choose a user or service identity scope."
+    scope_type, scope_id = raw_scope.split(":", 1)
+    if scope_type not in {"user", "service_identity"}:
+        return None, None, "Choose a user or service identity scope."
+    try:
+        scope_pk = int(scope_id)
+    except (TypeError, ValueError):
+        return None, None, "Choose a valid API key scope."
+
+    if scope_type == "user":
+        user = User.objects.filter(pk=scope_pk).first()
+        if user is None:
+            return None, None, "Selected user was not found."
+        return user, None, ""
+
+    service_identity = ServiceIdentity.objects.filter(pk=scope_pk).first()
+    if service_identity is None:
+        return None, None, "Selected service identity was not found."
+    return None, service_identity, ""
 
 
 def _role_permissions(role: PortalRole) -> frozenset[PortalPermission]:

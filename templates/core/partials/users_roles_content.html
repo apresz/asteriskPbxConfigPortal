@@ -1,0 +1,80 @@
+<section class="page-heading" data-area="users-roles">
+  <p class="eyebrow">Users/Roles</p>
+  <h1>Portal Access</h1>
+  <p>Named users, assigned roles, and permission coverage for protected portal areas.</p>
+</section>
+
+<section class="table-panel" aria-label="Users/Roles">
+  <div class="table-panel__header">
+    <h2>Users</h2>
+  </div>
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th scope="col">User</th>
+        <th scope="col">Status</th>
+        <th scope="col">Current role</th>
+        <th scope="col">Role assignment</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in user_role_rows %}
+        <tr>
+          <td>
+            {{ row.user.get_username }}
+            {% if row.user.email %}<span class="table-meta">{{ row.user.email }}</span>{% endif %}
+          </td>
+          <td>
+            <span class="status-badge{% if not row.user.is_active %} status-badge--muted{% endif %}">{{ row.user.is_active|yesno:"Active,Inactive" }}</span>
+            {% if row.is_superuser %}<span class="table-meta">Superuser</span>{% endif %}
+          </td>
+          <td>{{ row.role_label }}</td>
+          <td>
+            <form class="table-actions" method="post" action="{% url 'user-role-update' row.user.id %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
+              {% csrf_token %}
+              <label class="table-meta" for="role-{{ row.user.id }}">Role</label>
+              <select class="form-control" id="role-{{ row.user.id }}" name="role">
+                {% for role_option in role_options %}
+                  <option value="{{ role_option.value }}"{% if role_option.value == row.role.value %} selected{% endif %}>{{ role_option.label }}</option>
+                {% endfor %}
+              </select>
+              <button class="button button--secondary" type="submit">Save Role</button>
+            </form>
+          </td>
+        </tr>
+      {% empty %}
+        <tr>
+          <td colspan="4">No portal users found.</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="table-panel" aria-label="Role permissions">
+  <div class="table-panel__header">
+    <h2>Roles</h2>
+  </div>
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th scope="col">Role</th>
+        <th scope="col">Permissions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in portal_roles %}
+        <tr>
+          <td>{{ row.role.label }}</td>
+          <td>
+            <div class="tag-list">
+              {% for permission in row.permissions %}
+                <span class="tag">{{ permission.label }}</span>
+              {% endfor %}
+            </div>
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
