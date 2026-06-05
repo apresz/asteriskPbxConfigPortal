@@ -8,6 +8,7 @@ from django.http import HttpRequest, HttpResponse, JsonResponse
 
 from .models import PortalPermission, PortalRole, PortalUserProfile
 from .portal_area_access import ROLE_PERMISSIONS as ROLE_PERMISSION_VALUES
+from .service_principals import is_service_principal, service_principal_has_permission
 
 
 ROLE_PERMISSIONS = {
@@ -60,6 +61,13 @@ def user_has_permission(user, permission: PortalPermission | str) -> bool:
     return PortalPermission(permission) in get_user_permissions(user)
 
 
+def principal_has_permission(principal, permission: PortalPermission | str) -> bool:
+    required_permission = PortalPermission(permission)
+    if is_service_principal(principal):
+        return service_principal_has_permission(principal, required_permission.value)
+    return user_has_permission(principal, required_permission)
+
+
 def permission_required(permission: PortalPermission | str) -> Callable:
     required_permission = PortalPermission(permission)
 
@@ -86,6 +94,10 @@ def api_login_required(view_func: Callable[..., HttpResponse]) -> Callable[..., 
                 status=getattr(request, "api_key_auth_error_status", 401),
             )
 
+        api_principal = getattr(request, "api_principal", None)
+        if is_service_principal(api_principal) and api_principal.is_active:
+            return view_func(request, *args, **kwargs)
+
         api_user = getattr(request, "api_user", None)
         if _is_active_user(api_user):
             request.user = api_user
@@ -104,7 +116,8 @@ def api_permission_required(permission: PortalPermission | str) -> Callable:
         @api_login_required
         @wraps(view_func)
         def wrapper(request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
-            if not user_has_permission(request.user, required_permission):
+            principal = getattr(request, "api_principal", None) or request.user
+            if not principal_has_permission(principal, required_permission):
                 return JsonResponse({"error": "Permission denied."}, status=403)
             return view_func(request, *args, **kwargs)
 

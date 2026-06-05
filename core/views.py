@@ -17,6 +17,7 @@ from .access import (
     api_permission_required,
     assign_role,
     get_user_role,
+    principal_has_permission,
     permission_required,
     user_has_permission,
 )
@@ -91,6 +92,12 @@ from .models import (
     Trunk,
 )
 from .navigation import PORTAL_AREAS, visible_portal_areas
+from .service_principals import (
+    ServicePermissionError,
+    is_service_principal,
+    normalize_service_permissions,
+    service_identity_audit_details,
+)
 from .phone_csv import (
     did_template_csv,
     export_phones_csv,
@@ -538,7 +545,7 @@ def api_keys(request):
                         user=user,
                         service_identity=service_identity,
                     )
-                    _record_api_key_audit(request.user, AuditAction.API_KEY_CREATE, issued_api_key)
+                    _record_api_key_audit(request.user, AuditAction.API_KEY_CREATE, issued_api_key, request=request)
                 status = 201
             except (IntegrityError, ValidationError, ValueError) as exc:
                 error_message = str(exc)
@@ -566,6 +573,7 @@ def api_key_rotate_ui(request, api_key_id: int):
                 AuditAction.API_KEY_ROTATE,
                 api_key,
                 details={"old_prefix": old_prefix},
+                request=request,
             )
     except ValidationError as exc:
         return _api_keys_page_response(request, error_message=str(exc), status=400)
@@ -580,7 +588,7 @@ def api_key_revoke_ui(request, api_key_id: int):
     try:
         with transaction.atomic():
             api_key.revoke(request.user)
-            _record_api_key_audit(request.user, AuditAction.API_KEY_REVOKE, api_key)
+            _record_api_key_audit(request.user, AuditAction.API_KEY_REVOKE, api_key, request=request)
     except ValidationError as exc:
         return _api_keys_page_response(request, error_message=str(exc), status=400)
 
@@ -660,9 +668,12 @@ def admin_user_detail(request, user_id: int):
 @api_permission_required(PortalPermission.VIEW)
 @require_GET
 def api_users(request):
+    principal = _request_principal(request)
     users = User.objects.select_related("portal_profile")
-    if user_has_permission(request.user, PortalPermission.ADMINISTER):
+    if principal_has_permission(principal, PortalPermission.ADMINISTER):
         users = users.order_by("username", "id")
+    elif is_service_principal(principal):
+        return _json_error("Service identity must have administer permission to access users.", status=403)
     else:
         users = users.filter(pk=request.user.pk)
     return JsonResponse({"users": [_serialize_user(user) for user in users]})
@@ -671,6 +682,8 @@ def api_users(request):
 @api_permission_required(PortalPermission.VIEW)
 @require_http_methods(["GET", "PATCH"])
 def api_current_user(request):
+    if is_service_principal(_request_principal(request)):
+        return _json_error("User endpoint requires a user-scoped API key.", status=403)
     return _api_user_detail_response(request, request.user)
 
 
@@ -678,8 +691,10 @@ def api_current_user(request):
 @require_http_methods(["GET", "PATCH"])
 def api_user_detail(request, user_id: int):
     user = get_object_or_404(User, pk=user_id)
-    if user.pk != request.user.pk and not user_has_permission(request.user, PortalPermission.ADMINISTER):
-        return _json_error("Permission denied.", status=403)
+    principal = _request_principal(request)
+    if not principal_has_permission(principal, PortalPermission.ADMINISTER):
+        if is_service_principal(principal) or user.pk != request.user.pk:
+            return _json_error("Permission denied.", status=403)
     return _api_user_detail_response(request, user)
 
 
@@ -696,15 +711,17 @@ def admin_service_identities(request):
 
     try:
         is_active = _payload_bool(payload, "is_active", True)
-    except ValueError as exc:
+        permissions = _payload_service_permissions(payload.get("permissions", []))
+    except (ServicePermissionError, ValueError) as exc:
         return _json_error(str(exc))
 
     identity = ServiceIdentity(
         name=str(payload.get("name", "")).strip(),
         slug=str(payload.get("slug", "")).strip(),
         description=str(payload.get("description", "")).strip(),
+        permissions=list(permissions),
         is_active=is_active,
-        created_by=request.user,
+        created_by=_request_user_or_none(request),
     )
     if not identity.name or not identity.slug:
         return _json_error("name and slug are required")
@@ -731,11 +748,13 @@ def admin_service_identity_detail(request, service_identity_id: int):
             setattr(identity, field, str(payload[field]).strip())
 
     try:
+        if "permissions" in payload:
+            identity.permissions = list(_payload_service_permissions(payload["permissions"]))
         if "is_active" in payload:
             identity.is_active = _payload_bool(payload, "is_active", identity.is_active)
         identity.full_clean()
         identity.save()
-    except (IntegrityError, ValidationError) as exc:
+    except (IntegrityError, ServicePermissionError, ValidationError) as exc:
         return _json_error(str(exc))
 
     return JsonResponse({"service_identity": _serialize_service_identity(identity)})
@@ -768,7 +787,7 @@ def admin_api_keys(request):
                 user=user,
                 service_identity=service_identity,
             )
-            _record_api_key_audit(request.user, AuditAction.API_KEY_CREATE, api_key)
+            _record_api_key_audit(request.user, AuditAction.API_KEY_CREATE, api_key, request=request)
     except (IntegrityError, ValidationError, ValueError) as exc:
         return _json_error(str(exc))
 
@@ -789,6 +808,7 @@ def admin_api_key_rotate(request, api_key_id: int):
                 AuditAction.API_KEY_ROTATE,
                 api_key,
                 details={"old_prefix": old_prefix},
+                request=request,
             )
     except ValidationError as exc:
         return _json_error(str(exc))
@@ -804,7 +824,7 @@ def admin_api_key_revoke(request, api_key_id: int):
     try:
         with transaction.atomic():
             api_key.revoke(request.user)
-            _record_api_key_audit(request.user, AuditAction.API_KEY_REVOKE, api_key)
+            _record_api_key_audit(request.user, AuditAction.API_KEY_REVOKE, api_key, request=request)
     except ValidationError as exc:
         return _json_error(str(exc))
 
@@ -1073,8 +1093,9 @@ def api_channel_control(request, slug: str):
 def _execute_live_operation(request, location: Location, payload: dict) -> tuple[dict, int]:
     command_name = str(payload.get("command") or "").strip()
     parameters = payload.get("parameters", {})
+    principal = _request_principal(request)
 
-    if not user_has_permission(request.user, PortalPermission.RUN_LIVE_OPERATIONS):
+    if not principal_has_permission(principal, PortalPermission.RUN_LIVE_OPERATIONS):
         response_payload = {
             "location": location.slug,
             "command": command_name,
@@ -1082,7 +1103,7 @@ def _execute_live_operation(request, location: Location, payload: dict) -> tuple
             "error": "Permission denied.",
         }
         _record_live_operation_audit(
-            request.user,
+            principal,
             location,
             command_name,
             AuditOutcome.DENIED,
@@ -1125,7 +1146,7 @@ def _execute_live_operation(request, location: Location, payload: dict) -> tuple
         "result": result,
     }
     _record_live_operation_audit(
-        request.user,
+        principal,
         location,
         audit_command_name,
         outcome,
@@ -2307,6 +2328,15 @@ def _json_error(message: str, *, status: int = 400) -> JsonResponse:
     return JsonResponse({"error": message}, status=status)
 
 
+def _request_principal(request):
+    return getattr(request, "api_principal", None) or request.user
+
+
+def _request_user_or_none(request):
+    user = getattr(request, "user", None)
+    return user if getattr(user, "is_authenticated", False) else None
+
+
 SELF_USER_UPDATE_FIELDS = frozenset({"email", "first_name", "last_name", "password"})
 ADMIN_USER_UPDATE_FIELDS = frozenset({"username", "email", "first_name", "last_name", "is_active", "password", "role"})
 
@@ -2326,6 +2356,10 @@ def _payload_role(payload: dict, *, required: bool = True) -> PortalRole | None:
             return PortalRole.VIEWER
         return None
     return PortalRole(str(payload["role"]))
+
+
+def _payload_service_permissions(raw_permissions) -> tuple[str, ...]:
+    return normalize_service_permissions(raw_permissions)
 
 
 def _payload_api_key_scope(payload: dict):
@@ -2351,7 +2385,7 @@ def _api_user_detail_response(request, user) -> JsonResponse:
         request,
         user,
         payload,
-        allow_admin_fields=user_has_permission(request.user, PortalPermission.ADMINISTER),
+        allow_admin_fields=principal_has_permission(_request_principal(request), PortalPermission.ADMINISTER),
     )
 
 
@@ -2429,6 +2463,7 @@ def _serialize_service_identity(identity: ServiceIdentity) -> dict:
         "name": identity.name,
         "slug": identity.slug,
         "description": identity.description,
+        "permissions": list(identity.permissions or []),
         "is_active": identity.is_active,
         "created_at": identity.created_at.isoformat(),
         "updated_at": identity.updated_at.isoformat(),
@@ -2464,7 +2499,14 @@ def _serialize_admin_backup(backup: AdminBackup) -> dict:
     }
 
 
-def _record_api_key_audit(actor, action: AuditAction, api_key: APIKey, *, details: dict | None = None) -> None:
+def _record_api_key_audit(
+    actor,
+    action: AuditAction,
+    api_key: APIKey,
+    *,
+    details: dict | None = None,
+    request=None,
+) -> None:
     audit_details = {
         "api_key_id": api_key.id,
         "api_key_name": api_key.name,
@@ -2474,6 +2516,7 @@ def _record_api_key_audit(actor, action: AuditAction, api_key: APIKey, *, detail
     }
     if details:
         audit_details.update(details)
+    audit_details.update(_api_auth_audit_details(request))
     record_audit(
         actor=actor,
         action=action,
@@ -2488,11 +2531,9 @@ def _record_api_user_update_audit(actor, user, changed_fields: list[str], reques
         "user_id": user.id,
         "username": user.get_username(),
         "changed_fields": sorted(changed_fields),
-        "actor_username": actor.get_username() if getattr(actor, "is_authenticated", False) else "anonymous",
+        "actor_username": _audit_actor_username(actor, request),
     }
-    api_key = getattr(request, "api_key", None)
-    if api_key is not None:
-        details.update({"api_key_id": api_key.id, "api_key_prefix": api_key.prefix})
+    details.update(_api_auth_audit_details(request))
 
     record_audit(
         actor=actor,
@@ -2501,6 +2542,37 @@ def _record_api_user_update_audit(actor, user, changed_fields: list[str], reques
         outcome=AuditOutcome.SUCCESS,
         details=details,
     )
+
+
+def _api_auth_audit_details(request) -> dict:
+    if request is None:
+        return {}
+    api_key = getattr(request, "api_key", None)
+    if api_key is None:
+        return {}
+
+    details = {
+        "auth_api_key_id": api_key.id,
+        "auth_api_key_name": api_key.name,
+        "auth_api_key_prefix": api_key.prefix,
+        "auth_api_key_scope_type": api_key.scope_type,
+        "auth_api_key_scope_id": api_key.user_id or api_key.service_identity_id,
+        "auth_actor_username": _audit_actor_username(getattr(request, "user", None), request),
+    }
+    service_identity = getattr(api_key, "service_identity", None)
+    if service_identity is not None:
+        details.update(service_identity_audit_details(service_identity, prefix="auth_service_identity"))
+    return details
+
+
+def _audit_actor_username(actor, request=None) -> str:
+    if request is not None:
+        principal = getattr(request, "api_principal", None)
+        if is_service_principal(principal):
+            return principal.get_username()
+    if getattr(actor, "is_authenticated", False):
+        return actor.get_username()
+    return "anonymous"
 
 
 def _record_backup_audit(actor, action: AuditAction, backup: AdminBackup) -> None:

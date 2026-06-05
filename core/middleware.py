@@ -4,6 +4,7 @@ from django.conf import settings
 from django.http import HttpResponseForbidden
 
 from .models import APIKey
+from .service_principals import ServicePermissionError, service_principal_from_identity
 
 
 class LANWarpOnlyMiddleware:
@@ -54,7 +55,7 @@ class LANWarpOnlyMiddleware:
 
 
 class APIKeyAuthenticationMiddleware:
-    """Authenticate user-scoped API keys for JSON API endpoints."""
+    """Authenticate user- and service-scoped API keys for JSON API endpoints."""
 
     def __init__(self, get_response):
         self.get_response = get_response
@@ -62,6 +63,8 @@ class APIKeyAuthenticationMiddleware:
     def __call__(self, request):
         request.api_key = None
         request.api_user = None
+        request.api_service_identity = None
+        request.api_principal = None
         request.api_key_auth_error = ""
         request.api_key_auth_error_status = 401
 
@@ -87,6 +90,12 @@ class APIKeyAuthenticationMiddleware:
         request.api_key = api_key
         if api_key.user_id:
             request.api_user = api_key.user
+            request.api_principal = api_key.user
         else:
-            request.api_key_auth_error = "API key must be scoped to an active user."
-            request.api_key_auth_error_status = 403
+            try:
+                request.api_principal = service_principal_from_identity(api_key.service_identity)
+            except ServicePermissionError as exc:
+                request.api_key_auth_error = str(exc)
+                request.api_key_auth_error_status = 403
+                return
+            request.api_service_identity = api_key.service_identity

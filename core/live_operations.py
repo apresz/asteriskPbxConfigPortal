@@ -10,6 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from .audit_helpers import redact_audit_mapping
+from .service_principals import is_service_principal, service_identity_audit_details, service_identity_audit_label
 
 
 DEFAULT_LIVE_COMMAND_TIMEOUT_SECONDS = 15.0
@@ -299,7 +300,7 @@ def build_live_operation_audit_details(
     result: dict,
     api_key=None,
 ) -> dict[str, Any]:
-    actor_username = actor.get_username() if getattr(actor, "is_authenticated", False) else "anonymous"
+    actor_username = _api_actor_username(actor, api_key)
     details: dict[str, Any] = {
         "command": command_name,
         "actor_username": actor_username,
@@ -319,7 +320,22 @@ def build_live_operation_audit_details(
                 or getattr(api_key, "service_identity_id", None),
             }
         )
+        service_identity = getattr(api_key, "service_identity", None)
+        if service_identity is not None:
+            details.update(service_identity_audit_details(service_identity, prefix="api_key_service_identity"))
     return details
+
+
+def _api_actor_username(actor, api_key=None) -> str:
+    if is_service_principal(actor):
+        return actor.get_username()
+    if getattr(actor, "is_authenticated", False):
+        return actor.get_username()
+
+    service_identity = getattr(api_key, "service_identity", None)
+    if service_identity is not None:
+        return service_identity_audit_label(service_identity)
+    return "anonymous"
 
 
 def _ami_parameters_for_live_command(command: LiveCommandSpec, parameters: dict[str, Any]) -> dict[str, str]:
