@@ -344,7 +344,15 @@ def outbound_route_list(request):
     routes = OutboundRoute.objects.select_related("location").prefetch_related(
         "route_trunks__trunk__provider",
     ).order_by("location__name", "priority", "name")
-    context = _dial_plan_context(request, {"routes": routes, "dial_plan_validation": _dial_plan_validation()})
+    dial_plan_validation = _dial_plan_validation()
+    context = _dial_plan_context(
+        request,
+        {
+            "routes": routes,
+            "dial_plan_validation": dial_plan_validation,
+            "dial_plan_validation_has_errors": any(result["errors"] for result in dial_plan_validation),
+        },
+    )
     return render(request, _template(request, "core/dial_plan/list.html", "core/partials/dial_plan/list_content.html"), context)
 
 
@@ -3127,6 +3135,7 @@ def _dial_plan_validation():
                     "location": location,
                     "warnings": validation["warnings"],
                     "errors": validation["errors"],
+                    "has_errors": bool(validation["errors"]),
                 }
             )
     return validation_by_location

@@ -18,7 +18,7 @@ from .agent_client import portal_url_to_websocket_url
 from .asterisk_config_helpers import (
     active_route_trunks,
     dial_target,
-    emergency_trunk_missing_credential_errors,
+    emergency_route_validation_issues,
     iax2_provider_trunk_lines,
     provider_credential_warnings_for_trunks,
     recording_hook_context_lines,
@@ -638,48 +638,22 @@ def validate_location_routing(location: Location, *, require_emergency: bool = F
     )
     emergency_routes = [route for route in active_routes if route.is_emergency_route]
 
-    if require_emergency and emergency_allowed_extensions and not location.emergency_caller_id:
-        errors.append(
-            {
-                "code": "missing_emergency_caller_id",
-                "affected_extensions": [extension.number for extension in emergency_allowed_extensions],
-                "message": "Location emergency caller ID is required for emergency validation.",
-            }
-        )
-    if require_emergency and emergency_allowed_extensions and not emergency_routes:
-        errors.append(
-            {
-                "code": "missing_emergency_route",
-                "affected_extensions": [extension.number for extension in emergency_allowed_extensions],
-                "message": "At least one active emergency outbound route is required.",
-            }
-        )
-    errors.extend(ring_group_routing_errors(location))
-
     warning_trunks = {
         warning["trunk"]: warning
         for warning in warnings
         if warning.get("emergency_capable")
     }
-    for route in emergency_routes:
-        route_trunks = [link.trunk for link in route.route_trunks.all() if link.trunk.is_active]
-        if route.caller_id_source != OutboundRoute.CallerIdSource.EMERGENCY:
-            errors.append(
-                {
-                    "code": "emergency_route_caller_id_source",
-                    "route": route.name,
-                    "message": "Emergency routes must select the location emergency caller ID.",
-                }
-            )
-        if not any(trunk.is_emergency_capable for trunk in route_trunks):
-            errors.append(
-                {
-                    "code": "missing_emergency_capable_trunk",
-                    "route": route.name,
-                    "message": "Emergency routes must include an emergency-capable trunk.",
-                }
-            )
-        errors.extend(emergency_trunk_missing_credential_errors(route.name, route_trunks, warning_trunks))
+    emergency_issues = emergency_route_validation_issues(
+        require_emergency=require_emergency,
+        emergency_allowed_extensions=emergency_allowed_extensions,
+        emergency_routes=emergency_routes,
+        emergency_caller_id=location.emergency_caller_id,
+        warning_trunks=warning_trunks,
+        emergency_caller_id_source=OutboundRoute.CallerIdSource.EMERGENCY,
+    )
+    warnings.extend(emergency_issues["warnings"])
+    errors.extend(emergency_issues["errors"])
+    errors.extend(ring_group_routing_errors(location))
 
     return {"warnings": warnings, "errors": errors}
 

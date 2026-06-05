@@ -166,6 +166,82 @@ def emergency_trunk_missing_credential_errors(
     return errors
 
 
+def emergency_enabled_extensions(extensions: Iterable[Any]) -> list[Any]:
+    return sorted(
+        [
+            extension
+            for extension in extensions
+            if getattr(extension, "is_active", False) and getattr(extension, "emergency_calling_enabled", False)
+        ],
+        key=lambda extension: getattr(extension, "number", ""),
+    )
+
+
+def emergency_route_validation_issues(
+    *,
+    require_emergency: bool,
+    emergency_allowed_extensions: Iterable[Any],
+    emergency_routes: Iterable[Any],
+    emergency_caller_id: str,
+    warning_trunks: dict[str, dict[str, Any]],
+    emergency_caller_id_source: str = "emergency",
+) -> dict[str, list[dict[str, Any]]]:
+    """Return emergency validation hard blocks and non-blocking route warnings."""
+    errors: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    allowed_extensions = list(emergency_allowed_extensions)
+    routes = list(emergency_routes)
+
+    if require_emergency and allowed_extensions and not emergency_caller_id:
+        errors.append(
+            {
+                "code": "missing_emergency_caller_id",
+                "affected_extensions": [extension.number for extension in allowed_extensions],
+                "message": "Location emergency caller ID is required for emergency validation.",
+            }
+        )
+    if require_emergency and allowed_extensions and not routes:
+        errors.append(
+            {
+                "code": "missing_emergency_route",
+                "affected_extensions": [extension.number for extension in allowed_extensions],
+                "message": "At least one active emergency outbound route is required.",
+            }
+        )
+
+    for route in routes:
+        route_trunks = _active_trunks_for_route(route)
+        if _choice_value(getattr(route, "caller_id_source", "")) != _choice_value(emergency_caller_id_source):
+            warnings.append(
+                {
+                    "code": "emergency_route_caller_id_source",
+                    "route": route.name,
+                    "message": "Emergency routes should select the location emergency caller ID.",
+                }
+            )
+        if not any(getattr(trunk, "is_emergency_capable", False) for trunk in route_trunks):
+            warnings.append(
+                {
+                    "code": "missing_emergency_capable_trunk",
+                    "route": route.name,
+                    "message": "Emergency routes should include an emergency-capable trunk.",
+                }
+            )
+        warnings.extend(emergency_trunk_missing_credential_errors(route.name, route_trunks, warning_trunks))
+
+    return {"warnings": warnings, "errors": errors}
+
+
+def _active_trunks_for_route(route: Any) -> list[Any]:
+    route_trunks = getattr(route, "route_trunks", [])
+    links = route_trunks.all() if callable(getattr(route_trunks, "all", None)) else route_trunks
+    return [link.trunk for link in links if getattr(link.trunk, "is_active", False)]
+
+
+def _choice_value(value: Any) -> str:
+    return str(getattr(value, "value", value))
+
+
 def redact_sensitive_details(value: Any) -> Any:
     if isinstance(value, dict):
         redacted = {}
