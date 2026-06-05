@@ -10,6 +10,7 @@ from django.db import models
 from django.utils import timezone
 
 from .rtp_config import RTPRangeError, validate_rtp_port_range
+from .service_principals import ServicePermissionError, normalize_service_permissions
 
 
 def cidr_network_validator(value):
@@ -162,6 +163,7 @@ class ServiceIdentity(TimestampedModel):
     name = models.CharField(max_length=120, unique=True)
     slug = models.SlugField(max_length=80, unique=True)
     description = models.TextField(blank=True)
+    permissions = models.JSONField(default=list, blank=True)
     is_active = models.BooleanField(default=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -173,6 +175,13 @@ class ServiceIdentity(TimestampedModel):
 
     class Meta:
         ordering = ["name"]
+
+    def clean(self):
+        super().clean()
+        try:
+            self.permissions = list(normalize_service_permissions(self.permissions))
+        except ServicePermissionError as exc:
+            raise ValidationError({"permissions": str(exc)}) from exc
 
     def __str__(self) -> str:
         return self.name
