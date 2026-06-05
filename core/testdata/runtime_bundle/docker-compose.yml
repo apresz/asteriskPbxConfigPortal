@@ -56,6 +56,7 @@ services:
       PBX_AGENT_TELEMETRY_INTERVAL_SECONDS: ${PBX_AGENT_TELEMETRY_INTERVAL_SECONDS:-60}
       PORTAL_API_BASE_URL: ${PORTAL_API_BASE_URL:-}
     volumes:
+      - ./asterisk:/etc/asterisk:ro
       - asterisk-log:/var/log/asterisk:ro
       - asterisk-spool:/var/spool/asterisk:ro
     depends_on:
