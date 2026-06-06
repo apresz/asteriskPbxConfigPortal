@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import ipaddress
 from pathlib import Path
 import re
@@ -144,6 +145,7 @@ def build_location_config(
     """Return the PBX configuration data needed by generators and helper scripts."""
     smtp_settings = build_smtp_settings(location)
     routing_validation = validation or validate_location_routing(location, require_emergency=require_emergency)
+    pbx_routing_validation = _pbx_routing_validation(routing_validation)
     return {
         "location": {
             "id": location.id,
@@ -170,8 +172,8 @@ def build_location_config(
             .filter(is_active=True)
             .order_by("priority", "name")
         ],
-        "routing_validation": routing_validation,
-        "dialplan_warnings": list(routing_validation["warnings"]),
+        "routing_validation": pbx_routing_validation,
+        "dialplan_warnings": list(pbx_routing_validation["warnings"]),
         "recording": {
             "retention_days": location.recording_retention_days,
             "extensions": [
@@ -706,9 +708,7 @@ def _runtime_image_tag_policy() -> str:
     configured_policy = getattr(settings, "PBX_RUNTIME_IMAGE_TAG_POLICY", "")
     if configured_policy:
         return normalize_tag_policy(configured_policy)
-    if getattr(settings, "DEBUG", True):
-        return RUNTIME_IMAGE_TAG_POLICY_WARN
-    return RUNTIME_IMAGE_TAG_POLICY_BLOCK
+    return RUNTIME_IMAGE_TAG_POLICY_WARN
 
 
 def _runtime_image_validation() -> dict[str, list[dict[str, Any]]]:
@@ -759,6 +759,25 @@ def _emergency_status(
         "error_codes": error_codes,
         "warning_codes": warning_codes,
     }
+
+
+def _pbx_routing_validation(validation: dict[str, list[dict[str, Any]]]) -> dict[str, list[dict[str, Any]]]:
+    return {
+        "warnings": [
+            warning
+            for warning in validation.get("warnings", [])
+            if not _is_runtime_image_validation_issue(warning)
+        ],
+        "errors": [
+            error
+            for error in validation.get("errors", [])
+            if not _is_runtime_image_validation_issue(error)
+        ],
+    }
+
+
+def _is_runtime_image_validation_issue(issue: dict[str, Any]) -> bool:
+    return str(issue.get("code", "")).startswith("runtime_image_")
 
 
 def validate_location_routing(location: Location, *, require_emergency: bool = False) -> dict[str, list[dict[str, Any]]]:

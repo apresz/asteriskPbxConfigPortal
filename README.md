@@ -25,6 +25,7 @@ Key settings:
 - `PORTAL_ALLOWED_CLIENT_CIDRS`: comma-separated CIDR list for client IP allowlisting.
 - `PBX_AGENT_PORTAL_URL`: WARP-reachable portal URL used in exported PBX agent WebSocket config.
 - `PBX_ACTIVE_CONFIG_MARKER`: deployed marker path the PBX agent reads for active version reporting.
+- `PBX_RUNTIME_IMAGE_TAG_POLICY`: `warn` allows tag-only custom PBX runtime images with export warnings; `block` requires immutable digests before export.
 
 ## Routes
 

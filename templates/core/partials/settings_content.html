@@ -5,6 +5,15 @@
     <p>Protected portal destinations for access, automation, audit, and archive administration.</p>
   </div>
 
+  <section class="notice-panel" aria-label="Operations guardrails">
+    <p>
+      Treat exported archives and backups as plaintext telecom secret material. Keep access limited to
+      LAN/WARP administrators, validate emergency calling before deployment, and confirm call recording consent
+      before enabling recording policies. Suitable for off-host storage after download.
+      <a href="{% url 'backups' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Generate backup</a>.
+    </p>
+  </section>
+
   <div class="area-grid">
     {% for item in settings_links %}
       <a class="area-card" href="{% url item.slug %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">

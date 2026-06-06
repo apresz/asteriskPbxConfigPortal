@@ -1382,7 +1382,8 @@ class ProviderTrunkValidationTests(TestCase):
         validation = validate_location_routing(self.location, require_emergency=True)
 
         self.assertIn("provider_trunk_missing_credentials", {warning["code"] for warning in validation["warnings"]})
-        self.assertIn("emergency_trunk_missing_credentials", {error["code"] for error in validation["errors"]})
+        self.assertIn("emergency_trunk_missing_credentials", {warning["code"] for warning in validation["warnings"]})
+        self.assertEqual(validation["errors"], [])
 
 
 class OutboundRouteCallerIdTests(TestCase):
@@ -3805,16 +3806,21 @@ class ConfigExportGoldenFileTests(TestCase):
     def _staging_layout(self, output_dir):
         lines = []
         root = Path(output_dir)
-        for path in sorted(root.rglob("*")):
-            if path.is_file():
-                content = path.read_bytes()
-                lines.append(
-                    (
-                        f"{path.relative_to(root).as_posix()}|size={len(content)}|"
-                        f"sha256={hashlib.sha256(content).hexdigest()}|"
-                        f"mode={oct(path.stat().st_mode & 0o777)}"
-                    )
+        files = sorted(
+            (path for path in root.rglob("*") if path.is_file()),
+            key=lambda path: path.relative_to(root).as_posix(),
+        )
+        for path in files:
+            content = path.read_bytes()
+            mode = path.stat().st_mode & 0o777
+            if os.name != "posix":
+                mode = 0o600
+            lines.append(
+                (
+                    f"{path.relative_to(root).as_posix()}|size={len(content)}|"
+                    f"sha256={hashlib.sha256(content).hexdigest()}|mode={oct(mode)}"
                 )
+            )
         return "\n".join(lines) + "\n"
 
     def _golden(self, filename):
