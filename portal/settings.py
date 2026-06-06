@@ -3,6 +3,8 @@ import os
 
 import dj_database_url
 
+from django.core.exceptions import ImproperlyConfigured
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -19,8 +21,8 @@ def env_list(name: str, default: str = "") -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "django-insecure-local-foundation-only")
 DEBUG = env_bool("DJANGO_DEBUG", True)
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "django-insecure-local-foundation-only")
 
 ALLOWED_HOSTS = env_list(
     "DJANGO_ALLOWED_HOSTS",
@@ -70,9 +72,14 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "portal.wsgi.application"
 
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+ALLOW_SQLITE_FALLBACK = env_bool("DJANGO_ALLOW_SQLITE_FALLBACK", DEBUG)
+if not DATABASE_URL and not ALLOW_SQLITE_FALLBACK:
+    raise ImproperlyConfigured("DATABASE_URL is required when DJANGO_ALLOW_SQLITE_FALLBACK is false.")
+
 DATABASES = {
-    "default": dj_database_url.config(
-        default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
+    "default": dj_database_url.parse(
+        DATABASE_URL or f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
         conn_max_age=600,
     )
 }
@@ -144,3 +151,8 @@ PORTAL_TRUSTED_PROXY_CIDRS = env_list(
     "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,::1/128",
 )
 PORTAL_ENFORCE_CLIENT_CIDR = env_bool("PORTAL_ENFORCE_CLIENT_CIDR", not DEBUG)
+
+PBX_DEPLOYMENT_ALLOWED_ROOTS = env_list(
+    "PBX_DEPLOYMENT_ALLOWED_ROOTS",
+    "/srv/pbx,/opt/pbx,/var/lib/pbx,/etc/asterisk,/srv/tftp,/var/lib/tftpboot,/tftpboot",
+)

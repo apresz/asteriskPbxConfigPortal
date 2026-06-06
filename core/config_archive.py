@@ -8,7 +8,7 @@ import posixpath
 from typing import Any
 import zipfile
 
-from .file_permissions import RESTRICTED_FILE_MODE
+from .file_permissions import RESTRICTED_EXECUTABLE_FILE_MODE, RESTRICTED_FILE_MODE
 
 
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
@@ -19,6 +19,7 @@ ACTIVE_CONFIG_MARKER_CONTENT_TYPE = "application/json"
 CONFIG_PAYLOAD_CHECKSUM_TYPE = "config-payload-sha256"
 
 ArchiveFile = tuple[str, bytes, str]
+EXECUTABLE_ARCHIVE_PREFIXES = ("scripts/",)
 
 
 def active_config_marker_bundle_path(
@@ -124,9 +125,16 @@ def zip_archive(files: list[ArchiveFile]) -> bytes:
         for path, content, _content_type in files:
             zip_info = zipfile.ZipInfo(path, date_time=ZIP_TIMESTAMP)
             zip_info.compress_type = zipfile.ZIP_DEFLATED
-            zip_info.external_attr = RESTRICTED_FILE_MODE << 16
+            zip_info.external_attr = archive_member_mode(path) << 16
             archive.writestr(zip_info, content)
     return output.getvalue()
+
+
+def archive_member_mode(path: str) -> int:
+    normalized = str(path).lstrip("/")
+    if any(normalized.startswith(prefix) for prefix in EXECUTABLE_ARCHIVE_PREFIXES):
+        return RESTRICTED_EXECUTABLE_FILE_MODE
+    return RESTRICTED_FILE_MODE
 
 
 def _posix_path(path: str | PurePosixPath) -> PurePosixPath:

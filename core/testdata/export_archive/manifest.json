@@ -1,6 +1,6 @@
 {
   "active_config_marker": {
-    "checksum": "0b0b1ce96a54a020ff674b1ca189ea426af4f021c3660b6e82600ab81b6e3a7e",
+    "checksum": "b97262677ecb00beeaf6c91c2143ca63eed01a567fe43267f19ed3fcd198108b",
     "checksum_type": "config-payload-sha256",
     "configured_path": "/etc/asterisk/pbx-active-config.json",
     "content_type": "application/json",
@@ -89,8 +89,8 @@
     {
       "content_type": "application/x-yaml",
       "path": "docker-compose.yml",
-      "sha256": "416199e9b316762b7fc637bd609ce532c92fed5106634254d2bb29c6868d633c",
-      "size": 2809
+      "sha256": "99b8f8841ddbea6850557d9e359a993f00aac7d5dd63e137781b28f2a1d030fa",
+      "size": 2894
     },
     {
       "content_type": "text/plain",
@@ -101,8 +101,8 @@
     {
       "content_type": "text/plain",
       "path": "asterisk/pjsip.conf",
-      "sha256": "87984a1acb4a7eb217e21d0c2184637a8678f5ffee181fc5dbefe261939aafad",
-      "size": 1183
+      "sha256": "58738750373407c1594aa58acdd77e9f56bf3ad0b7f27651ae96c7c96e0de96b",
+      "size": 1251
     },
     {
       "content_type": "text/plain",
@@ -195,6 +195,12 @@
       "size": 157
     },
     {
+      "content_type": "text/x-shellscript",
+      "path": "scripts/pbx-recording-retention",
+      "sha256": "ceb523415b9742e2e6dfad75e0629c072f7948cf684d1a12ebbcfd5407b064fc",
+      "size": 565
+    },
+    {
       "content_type": "application/json",
       "path": "runtime-images.json",
       "sha256": "ecb839c26d452048556f3d171a6413ba6e237879a2f04ac970a5abf33c43cc3f",
@@ -203,7 +209,7 @@
     {
       "content_type": "application/json",
       "path": "asterisk/pbx-active-config.json",
-      "sha256": "a8822236233a91d7ceae0136ee32acdb0dbae868a110ce07151cdffbd82b5154",
+      "sha256": "097c3132f4b8e7222f2616142350dddb7f9248a80fbadcf2e6e431559e257a18",
       "size": 2986
     }
   ],

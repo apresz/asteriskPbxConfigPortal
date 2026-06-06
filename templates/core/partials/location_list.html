@@ -4,7 +4,7 @@
     <h1>Location Management</h1>
     <p>Site-level PBX network, emergency, deployment, SMTP, AMI, and agent settings.</p>
   </span>
-  {% if can_edit_locations %}
+  {% if can_create_locations %}
     <a class="button" href="{% url 'location-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Location</a>
   {% endif %}
 </section>
@@ -58,7 +58,7 @@
 {% else %}
   <section class="empty-state">
     <h2>No locations configured</h2>
-    {% if can_edit_locations %}
+    {% if can_create_locations %}
       <a class="button" href="{% url 'location-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Location</a>
     {% endif %}
   </section>

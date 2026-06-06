@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 RESTRICTED_FILE_MODE = 0o600
+RESTRICTED_EXECUTABLE_FILE_MODE = 0o700
 RESTRICTED_DIRECTORY_MODE = 0o700
 
 
@@ -43,22 +44,28 @@ def ensure_restricted_directory(path: str | Path) -> Path:
     return target
 
 
-def write_restricted_bytes(path: str | Path, content: bytes) -> Path:
+def write_restricted_bytes(path: str | Path, content: bytes, *, mode: int = RESTRICTED_FILE_MODE) -> Path:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     if platform_supports_restrictive_permissions():
         flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-        fd = os.open(target, flags, RESTRICTED_FILE_MODE)
+        fd = os.open(target, flags, mode)
         with os.fdopen(fd, "wb") as handle:
             handle.write(content)
-        restrict_file_permissions(target)
+        restrict_file_permissions(target, mode)
     else:
         target.write_bytes(content)
     return target
 
 
-def write_restricted_text(path: str | Path, content: str, *, encoding: str = "utf-8") -> Path:
-    return write_restricted_bytes(path, content.encode(encoding))
+def write_restricted_text(
+    path: str | Path,
+    content: str,
+    *,
+    encoding: str = "utf-8",
+    mode: int = RESTRICTED_FILE_MODE,
+) -> Path:
+    return write_restricted_bytes(path, content.encode(encoding), mode=mode)
 
 
 def restrict_tree_permissions(path: str | Path) -> None:

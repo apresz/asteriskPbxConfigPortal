@@ -10,6 +10,7 @@ services:
       ASTERISK_GID: ${ASTERISK_GID:-1000}
     volumes:
       - ./asterisk:/etc/asterisk:ro
+      - ./scripts/pbx-recording-retention:/usr/local/sbin/pbx-recording-retention:ro
       - asterisk-lib:/var/lib/asterisk
       - ./asterisk/sounds:/var/lib/asterisk/sounds:ro
       - asterisk-log:/var/log/asterisk
