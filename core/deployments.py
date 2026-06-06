@@ -13,15 +13,28 @@ from typing import Callable
 from uuid import uuid4
 import zipfile
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
 from .audit import record_audit
+from .config_archive import archive_member_mode
 from .file_permissions import ensure_restricted_directory, write_restricted_bytes, write_restricted_text
 from .models import AuditAction, AuditOutcome, ConfigVersion, DeploymentRecord, Location
 
 
 MAX_CAPTURED_OUTPUT = 4000
+RECORDING_RETENTION_SCRIPT_BUNDLE_PATH = "scripts/pbx-recording-retention"
+RECORDING_RETENTION_SCRIPT_TARGET = "/usr/local/sbin/pbx-recording-retention"
+DEFAULT_DEPLOYMENT_ALLOWED_ROOTS = (
+    "/srv/pbx",
+    "/opt/pbx",
+    "/var/lib/pbx",
+    "/etc/asterisk",
+    "/srv/tftp",
+    "/var/lib/tftpboot",
+    "/tftpboot",
+)
 
 
 @dataclass(frozen=True)
@@ -285,6 +298,7 @@ def extract_deployment_bundle(version: ConfigVersion, target_dir: Path) -> list[
             for info in archive.infolist()
             if info.filename.startswith("asterisk/")
             or info.filename.startswith("tftp/")
+            or info.filename.startswith("scripts/")
             or (active_marker is not None and info.filename == active_marker.bundle_path)
         ]
         if not any(info.filename.startswith("asterisk/") and not info.is_dir() for info in members):
@@ -297,7 +311,11 @@ def extract_deployment_bundle(version: ConfigVersion, target_dir: Path) -> list[
                 ensure_restricted_directory(destination)
                 continue
             ensure_restricted_directory(destination.parent)
-            write_restricted_bytes(destination, archive.read(info.filename))
+            write_restricted_bytes(
+                destination,
+                archive.read(info.filename),
+                mode=archive_member_mode(info.filename),
+            )
             extracted_paths.append(info.filename)
     return extracted_paths
 
@@ -324,13 +342,28 @@ def _validate_deployment_target(location: Location) -> None:
     if missing_fields:
         raise DeploymentConfigurationError(f"Missing deployment target settings: {', '.join(missing_fields)}.")
 
-    for label, value in (
-        ("deployment staging path", location.deployment_staging_path),
-        ("deployment Asterisk path", location.deployment_asterisk_path),
-        ("deployment TFTP path", location.deployment_tftp_path),
-    ):
-        if not value.startswith("/"):
-            raise DeploymentConfigurationError(f"{label} must be an absolute remote path.")
+    normalized_paths = {
+        "deployment staging path": _validate_remote_deployment_path(
+            "deployment staging path",
+            location.deployment_staging_path,
+        ),
+        "deployment Asterisk path": _validate_remote_deployment_path(
+            "deployment Asterisk path",
+            location.deployment_asterisk_path,
+        ),
+        "deployment TFTP path": _validate_remote_deployment_path(
+            "deployment TFTP path",
+            location.deployment_tftp_path,
+        ),
+    }
+    active_paths = {
+        normalized_paths["deployment Asterisk path"],
+        normalized_paths["deployment TFTP path"],
+    }
+    if len(active_paths) != 2:
+        raise DeploymentConfigurationError("Deployment Asterisk and TFTP paths must be distinct.")
+    if normalized_paths["deployment staging path"] in active_paths:
+        raise DeploymentConfigurationError("Deployment staging path must be distinct from active paths.")
 
 
 def _run_step(
@@ -535,6 +568,7 @@ def _swap_volumes_command(
                 f"mv {_q(staged_path)} {_q(active_path)}",
             ]
         )
+    commands.extend(_install_script_commands(staging_path))
     if active_config_marker and active_config_marker.configured_path.startswith("/"):
         source_path = _active_marker_source_path(
             staging_path=staging_path,
@@ -591,6 +625,51 @@ def _install_active_marker_commands(source_path: str, target_path: str) -> list[
         f"cp {_q(source_path)} {_q(target_path)}",
         f"chmod go-rwx {_q(target_path)}",
     ]
+
+
+def _install_script_commands(staging_path: str) -> list[str]:
+    source_path = posixpath.join(staging_path, RECORDING_RETENTION_SCRIPT_BUNDLE_PATH)
+    return [
+        f"if [ -f {_q(source_path)} ]; then mkdir -p {_q(posixpath.dirname(RECORDING_RETENTION_SCRIPT_TARGET))}; fi",
+        f"if [ -f {_q(source_path)} ]; then cp {_q(source_path)} {_q(RECORDING_RETENTION_SCRIPT_TARGET)}; fi",
+        f"if [ -f {_q(RECORDING_RETENTION_SCRIPT_TARGET)} ]; then chmod 700 {_q(RECORDING_RETENTION_SCRIPT_TARGET)}; fi",
+    ]
+
+
+def _validate_remote_deployment_path(label: str, value: str) -> str:
+    raw_value = str(value or "").strip()
+    if not raw_value.startswith("/"):
+        raise DeploymentConfigurationError(f"{label} must be an absolute remote path.")
+    if ".." in PurePosixPath(raw_value).parts:
+        raise DeploymentConfigurationError(f"{label} must not contain parent directory references.")
+
+    normalized = posixpath.normpath(raw_value)
+    if normalized == "/":
+        raise DeploymentConfigurationError(f"{label} must not be the filesystem root.")
+    allowed_roots = _deployment_allowed_roots()
+    if allowed_roots and not any(_path_is_same_or_child(normalized, root) for root in allowed_roots):
+        roots = ", ".join(allowed_roots)
+        raise DeploymentConfigurationError(f"{label} must be under an allowed deployment root: {roots}.")
+    return normalized
+
+
+def _deployment_allowed_roots() -> tuple[str, ...]:
+    configured = getattr(settings, "PBX_DEPLOYMENT_ALLOWED_ROOTS", DEFAULT_DEPLOYMENT_ALLOWED_ROOTS)
+    if isinstance(configured, str):
+        candidates = configured.split(",")
+    else:
+        candidates = configured
+    roots = []
+    for root in candidates:
+        normalized = posixpath.normpath(str(root or "").strip())
+        if normalized.startswith("/") and normalized != "/":
+            roots.append(normalized.rstrip("/"))
+    return tuple(dict.fromkeys(roots))
+
+
+def _path_is_same_or_child(path: str, root: str) -> bool:
+    root = root.rstrip("/")
+    return path == root or path.startswith(f"{root}/")
 
 
 def _captured_output(result: DeploymentCommandResult) -> str:

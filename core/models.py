@@ -470,6 +470,14 @@ class Location(TimestampedModel):
         validators=[did_number_validator],
     )
     emergency_trunk = models.CharField("emergency trunk", max_length=120)
+    emergency_trunk_ref = models.ForeignKey(
+        "Trunk",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="emergency_for_locations",
+        verbose_name="emergency trunk record",
+    )
     recording_retention_days = models.PositiveIntegerField(
         "recording retention days",
         default=90,
@@ -598,6 +606,12 @@ class Location(TimestampedModel):
         ):
             errors["default_inbound_destination"] = "Default inbound destination must belong to this location."
 
+        if self.emergency_trunk_ref_id:
+            if self.pk and self.emergency_trunk_ref.location_id != self.pk:
+                errors["emergency_trunk_ref"] = "Emergency trunk record must belong to this location."
+            if not self.emergency_trunk_ref.is_emergency_capable:
+                errors["emergency_trunk_ref"] = "Emergency trunk record must be emergency-capable."
+
         if errors:
             raise ValidationError(errors)
 
@@ -608,6 +622,12 @@ class Location(TimestampedModel):
 
     def __str__(self):
         return self.name
+
+    @property
+    def emergency_trunk_display(self) -> str:
+        if self.emergency_trunk_ref_id:
+            return self.emergency_trunk_ref.name
+        return self.emergency_trunk
 
 
 class Provider(TimestampedModel):

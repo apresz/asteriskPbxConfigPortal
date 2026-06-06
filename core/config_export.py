@@ -34,6 +34,7 @@ from .config_archive import (
     ArchiveFile,
     active_config_marker_bundle_path,
     active_config_marker_volume_mount,
+    archive_member_mode,
     build_active_config_marker,
     json_bytes,
     manifest_entry,
@@ -108,6 +109,8 @@ CISCO_FIRMWARE_PLACEHOLDER_FILENAME = "firmware/README-no-firmware-bundled.txt"
 CISCO_TRANSPORT_LAYER_PROTOCOL = "TCP"
 RUNTIME_IMAGE_MANIFEST_FILENAME = "runtime-images.json"
 RUNTIME_IMAGE_MANIFEST_CONTENT_TYPE = "application/json"
+RECORDING_RETENTION_SCRIPT_PATH = "scripts/pbx-recording-retention"
+RECORDING_RETENTION_SCRIPT_TARGET = "/usr/local/sbin/pbx-recording-retention"
 
 CISCO_PHONE_MODELS = {
     Phone.PhoneModel.CISCO_9971,
@@ -476,7 +479,11 @@ def write_config_version_directory(version: ConfigVersion, output_dir: str | Pat
             except ValueError as exc:
                 raise ValueError(f"Unsafe ZIP member path: {zip_info.filename}") from exc
             ensure_restricted_directory(destination.parent)
-            write_restricted_bytes(destination, archive.read(zip_info.filename))
+            write_restricted_bytes(
+                destination,
+                archive.read(zip_info.filename),
+                mode=archive_member_mode(zip_info.filename),
+            )
 
 
 def _export_payload_files(
@@ -520,6 +527,13 @@ def _export_payload_files(
             file["content_type"],
         )
         for file in config["tftp"]["files"]
+    )
+    files.append(
+        (
+            RECORDING_RETENTION_SCRIPT_PATH,
+            _recording_retention_script().encode("utf-8"),
+            "text/x-shellscript",
+        )
     )
     return files
 
@@ -577,6 +591,7 @@ def _docker_compose_yml(location: Location, *, runtime_images: tuple[RuntimeImag
             "      ASTERISK_GID: ${ASTERISK_GID:-1000}",
             "    volumes:",
             "      - ./asterisk:/etc/asterisk:ro",
+            f"      - ./{RECORDING_RETENTION_SCRIPT_PATH}:{RECORDING_RETENTION_SCRIPT_TARGET}:ro",
             "      - asterisk-lib:/var/lib/asterisk",
             "      - ./asterisk/sounds:/var/lib/asterisk/sounds:ro",
             "      - asterisk-log:/var/log/asterisk",
@@ -1633,6 +1648,7 @@ def _render_pjsip_conf(location: Location) -> str:
                 f"aors={aor}",
                 "direct_media=no",
                 "from_domain=" + trunk.host,
+                *_provider_acl_lines(trunk),
                 "",
                 f"[{auth}]",
                 "type=auth",
@@ -1792,6 +1808,9 @@ def _render_extensions_conf(location: Location) -> str:
     for route in _active_outbound_routes(location, emergency=True):
         recording_hooks_enabled = _append_route_lines(lines, route, "Emergency") or recording_hooks_enabled
 
+    if _uses_extension_did_caller_id(location):
+        lines.extend(_extension_did_caller_id_context_lines(location))
+
     lines.extend(["[voicemail]", "exten => *97,1,VoiceMailMain(${CALLERID(num)}@default)", " same => n,Hangup()"])
     lines.extend(["exten => *98,1,VoiceMailMain(@default)", " same => n,Hangup()", ""])
 
@@ -1947,7 +1966,7 @@ def _render_retention_conf(location: Location) -> str:
         [
             "[recordings]",
             f"retention_days={location.recording_retention_days}",
-            "hook=/usr/local/sbin/pbx-recording-retention",
+            f"hook={RECORDING_RETENTION_SCRIPT_TARGET}",
             "spool=/var/spool/asterisk/monitor",
         ]
     )
@@ -1957,9 +1976,7 @@ def _render_retention_conf(location: Location) -> str:
 def _append_route_lines(lines: list[str], route: OutboundRoute, label: str) -> bool:
     pattern = _asterisk_pattern(route.dial_pattern)
     lines.extend([f"exten => {pattern},1,NoOp({label} route {route.name})"])
-    caller_id = select_route_caller_id(route)
-    if caller_id:
-        lines.append(f" same => n,Set(CALLERID(num)={caller_id})")
+    lines.extend(_route_caller_id_lines(route))
     route_trunks = active_route_trunks(route.route_trunks.all())
     if not route_trunks:
         lines.extend([" same => n,Playback(all-circuits-busy-now)", " same => n,Hangup(34)", ""])
@@ -2058,6 +2075,58 @@ def _active_outbound_routes(location: Location, emergency: bool | None = None) -
     return list(routes)
 
 
+def _uses_extension_did_caller_id(location: Location) -> bool:
+    return any(
+        route.caller_id_source == OutboundRoute.CallerIdSource.EXTENSION_DID
+        for route in _active_outbound_routes(location)
+    )
+
+
+def _route_caller_id_lines(route: OutboundRoute) -> list[str]:
+    if route.caller_id_source == OutboundRoute.CallerIdSource.EXTENSION_DID:
+        return [
+            f" same => n,Set(ROUTE_CALLER_ID={route.location.default_did})",
+            " same => n,Gosub(route-caller-id-extension-did,s,1(${CALLERID(num)}))",
+            " same => n,Set(CALLERID(num)=${ROUTE_CALLER_ID})",
+        ]
+
+    caller_id = select_route_caller_id(route)
+    return [f" same => n,Set(CALLERID(num)={caller_id})"] if caller_id else []
+
+
+def _extension_did_caller_id_context_lines(location: Location) -> list[str]:
+    lines = [
+        "[route-caller-id-extension-did]",
+        "exten => s,1,NoOp(Resolve extension DID caller ID for ${ARG1})",
+    ]
+    extension_caller_ids = [
+        (extension.number, caller_id)
+        for extension in location.extensions.filter(is_active=True).order_by("number")
+        if (caller_id := _extension_did_caller_id(location, extension)) != location.default_did
+    ]
+
+    for number, _caller_id in extension_caller_ids:
+        lines.append(f' same => n,GotoIf($["${{ARG1}}"="{number}"]?set-{number})')
+    lines.append(" same => n,Return()")
+    for number, caller_id in extension_caller_ids:
+        lines.extend([f" same => n(set-{number}),Set(ROUTE_CALLER_ID={caller_id})", " same => n,Return()"])
+    lines.append("")
+    return lines
+
+
+def _extension_did_caller_id(location: Location, extension: Extension) -> str:
+    direct_did = (
+        extension.direct_dids.filter(location=location, is_active=True)
+        .order_by("number")
+        .first()
+    )
+    if direct_did:
+        return direct_did.number
+    if extension.caller_id_number:
+        return extension.caller_id_number
+    return location.default_did
+
+
 def _remote_locations(location: Location) -> list[Location]:
     return list(Location.objects.filter(is_active=True).exclude(pk=location.pk).order_by("slug"))
 
@@ -2086,6 +2155,16 @@ def _queue_name(name: str) -> str:
 
 def _dial_target(trunk: Trunk) -> str:
     return dial_target(trunk)
+
+
+def _provider_acl_lines(trunk: Trunk) -> list[str]:
+    host_acl = _host_acl(trunk.host)
+    if not host_acl:
+        return ["; Provider ACL requires a static IP/CIDR host to emit permit rules."]
+    return [
+        "deny=0.0.0.0/0.0.0.0",
+        f"permit={host_acl}",
+    ]
 
 
 def _destination_app(destination: dict[str, Any] | None) -> str:
@@ -2125,6 +2204,25 @@ def _asterisk_acl(cidr: str) -> str:
     return f"{network.network_address}/{network.prefixlen}"
 
 
+def _host_acl(host: str) -> str:
+    host = str(host or "").strip()
+    if not host:
+        return ""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        try:
+            network = ipaddress.ip_network(host, strict=False)
+        except ValueError:
+            return ""
+    else:
+        network = ipaddress.ip_network(f"{address}/32" if address.version == 4 else f"{address}/128", strict=False)
+
+    if network.version == 4:
+        return f"{network.network_address}/{network.netmask}"
+    return f"{network.network_address}/{network.prefixlen}"
+
+
 def _queue_strategy(strategy: str) -> str:
     return {
         "ring_all": "ringall",
@@ -2153,3 +2251,30 @@ def _slug(value: str) -> str:
 
 def _quote(value: str) -> str:
     return str(value).replace('"', '\\"')
+
+
+def _recording_retention_script() -> str:
+    return """#!/bin/sh
+set -eu
+
+RETENTION_DAYS="${1:-${RECORDING_RETENTION_DAYS:-}}"
+RECORDING_ROOT="${2:-${ASTERISK_RECORDING_ROOT:-/var/spool/asterisk/monitor}}"
+
+case "$RETENTION_DAYS" in
+  ''|*[!0-9]*)
+    echo "retention days must be a positive integer" >&2
+    exit 64
+    ;;
+esac
+
+if [ "$RETENTION_DAYS" -lt 1 ]; then
+  echo "retention days must be at least 1" >&2
+  exit 64
+fi
+
+if [ ! -d "$RECORDING_ROOT" ]; then
+  exit 0
+fi
+
+find "$RECORDING_ROOT" -type f \\( -name '*.wav' -o -name '*.WAV' -o -name '*.gsm' -o -name '*.mp3' \\) -mtime +"$RETENTION_DAYS" -print -delete
+"""

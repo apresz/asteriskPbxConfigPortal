@@ -127,6 +127,16 @@ from .models import (
 User = get_user_model()
 
 
+class FrontendAssetTests(SimpleTestCase):
+    def test_base_template_uses_local_htmx_asset(self):
+        template = (Path(__file__).resolve().parent.parent / "templates" / "base.html").read_text(encoding="utf-8")
+        asset_path = Path(__file__).resolve().parent.parent / "static" / "js" / "htmx.min.js"
+
+        self.assertIn("{% static 'js/htmx.min.js' %}", template)
+        self.assertNotIn("unpkg.com/htmx", template)
+        self.assertTrue(asset_path.exists())
+
+
 def location_form_data(**overrides):
     data = {
         "name": "Branch Office",
@@ -696,6 +706,44 @@ class LocationFormValidationTests(TestCase):
 
         self.assertTrue(form.is_valid(), form.errors)
 
+    def test_emergency_trunk_record_must_be_emergency_capable_and_syncs_label(self):
+        location = Location.objects.create(**location_model_data())
+        provider = Provider.objects.create(name="Emergency Provider", slug="emergency-provider")
+        emergency_trunk = Trunk.objects.create(
+            location=location,
+            provider=provider,
+            name="Verified Emergency SIP",
+            trunk_type=Trunk.TrunkType.SIP,
+            is_emergency_capable=True,
+        )
+        normal_trunk = Trunk.objects.create(
+            location=location,
+            provider=provider,
+            name="Normal SIP",
+            trunk_type=Trunk.TrunkType.SIP,
+            is_emergency_capable=False,
+        )
+
+        form = LocationForm(
+            data=location_form_data(emergency_trunk_ref=str(emergency_trunk.id)),
+            instance=location,
+            include_sensitive_fields=True,
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        updated = form.save()
+        self.assertEqual(updated.emergency_trunk_ref, emergency_trunk)
+        self.assertEqual(updated.emergency_trunk, "Verified Emergency SIP")
+
+        invalid_form = LocationForm(
+            data=location_form_data(emergency_trunk_ref=str(normal_trunk.id)),
+            instance=location,
+            include_sensitive_fields=True,
+        )
+
+        self.assertFalse(invalid_form.is_valid())
+        self.assertIn("emergency_trunk_ref", invalid_form.errors)
+
     def test_location_accepts_voicemail_without_smtp_settings(self):
         form = LocationForm(
             data=location_form_data(
@@ -762,6 +810,19 @@ class LocationManagementViewTests(TestCase):
         self.assertContains(response, "Not reported")
         self.assertContains(response, "Branch Office")
 
+    def test_location_list_only_admin_sees_create_action(self):
+        Location.objects.create(**location_model_data())
+
+        self.client.force_login(self.editor)
+        editor_response = self.client.get(reverse("locations"))
+        self.assertEqual(editor_response.status_code, 200)
+        self.assertNotContains(editor_response, "New Location")
+
+        self.client.force_login(self.admin)
+        admin_response = self.client.get(reverse("locations"))
+        self.assertEqual(admin_response.status_code, 200)
+        self.assertContains(admin_response, "New Location")
+
     def test_viewer_cannot_create_location(self):
         self.client.force_login(self.viewer)
 
@@ -769,10 +830,18 @@ class LocationManagementViewTests(TestCase):
 
         self.assertEqual(response.status_code, 403)
 
-    def test_editor_form_hides_sensitive_fields_and_shows_emergency_fields(self):
+    def test_editor_cannot_create_location(self):
         self.client.force_login(self.editor)
 
         response = self.client.get(reverse("location-create"))
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_editor_edit_form_hides_sensitive_fields_and_shows_emergency_fields(self):
+        location = Location.objects.create(**location_model_data())
+        self.client.force_login(self.editor)
+
+        response = self.client.get(reverse("location-edit", args=[location.slug]))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Emergency caller ID")
@@ -860,8 +929,8 @@ class LocationManagementViewTests(TestCase):
         self.client.force_login(self.editor)
         editor_response = self.client.get(reverse("location-detail", args=[location.slug]))
 
-        self.assertContains(editor_response, "Export ZIP")
-        self.assertContains(editor_response, "Download")
+        self.assertNotContains(editor_response, "Export ZIP")
+        self.assertNotContains(editor_response, "Download")
         self.assertNotContains(editor_response, ">Deploy</button>")
         self.assertNotContains(editor_response, ">Rollback</button>")
         self.assertNotContains(editor_response, "Live Controls")
@@ -872,12 +941,21 @@ class LocationManagementViewTests(TestCase):
 
         self.assertNotContains(operator_response, "Export ZIP")
         self.assertNotContains(operator_response, "Download")
-        self.assertContains(operator_response, ">Deploy</button>")
-        self.assertContains(operator_response, ">Rollback</button>")
+        self.assertNotContains(operator_response, ">Deploy</button>")
+        self.assertNotContains(operator_response, ">Rollback</button>")
         self.assertContains(operator_response, "Live Controls")
         self.assertContains(operator_response, "Core reload")
         self.assertContains(operator_response, "PJSIP reload")
         self.assertContains(operator_response, "Queue reload")
+
+        self.client.force_login(self.admin)
+        admin_response = self.client.get(reverse("location-detail", args=[location.slug]))
+
+        self.assertContains(admin_response, "Export ZIP")
+        self.assertContains(admin_response, "Download")
+        self.assertContains(admin_response, ">Deploy</button>")
+        self.assertContains(admin_response, ">Rollback</button>")
+        self.assertContains(admin_response, "Live Controls")
 
         self.client.force_login(self.viewer)
         self.assertEqual(
@@ -886,6 +964,30 @@ class LocationManagementViewTests(TestCase):
         )
         self.assertEqual(
             self.client.get(reverse("location-config-export-download", args=[location.slug, first.version_number])).status_code,
+            403,
+        )
+        self.client.force_login(self.editor)
+        self.assertEqual(
+            self.client.post(reverse("location-config-export", args=[location.slug])).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.get(reverse("location-config-export-download", args=[location.slug, first.version_number])).status_code,
+            403,
+        )
+        self.client.force_login(operator)
+        self.assertEqual(
+            self.client.post(
+                reverse("location-config-export-deploy", args=[location.slug, first.version_number]),
+                {"confirm_reload": "1"},
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.post(
+                reverse("location-config-export-rollback", args=[location.slug, first.version_number]),
+                {"confirm_reload": "1"},
+            ).status_code,
             403,
         )
 
@@ -912,7 +1014,7 @@ class LocationManagementViewTests(TestCase):
         Extension.objects.create(location=location, number="3000", display_name="Deploy Desk")
         add_emergency_route(location)
 
-        self.client.force_login(self.editor)
+        self.client.force_login(self.admin)
         export_response = self.client.post(reverse("location-config-export", args=[location.slug]))
 
         self.assertEqual(export_response.status_code, 302)
@@ -936,7 +1038,7 @@ class LocationManagementViewTests(TestCase):
             selected_location.save(update_fields=["last_deployed_at", "deployment_status", "updated_at"])
             return mock.Mock()
 
-        self.client.force_login(operator)
+        self.client.force_login(self.admin)
         with mock.patch("core.views.deploy_config_version", side_effect=fake_deploy) as deploy_mock:
             deploy_response = self.client.post(
                 reverse("location-config-export-deploy", args=[location.slug, version.version_number]),
@@ -963,13 +1065,11 @@ class LocationManagementViewTests(TestCase):
         self.assertEqual(version.deployment_status, ConfigVersion.DeploymentStatus.ROLLED_BACK)
 
     def test_deploy_requires_reload_confirmation_and_audits_denial(self):
-        operator = User.objects.create_user(username="confirm-operator", password="portal-pass")
-        assign_role(operator, PortalRole.OPERATOR)
         location = Location.objects.create(**location_model_data(name="Confirm HQ", slug="confirm-hq"))
         Extension.objects.create(location=location, number="3000", display_name="Confirm Desk")
         add_emergency_route(location)
         version = create_config_version(location, exported_by=self.admin)
-        self.client.force_login(operator)
+        self.client.force_login(self.admin)
 
         response = self.client.post(reverse("location-config-export-deploy", args=[location.slug, version.version_number]))
 
@@ -1470,6 +1570,43 @@ class OutboundRouteCallerIdTests(TestCase):
 
         self.assertEqual([trunk["name"] for trunk in route_payload["trunks"]], ["Backup SIP", "Primary SIP"])
         self.assertEqual(route_payload["caller_id"]["number"], self.location.default_did)
+
+    def test_extension_did_route_generates_runtime_caller_id_lookup(self):
+        route = OutboundRoute.objects.create(
+            location=self.location,
+            name="Extension DID",
+            dial_pattern="NXXNXXXXXX",
+            priority=1,
+            caller_id_source=OutboundRoute.CallerIdSource.EXTENSION_DID,
+        )
+        OutboundRouteTrunk.objects.create(outbound_route=route, trunk=self.primary_trunk, priority=1)
+
+        extensions_conf = build_asterisk_config_files(self.location)["extensions.conf"]
+
+        self.assertIn("same => n,Set(ROUTE_CALLER_ID=+15551203000)", extensions_conf)
+        self.assertIn("same => n,Gosub(route-caller-id-extension-did,s,1(${CALLERID(num)}))", extensions_conf)
+        self.assertIn("[route-caller-id-extension-did]", extensions_conf)
+        self.assertIn('same => n,GotoIf($["${ARG1}"="3000"]?set-3000)', extensions_conf)
+        self.assertIn("same => n(set-3000),Set(ROUTE_CALLER_ID=+15551203001)", extensions_conf)
+        self.assertIn("same => n,Set(CALLERID(num)=${ROUTE_CALLER_ID})", extensions_conf)
+
+    def test_static_provider_trunk_generates_explicit_pjsip_acl(self):
+        Trunk.objects.create(
+            location=self.location,
+            provider=self.provider,
+            name="Static Provider SIP",
+            trunk_type=Trunk.TrunkType.SIP,
+            host="203.0.113.10",
+            username="static",
+            password="static-secret",
+        )
+
+        pjsip_conf = build_asterisk_config_files(self.location)["pjsip.conf"]
+
+        self.assertIn("[trunk-static-provider-sip]", pjsip_conf)
+        self.assertIn("from_domain=203.0.113.10", pjsip_conf)
+        self.assertIn("deny=0.0.0.0/0.0.0.0", pjsip_conf)
+        self.assertIn("permit=203.0.113.10/255.255.255.255", pjsip_conf)
 
     def test_emergency_route_rejects_non_emergency_caller_id_source(self):
         route = OutboundRoute(
@@ -2195,6 +2332,25 @@ class AsteriskConfigGenerationTests(TestCase):
         self.assertIn("protocol=tcp", configs["pjsip.conf"])
         self.assertIn("hook=/usr/local/sbin/pbx-recording-retention", configs["retention.conf"])
 
+    def test_export_archive_bundles_recording_retention_script(self):
+        archive = build_config_export_archive(
+            self.hq,
+            version_number=1,
+            exported_at=timezone.now(),
+            require_emergency=True,
+        )
+
+        with zipfile.ZipFile(BytesIO(archive.archive_bytes)) as zip_file:
+            script = zip_file.read("scripts/pbx-recording-retention").decode("utf-8")
+            docker_compose = zip_file.read("docker-compose.yml").decode("utf-8")
+
+        self.assertIn("#!/bin/sh", script)
+        self.assertIn("find \"$RECORDING_ROOT\"", script)
+        self.assertIn(
+            "./scripts/pbx-recording-retention:/usr/local/sbin/pbx-recording-retention:ro",
+            docker_compose,
+        )
+
     def test_pjsip_iax_dialplan_queue_and_voicemail_golden_files(self):
         configs = build_asterisk_config_files(self.hq)
 
@@ -2280,7 +2436,7 @@ class AgentWebSocketTests(TransactionTestCase):
 
         events = asyncio.run(
             self._run_agent_websocket(
-                query_string=f"token={location.agent_token}&secret=agent-secret".encode("utf-8"),
+                headers=self._agent_headers(location),
                 messages=[
                     {
                         "type": "websocket.receive",
@@ -2364,7 +2520,7 @@ class AgentWebSocketTests(TransactionTestCase):
 
         events = asyncio.run(
             self._run_agent_websocket(
-                query_string=f"token={location.agent_token}&secret=agent-secret".encode("utf-8"),
+                headers=self._agent_headers(location),
                 messages=[
                     {
                         "type": "websocket.receive",
@@ -2388,6 +2544,27 @@ class AgentWebSocketTests(TransactionTestCase):
         self.assertEqual(location.agent_telemetry["call_events"][0]["event_type"], "ANSWER")
         self.assertEqual(location.agent_telemetry["recording_metadata"][0]["filename"], "1717460000.1.wav")
         self.assertEqual(location.agent_telemetry_errors, payload["telemetry_errors"])
+
+    def test_query_string_agent_credentials_are_rejected(self):
+        location = Location.objects.create(
+            **location_model_data(name="Query Agent HQ", slug="query-agent-hq", agent_secret="agent-secret")
+        )
+
+        events = asyncio.run(
+            self._run_agent_websocket(
+                query_string=f"token={location.agent_token}&secret=agent-secret".encode("utf-8"),
+                messages=[
+                    {
+                        "type": "websocket.receive",
+                        "text": json.dumps({"type": "active_config", "version": 1, "checksum": "c" * 64}),
+                    }
+                ],
+            )
+        )
+
+        location.refresh_from_db()
+        self.assertEqual(events, [{"type": "websocket.close", "code": 4401}])
+        self.assertIsNone(location.active_config_version_number)
 
     def test_portal_dispatches_live_command_to_authenticated_agent_websocket(self):
         location = Location.objects.create(
@@ -2459,6 +2636,12 @@ class AgentWebSocketTests(TransactionTestCase):
         )
         return events
 
+    def _agent_headers(self, location, secret="agent-secret"):
+        return [
+            (b"x-pbx-agent-token", location.agent_token.encode("ascii")),
+            (b"x-pbx-agent-secret", secret.encode("ascii")),
+        ]
+
     async def _run_live_command_exchange(self, location):
         from portal.asgi import application
         from .live_operations import run_location_live_command
@@ -2499,8 +2682,8 @@ class AgentWebSocketTests(TransactionTestCase):
                 {
                     "type": "websocket",
                     "path": "/api/agent/ws/",
-                    "query_string": f"token={location.agent_token}&secret=agent-secret".encode("utf-8"),
-                    "headers": [],
+                    "query_string": b"",
+                    "headers": self._agent_headers(location),
                 },
                 receive,
                 send,
@@ -2552,8 +2735,8 @@ class AgentWebSocketTests(TransactionTestCase):
                 {
                     "type": "websocket",
                     "path": "/api/agent/ws/",
-                    "query_string": f"token={location.agent_token}&secret=agent-secret".encode("utf-8"),
-                    "headers": [],
+                    "query_string": b"",
+                    "headers": self._agent_headers(location),
                 },
                 receive,
                 send,
@@ -3025,6 +3208,7 @@ class ConfigVersionExportTests(TestCase):
                     "docker-compose.yml",
                     "manifest.json",
                     "runtime-images.json",
+                    "scripts/pbx-recording-retention",
                     "tftp/company-directory.xml",
                     "tftp/firmware/CISCO-FIRMWARE-CHECKLIST.txt",
                     "tftp/firmware/README-no-firmware-bundled.txt",
@@ -3060,12 +3244,13 @@ class ConfigVersionExportTests(TestCase):
         self.assertTrue(any(line.endswith("  asterisk/rtp.conf") for line in checksums))
         self.assertTrue(any(line.endswith("  active-config/var/lib/pbx/active.json") for line in checksums))
         self.assertTrue(any(line.endswith("  runtime-images.json") for line in checksums))
+        self.assertTrue(any(line.endswith("  scripts/pbx-recording-retention") for line in checksums))
         self.assertEqual(version.checksum, hashlib.sha256(bytes(version.archive)).hexdigest())
         self.assertEqual(
             {file["path"] for file in version.file_manifest},
             set(names),
         )
-        self.assertEqual(modes, {0o600})
+        self.assertEqual(modes, {0o600, 0o700})
 
     def test_runtime_bundle_files_match_golden_templates(self):
         version = create_config_version(self.location, exported_by=self.user)
@@ -3152,11 +3337,17 @@ class FakeDeploymentRunner:
     def upload_bundle(self, bundle_dir, staging_path):
         asterisk_files = sorted(path.relative_to(bundle_dir).as_posix() for path in (bundle_dir / "asterisk").rglob("*") if path.is_file())
         tftp_files = sorted(path.relative_to(bundle_dir).as_posix() for path in (bundle_dir / "tftp").rglob("*") if path.is_file())
+        scripts_files = sorted(
+            path.relative_to(bundle_dir).as_posix()
+            for path in (bundle_dir / "scripts").rglob("*")
+            if path.is_file()
+        ) if (bundle_dir / "scripts").exists() else []
         self.uploads.append(
             {
                 "staging_path": staging_path,
                 "asterisk_files": asterisk_files,
                 "tftp_files": tftp_files,
+                "scripts_files": scripts_files,
             }
         )
         return DeploymentCommandResult(command=f"upload bundle to {staging_path}")
@@ -3614,8 +3805,10 @@ class ConfigDeploymentServiceTests(TestCase):
         self.assertIn("asterisk/pjsip.conf", runner.uploads[0]["asterisk_files"])
         self.assertIn("asterisk/pbx-active-config.json", runner.uploads[0]["asterisk_files"])
         self.assertIn("tftp/company-directory.xml", runner.uploads[0]["tftp_files"])
+        self.assertIn("scripts/pbx-recording-retention", runner.uploads[0]["scripts_files"])
         self.assertIn("/srv/pbx/current/asterisk", runner.remote_commands[2])
         self.assertIn("/srv/pbx/current/tftp", runner.remote_commands[2])
+        self.assertIn("/usr/local/sbin/pbx-recording-retention", runner.remote_commands[2])
         self.assertIn("umask 077", runner.remote_commands[0])
         self.assertIn("mkdir -p -m 700", runner.remote_commands[0])
         self.assertIn("chmod 700", runner.remote_commands[0])
@@ -3689,12 +3882,33 @@ class ConfigDeploymentServiceTests(TestCase):
             self.assertIn("asterisk/pjsip.conf", extracted)
             self.assertIn("asterisk/pbx-active-config.json", extracted)
             self.assertIn("tftp/company-directory.xml", extracted)
+            self.assertIn("scripts/pbx-recording-retention", extracted)
             if os.name == "posix":
                 self.assertEqual(runner.key_path.stat().st_mode & 0o777, 0o600)
                 self.assertEqual(runner.known_hosts_path.stat().st_mode & 0o777, 0o600)
                 self.assertEqual((workspace / "bundle").stat().st_mode & 0o777, 0o700)
                 self.assertEqual((workspace / "bundle" / "asterisk").stat().st_mode & 0o777, 0o700)
                 self.assertEqual((workspace / "bundle" / "asterisk" / "pjsip.conf").stat().st_mode & 0o777, 0o600)
+                self.assertEqual((workspace / "bundle" / "scripts" / "pbx-recording-retention").stat().st_mode & 0o777, 0o700)
+
+    def test_deployment_rejects_unsafe_remote_roots_before_commands_run(self):
+        version = create_config_version(self.location, exported_by=self.operator)
+        self.location.deployment_staging_path = "/tmp/pbx/releases"
+        self.location.save(update_fields=["deployment_staging_path", "updated_at"])
+        runner = FakeDeploymentRunner()
+
+        with self.assertRaises(DeploymentError) as context:
+            deploy_config_version(
+                version,
+                operator=self.operator,
+                reload_confirmed=True,
+                runner=runner,
+            )
+
+        self.assertIn("allowed deployment root", str(context.exception))
+        self.assertEqual(runner.remote_commands, [])
+        record = DeploymentRecord.objects.get(config_version=version)
+        self.assertEqual(record.status, DeploymentRecord.Status.FAILED)
 
     def test_upload_bundle_restricts_remote_staging_permissions(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3813,11 +4027,14 @@ class ConfigExportGoldenFileTests(TestCase):
         for path in files:
             content = path.read_bytes()
             mode = path.stat().st_mode & 0o777
-            if os.name != "posix":
+            relative_path = path.relative_to(root).as_posix()
+            if relative_path.startswith("scripts/"):
+                mode = 0o700
+            elif os.name != "posix":
                 mode = 0o600
             lines.append(
                 (
-                    f"{path.relative_to(root).as_posix()}|size={len(content)}|"
+                    f"{relative_path}|size={len(content)}|"
                     f"sha256={hashlib.sha256(content).hexdigest()}|mode={oct(mode)}"
                 )
             )

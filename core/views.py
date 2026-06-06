@@ -905,7 +905,7 @@ def location_detail(request, slug: str):
     return render(request, _template(request, "core/locations/detail.html", "core/partials/location_detail.html"), context)
 
 
-@permission_required(PortalPermission.EDIT_CONFIG)
+@permission_required(PortalPermission.ADMINISTER)
 def location_create(request):
     include_sensitive_fields = _can_manage_location_secrets(request)
     if request.method == "POST":
@@ -990,7 +990,7 @@ def location_delete(request, slug: str):
     )
 
 
-@permission_required(PortalPermission.EDIT_CONFIG)
+@permission_required(PortalPermission.ADMINISTER)
 @require_POST
 def location_config_export(request, slug: str):
     location = get_object_or_404(Location, slug=slug)
@@ -1040,7 +1040,7 @@ def location_config_export(request, slug: str):
     return redirect("location-detail", slug=location.slug)
 
 
-@permission_required(PortalPermission.EDIT_CONFIG)
+@permission_required(PortalPermission.ADMINISTER)
 def location_config_export_download(request, slug: str, version_number: int):
     version = _config_version_or_404(slug, version_number)
     response = HttpResponse(bytes(version.archive), content_type="application/zip")
@@ -1051,7 +1051,7 @@ def location_config_export_download(request, slug: str, version_number: int):
     return response
 
 
-@permission_required(PortalPermission.RUN_LIVE_OPERATIONS)
+@permission_required(PortalPermission.ADMINISTER)
 @require_POST
 def location_config_export_deploy(request, slug: str, version_number: int):
     version = _config_version_or_404(slug, version_number)
@@ -1077,7 +1077,7 @@ def location_config_export_deploy(request, slug: str, version_number: int):
     return redirect("location-detail", slug=version.location.slug)
 
 
-@permission_required(PortalPermission.RUN_LIVE_OPERATIONS)
+@permission_required(PortalPermission.ADMINISTER)
 @require_POST
 def location_config_export_rollback(request, slug: str, version_number: int):
     version = _config_version_or_404(slug, version_number)
@@ -2967,9 +2967,10 @@ def _location_context(request, context):
         {
             "areas": visible_portal_areas(request.user),
             "can_edit_locations": user_has_permission(request.user, PortalPermission.EDIT_CONFIG),
+            "can_create_locations": user_has_permission(request.user, PortalPermission.ADMINISTER),
             "can_manage_location_secrets": _can_manage_location_secrets(request),
-            "can_export_config": user_has_permission(request.user, PortalPermission.EDIT_CONFIG),
-            "can_deploy_config": user_has_permission(request.user, PortalPermission.RUN_LIVE_OPERATIONS),
+            "can_export_config": user_has_permission(request.user, PortalPermission.ADMINISTER),
+            "can_deploy_config": user_has_permission(request.user, PortalPermission.ADMINISTER),
             "can_run_live_operations": user_has_permission(request.user, PortalPermission.RUN_LIVE_OPERATIONS),
             "live_commands": supported_live_commands(),
         }

@@ -145,7 +145,7 @@ class LocationForm(forms.ModelForm):
             "SIP / RTP / IAX",
             ("sip_bind_ip", "sip_port", "rtp_port_start", "rtp_port_end", "iax_bind_ip", "iax_port"),
         ),
-        ("Emergency", ("default_did", "emergency_caller_id", "emergency_trunk")),
+        ("Emergency", ("default_did", "emergency_caller_id", "emergency_trunk", "emergency_trunk_ref")),
         ("Inbound Routing", ("default_inbound_destination",)),
         ("Recording", ("recording_retention_days",)),
         (
@@ -193,6 +193,7 @@ class LocationForm(forms.ModelForm):
             "default_did",
             "emergency_caller_id",
             "emergency_trunk",
+            "emergency_trunk_ref",
             "default_inbound_destination",
             "recording_retention_days",
             "smtp_host",
@@ -272,6 +273,11 @@ class LocationForm(forms.ModelForm):
             if self.instance and self.instance.pk:
                 destinations = destinations.filter(location=self.instance)
             self.fields["default_inbound_destination"].queryset = destinations
+        if "emergency_trunk_ref" in self.fields:
+            trunks = Trunk.objects.none()
+            if self.instance and self.instance.pk:
+                trunks = self.instance.trunks.filter(is_active=True).order_by("name")
+            self.fields["emergency_trunk_ref"].queryset = trunks
 
     @property
     def fieldsets(self):
@@ -301,6 +307,8 @@ class LocationForm(forms.ModelForm):
             for field_name, initial_value in self._initial_secret_values.items():
                 if field_name in self.fields and not self.cleaned_data.get(field_name):
                     setattr(instance, field_name, initial_value)
+        if instance.emergency_trunk_ref_id:
+            instance.emergency_trunk = instance.emergency_trunk_ref.name
         if commit:
             instance.save()
             self.save_m2m()

@@ -2,7 +2,6 @@ import asyncio
 import hmac
 import json
 from datetime import timezone as datetime_timezone
-from urllib.parse import parse_qs
 
 from asgiref.sync import sync_to_async
 from django.utils import dateparse, timezone
@@ -299,13 +298,12 @@ async def _handle_agent_payload(location: Location, agent_session: AgentSession,
 
 
 def _credentials_from_scope(scope) -> tuple[str | None, str | None]:
-    query = parse_qs(scope.get("query_string", b"").decode("utf-8"))
     headers = {
         name.decode("latin1").lower(): value.decode("latin1")
         for name, value in scope.get("headers", [])
     }
-    token = _first(query.get("token")) or headers.get("x-pbx-agent-token")
-    secret = _first(query.get("secret")) or headers.get("x-pbx-agent-secret")
+    token = headers.get("x-pbx-agent-token")
+    secret = headers.get("x-pbx-agent-secret")
     authorization = headers.get("authorization", "")
     if authorization.lower().startswith("bearer ") and ":" in authorization:
         bearer_token, bearer_secret = authorization[7:].split(":", 1)
@@ -337,9 +335,3 @@ async def _send_error(send, message: str) -> None:
             "text": json.dumps({"type": "error", "error": message}),
         }
     )
-
-
-def _first(values: list[str] | None) -> str | None:
-    if not values:
-        return None
-    return values[0]
