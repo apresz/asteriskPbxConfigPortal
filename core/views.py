@@ -2622,6 +2622,17 @@ def _record_api_user_update_audit(actor, user, changed_fields: list[str], reques
         "actor_username": _audit_actor_username(actor, request),
     }
     details.update(_api_auth_audit_details(request))
+    api_key = getattr(request, "api_key", None)
+    if api_key is not None:
+        details.update(
+            {
+                "api_key_id": api_key.id,
+                "api_key_name": api_key.name,
+                "api_key_prefix": api_key.prefix,
+                "api_key_scope_type": api_key.scope_type,
+                "api_key_scope_id": api_key.user_id or api_key.service_identity_id,
+            }
+        )
 
     record_audit(
         actor=actor,

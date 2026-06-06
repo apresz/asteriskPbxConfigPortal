@@ -48,29 +48,11 @@ class Command(BaseCommand):
             error_codes = ", ".join(error["code"] for error in exc.validation["errors"])
             raise CommandError(f"Export blocked by validation errors: {error_codes}")
 
-        audit_details = {
-            "location_id": location.id,
-            "location_slug": location.slug,
-            "config_version_id": version.id,
-            "version_number": version.version_number,
-            "checksum": version.checksum,
-            "validation": {
-                "errors": [],
-                "warnings": version.warnings,
-            },
-        }
         if options["output_dir"]:
             write_config_version_directory(version, Path(options["output_dir"]))
         if options["zip_output"]:
             write_restricted_bytes(Path(options["zip_output"]), bytes(version.archive))
 
-        record_audit(
-            actor=None,
-            action=AuditAction.CONFIG_EXPORT,
-            target=f"locations/{location.slug}/config",
-            outcome=AuditOutcome.SUCCESS,
-            details=audit_details,
-        )
         config = build_location_config(
             location,
             require_emergency=True,
@@ -86,4 +68,19 @@ class Command(BaseCommand):
             "archive_size_bytes": version.archive_size_bytes,
             "file_manifest": version.file_manifest,
         }
+        audit_details = {
+            "location_id": location.id,
+            "location_slug": location.slug,
+            "config_version_id": version.id,
+            "version_number": version.version_number,
+            "checksum": version.checksum,
+            "validation": config["routing_validation"],
+        }
+        record_audit(
+            actor=None,
+            action=AuditAction.CONFIG_EXPORT,
+            target=f"locations/{location.slug}/config",
+            outcome=AuditOutcome.SUCCESS,
+            details=audit_details,
+        )
         self.stdout.write(json.dumps(config, indent=2, sort_keys=True))
