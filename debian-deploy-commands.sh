@@ -3,16 +3,19 @@
 # Debian deployment command file for the Asterisk PBX Config Portal.
 #
 # Run this on a fresh Debian 12 server as root, after reviewing the variables
-# below. It installs the required host packages/services, clones or updates the
-# project, builds a production Docker image, starts PostgreSQL + Gunicorn with
-# Docker Compose, configures Nginx, and creates backup service commands.
+# below. It installs the required host packages/services, copies a locally
+# prepared project folder, builds a production Docker image, starts PostgreSQL +
+# Gunicorn with Docker Compose, configures Nginx, and creates backup service
+# commands.
 #
 # Required before running:
-#   export REPO_URL="https://github.com/YOUR_ORG/YOUR_REPO.git"
 #   export PORTAL_HOST="pbx-portal.example.internal"
 #
+# The script will ask for the local source folder path at runtime. The admin
+# should prepare and upload the repository folder to this server first.
+#
 # Optional examples:
-#   export GIT_REF="main"
+#   export SOURCE_DIR="/root/uploads/asterisk-pbx-config-portal"
 #   export ALLOWED_CLIENT_CIDRS="10.0.0.0/8,100.64.0.0/10,192.168.0.0/16"
 #   export ENABLE_UFW="true"
 #   export ENABLE_LETS_ENCRYPT="false"
@@ -29,8 +32,7 @@ APP_NAME="${APP_NAME:-asterisk-pbx-config-portal}"
 APP_DIR="${APP_DIR:-/opt/asterisk-pbx-config-portal}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/asterisk-pbx-config-portal}"
 
-REPO_URL="${REPO_URL:-REPLACE_WITH_GITHUB_REPO_URL}"
-GIT_REF="${GIT_REF:-main}"
+SOURCE_DIR="${SOURCE_DIR:-}"
 PORTAL_HOST="${PORTAL_HOST:-pbx-portal.example.internal}"
 
 # Keep production portal access limited to trusted LAN/WARP networks.
@@ -51,13 +53,29 @@ CREATE_SUPERUSER_NOW="${CREATE_SUPERUSER_NOW:-false}"
 ###############################################################################
 
 if [ "$(id -u)" -ne 0 ]; then
-  echo "Run this script as root: sudo -E bash debian-deploy-commands.sh" >&2
+  echo "Run this script as root: sudo -E bash debian-deploy-commands-local-folder.sh" >&2
   exit 1
 fi
 
-if [ "$REPO_URL" = "REPLACE_WITH_GITHUB_REPO_URL" ]; then
-  echo "Set REPO_URL before running. Example:" >&2
-  echo "  export REPO_URL=\"https://github.com/YOUR_ORG/YOUR_REPO.git\"" >&2
+if [ -z "$SOURCE_DIR" ]; then
+  printf "Enter the full path to the prepared repository folder: "
+  if ! read -r SOURCE_DIR; then
+    echo "Set SOURCE_DIR before running when no interactive prompt is available." >&2
+    echo "Example: export SOURCE_DIR=\"/root/uploads/asterisk-pbx-config-portal\"" >&2
+    exit 1
+  fi
+fi
+
+SOURCE_DIR="${SOURCE_DIR%/}"
+
+if [ -z "$SOURCE_DIR" ] || [ ! -d "$SOURCE_DIR" ]; then
+  echo "SOURCE_DIR must be an existing directory containing the prepared repository." >&2
+  exit 1
+fi
+
+if [ ! -f "$SOURCE_DIR/manage.py" ] || [ ! -f "$SOURCE_DIR/requirements.txt" ]; then
+  echo "SOURCE_DIR does not look like the portal repository." >&2
+  echo "Expected to find manage.py and requirements.txt in: $SOURCE_DIR" >&2
   exit 1
 fi
 
@@ -68,7 +86,8 @@ fi
 apt-get update
 
 # Core tooling:
-# - git/curl/gnupg/ca-certificates for source checkout and Docker repository
+# - curl/gnupg/ca-certificates for the Docker repository
+# - rsync for copying the prepared local source folder into place
 # - openssl for generated secrets
 # - nginx for reverse proxy
 # - ufw/fail2ban for host hardening
@@ -77,11 +96,11 @@ apt-get install -y \
   ca-certificates \
   curl \
   fail2ban \
-  git \
   gnupg \
   nginx \
   openssl \
   postgresql-client \
+  rsync \
   ufw
 
 systemctl enable --now nginx
@@ -116,21 +135,33 @@ apt-get install -y \
 systemctl enable --now docker
 
 ###############################################################################
-# 5. Clone or update the project source
+# 5. Copy the prepared local project source
 ###############################################################################
 
 install -d -m 0755 "$(dirname "$APP_DIR")"
+install -d -m 0755 "$APP_DIR"
 
-if [ -d "$APP_DIR/.git" ]; then
-  git -C "$APP_DIR" fetch --all --prune
-  git -C "$APP_DIR" checkout "$GIT_REF"
-  git -C "$APP_DIR" pull --ff-only origin "$GIT_REF"
-elif [ -e "$APP_DIR" ]; then
-  echo "$APP_DIR already exists but is not a git checkout. Move it aside or set APP_DIR." >&2
+SOURCE_DIR_REAL="$(readlink -f "$SOURCE_DIR")"
+APP_DIR_REAL="$(readlink -f "$APP_DIR")"
+
+if [ "$SOURCE_DIR_REAL" = "$APP_DIR_REAL" ]; then
+  echo "SOURCE_DIR and APP_DIR point to the same directory. Use a separate uploaded source folder." >&2
   exit 1
-else
-  git clone --branch "$GIT_REF" "$REPO_URL" "$APP_DIR"
 fi
+
+case "$APP_DIR_REAL/" in
+  "$SOURCE_DIR_REAL/"*)
+    echo "APP_DIR must not be inside SOURCE_DIR because rsync --delete is used." >&2
+    exit 1
+    ;;
+esac
+
+rsync -a --delete \
+  --exclude '.git/' \
+  --exclude '.env' \
+  --exclude 'media/' \
+  --exclude 'staticfiles/' \
+  "$SOURCE_DIR_REAL"/ "$APP_DIR"/
 
 cd "$APP_DIR"
 
