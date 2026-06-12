@@ -7,19 +7,19 @@
   {% if can_edit_routing %}
     <span class="button-row">
       {% if template_url %}
-        <a class="button button--secondary" href="{% url template_url %}">CSV Template</a>
+        <a class="button button--secondary ant-btn ant-btn-default" href="{% url template_url %}">CSV Template</a>
       {% endif %}
       {% if import_url %}
-        <a class="button button--secondary" href="{% url import_url %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Import</a>
+        <a class="button button--secondary ant-btn ant-btn-default" href="{% url import_url %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Import</a>
       {% endif %}
-      <a class="button" href="{% url create_url %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New</a>
+      <a class="button ant-btn ant-btn-primary" href="{% url create_url %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New</a>
     </span>
   {% endif %}
 </section>
 
 {% if records %}
-  <section class="table-panel" aria-label="{{ page_title }}">
-    <table class="data-table">
+  <section class="table-panel ant-table-wrapper" aria-label="{{ page_title }}">
+    <table class="data-table ant-table">
       {% if kind == "inbound-destinations" %}
         <thead>
           <tr>
@@ -92,7 +92,7 @@
                 {% if record.trunk %}<span class="table-meta">{{ record.trunk.name }}</span>{% endif %}
               </td>
               <td>
-                <span class="status-badge{% if not record.is_active %} status-badge--muted{% endif %}">
+                <span class="status-badge ant-tag{% if not record.is_active %} status-badge--muted{% endif %}">
                   {{ record.is_active|yesno:"Active,Inactive" }}
                 </span>
               </td>
@@ -137,14 +137,14 @@
               <td>
                 <div class="tag-list">
                   {% for option in record.menu_options.all %}
-                    <span class="tag">{{ option.digit }}: {{ option.destination.name }}</span>
+                    <span class="tag ant-tag">{{ option.digit }}: {{ option.destination.name }}</span>
                   {% empty %}
                     <span class="table-meta">No options</span>
                   {% endfor %}
                 </div>
               </td>
               <td>
-                <span class="status-badge{% if not record.is_active %} status-badge--muted{% endif %}">
+                <span class="status-badge ant-tag{% if not record.is_active %} status-badge--muted{% endif %}">
                   {{ record.is_active|yesno:"Active,Inactive" }}
                 </span>
               </td>
@@ -178,14 +178,14 @@
               <td>
                 <div class="tag-list">
                   {% for member in record.members.all %}
-                    <span class="tag">{{ member.extension.number }}</span>
+                    <span class="tag ant-tag">{{ member.extension.number }}</span>
                   {% empty %}
                     <span class="table-meta">No members</span>
                   {% endfor %}
                 </div>
               </td>
               <td>
-                <span class="status-badge{% if not record.is_active %} status-badge--muted{% endif %}">
+                <span class="status-badge ant-tag{% if not record.is_active %} status-badge--muted{% endif %}">
                   {{ record.is_active|yesno:"Active,Inactive" }}
                 </span>
               </td>
@@ -225,7 +225,7 @@
               <td>
                 <div class="tag-list">
                   {% for member in record.members.all %}
-                    <span class="tag">{{ member.extension.number }}</span>
+                    <span class="tag ant-tag">{{ member.extension.number }}</span>
                   {% empty %}
                     <span class="table-meta">No members</span>
                   {% endfor %}
@@ -259,14 +259,14 @@
               <td>
                 <div class="tag-list">
                   {% for member in record.members.all %}
-                    <span class="tag">{{ member.extension.number }}</span>
+                    <span class="tag ant-tag">{{ member.extension.number }}</span>
                   {% empty %}
                     <span class="table-meta">No members</span>
                   {% endfor %}
                 </div>
               </td>
               <td>
-                <span class="status-badge{% if not record.is_active %} status-badge--muted{% endif %}">
+                <span class="status-badge ant-tag{% if not record.is_active %} status-badge--muted{% endif %}">
                   {{ record.is_active|yesno:"Active,Inactive" }}
                 </span>
               </td>
@@ -298,7 +298,7 @@
               <td>{{ record.get_feature_type_display }}</td>
               <td>{{ record.destination|default:"Not set" }}</td>
               <td>
-                <span class="status-badge{% if not record.is_active %} status-badge--muted{% endif %}">
+                <span class="status-badge ant-tag{% if not record.is_active %} status-badge--muted{% endif %}">
                   {{ record.is_active|yesno:"Active,Inactive" }}
                 </span>
               </td>
@@ -309,10 +309,10 @@
     </table>
   </section>
 {% else %}
-  <section class="empty-state">
+  <section class="empty-state ant-empty">
     <h2>{{ empty_label }}</h2>
     {% if can_edit_routing %}
-      <a class="button" href="{% url create_url %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New</a>
+      <a class="button ant-btn ant-btn-primary" href="{% url create_url %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New</a>
     {% endif %}
   </section>
 {% endif %}

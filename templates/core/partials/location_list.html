@@ -5,13 +5,13 @@
     <p>Site-level PBX network, emergency, deployment, SMTP, AMI, and agent settings.</p>
   </span>
   {% if can_create_locations %}
-    <a class="button" href="{% url 'location-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Location</a>
+    <a class="button ant-btn ant-btn-primary" href="{% url 'location-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Location</a>
   {% endif %}
 </section>
 
 {% if locations %}
-  <section class="table-panel" aria-label="Locations">
-    <table class="data-table">
+  <section class="table-panel ant-table-wrapper" aria-label="Locations">
+    <table class="data-table ant-table">
       <thead>
         <tr>
           <th scope="col">Location</th>
@@ -36,7 +36,7 @@
               <span class="table-meta">WARP {{ location.pbx_warp_ip }}</span>
             </td>
             <td>
-              <span class="status-badge{% if not location.is_active %} status-badge--muted{% endif %}">
+              <span class="status-badge ant-tag{% if not location.is_active %} status-badge--muted{% endif %}">
                 {{ location.is_active|yesno:"Active,Inactive" }}
               </span>
             </td>
@@ -56,10 +56,10 @@
     </table>
   </section>
 {% else %}
-  <section class="empty-state">
+  <section class="empty-state ant-empty">
     <h2>No locations configured</h2>
     {% if can_create_locations %}
-      <a class="button" href="{% url 'location-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Location</a>
+      <a class="button ant-btn ant-btn-primary" href="{% url 'location-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Location</a>
     {% endif %}
   </section>
 {% endif %}

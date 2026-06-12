@@ -1,10 +1,10 @@
-<section class="detail-panel" data-area="dial-plan">
+<section class="detail-panel ant-card" data-area="dial-plan">
   <p class="eyebrow">Outbound Route</p>
   <h1>Delete {{ route.name }}</h1>
   <p>This removes the outbound dial pattern and its provider fallback order.</p>
   <form class="confirm-actions" method="post">
     {% csrf_token %}
-    <button class="button button--danger" type="submit">Delete</button>
-    <a class="button button--secondary" href="{% url 'dial-plan' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Cancel</a>
+    <button class="button button--danger ant-btn ant-btn-dangerous" type="submit">Delete</button>
+    <a class="button button--secondary ant-btn ant-btn-default" href="{% url 'dial-plan' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Cancel</a>
   </form>
 </section>

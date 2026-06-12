@@ -4,13 +4,13 @@
     <h1>{{ import_title }}</h1>
   </span>
   <span class="button-row">
-    <a class="button button--secondary" href="{% url template_url %}">CSV Template</a>
-    <a class="button button--secondary" href="{% url back_url %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Back</a>
+    <a class="button button--secondary ant-btn ant-btn-default" href="{% url template_url %}">CSV Template</a>
+    <a class="button button--secondary ant-btn ant-btn-default" href="{% url back_url %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Back</a>
   </span>
 </section>
 
 {% if import_result %}
-  <section class="notice-panel notice-panel--success">
+  <section class="notice-panel ant-alert notice-panel--success">
     <p>{{ import_result }}</p>
     {% if import_changes %}
       <ul>
@@ -23,7 +23,7 @@
 {% endif %}
 
 {% if import_errors %}
-  <section class="notice-panel notice-panel--error">
+  <section class="notice-panel ant-alert notice-panel--error">
     <h2>Import Errors</h2>
     <ul>
       {% for error in import_errors %}
@@ -33,17 +33,17 @@
   </section>
 {% endif %}
 
-<form class="import-form" method="post" enctype="multipart/form-data">
+<form class="import-form ant-form" method="post" enctype="multipart/form-data">
   {% csrf_token %}
-  <label class="form-field" for="id_csv_file">
+  <label class="form-field ant-form-item" for="id_csv_file">
     <span>CSV file</span>
-    <input class="form-control" id="id_csv_file" name="csv_file" type="file" accept=".csv,text/csv">
+    <input class="form-control ant-input" id="id_csv_file" name="csv_file" type="file" accept=".csv,text/csv">
   </label>
-  <label class="checkbox-row" for="id_dry_run">
+  <label class="checkbox-row ant-checkbox-wrapper" for="id_dry_run">
     <input id="id_dry_run" name="dry_run" type="checkbox"{% if dry_run %} checked{% endif %}>
     <span>Validate only</span>
   </label>
   <div class="form-actions">
-    <button class="button" type="submit">Import</button>
+    <button class="button ant-btn ant-btn-primary" type="submit">Import</button>
   </div>
 </form>

@@ -5,22 +5,22 @@
     <p>Cisco phone provisioning records, line appearances, and speed-dial assignments.</p>
   </span>
   <span class="button-row">
-    <a class="button button--secondary" href="{% url 'phone-template' %}">Phones Template</a>
-    <a class="button button--secondary" href="{% url 'did-template' %}">DIDs Template</a>
-    <a class="button button--secondary" href="{% url 'speed-dial-template' %}">Speed Dials Template</a>
-    <a class="button button--secondary" href="{% url 'phone-export' %}">Export Phones</a>
-    <a class="button button--secondary" href="{% url 'speed-dial-export' %}">Export Speed Dials</a>
+    <a class="button button--secondary ant-btn ant-btn-default" href="{% url 'phone-template' %}">Phones Template</a>
+    <a class="button button--secondary ant-btn ant-btn-default" href="{% url 'did-template' %}">DIDs Template</a>
+    <a class="button button--secondary ant-btn ant-btn-default" href="{% url 'speed-dial-template' %}">Speed Dials Template</a>
+    <a class="button button--secondary ant-btn ant-btn-default" href="{% url 'phone-export' %}">Export Phones</a>
+    <a class="button button--secondary ant-btn ant-btn-default" href="{% url 'speed-dial-export' %}">Export Speed Dials</a>
     {% if can_edit_phones %}
-      <a class="button button--secondary" href="{% url 'phone-import' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Import Phones</a>
-      <a class="button button--secondary" href="{% url 'speed-dial-import' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Import Speed Dials</a>
-      <a class="button" href="{% url 'phone-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Phone</a>
+      <a class="button button--secondary ant-btn ant-btn-default" href="{% url 'phone-import' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Import Phones</a>
+      <a class="button button--secondary ant-btn ant-btn-default" href="{% url 'speed-dial-import' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Import Speed Dials</a>
+      <a class="button ant-btn ant-btn-primary" href="{% url 'phone-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Phone</a>
     {% endif %}
   </span>
 </section>
 
 {% if phones %}
-  <section class="table-panel" aria-label="Phones">
-    <table class="data-table">
+  <section class="table-panel ant-table-wrapper" aria-label="Phones">
+    <table class="data-table ant-table">
       <thead>
         <tr>
           <th scope="col">Phone</th>
@@ -49,7 +49,7 @@
             <td>
               <div class="tag-list">
                 {% for appearance in phone.line_appearances.all %}
-                  <span class="tag">Line {{ appearance.line_index }}: {{ appearance.extension.number }}{% if appearance.label %} - {{ appearance.label }}{% endif %}</span>
+                  <span class="tag ant-tag">Line {{ appearance.line_index }}: {{ appearance.extension.number }}{% if appearance.label %} - {{ appearance.label }}{% endif %}</span>
                 {% empty %}
                   <span class="table-meta">No lines assigned</span>
                 {% endfor %}
@@ -58,14 +58,14 @@
             <td>
               <div class="tag-list">
                 {% for speed_dial in phone.speed_dials.all %}
-                  <span class="tag">{{ speed_dial.position }}: {{ speed_dial.label }} -> {{ speed_dial.destination }}</span>
+                  <span class="tag ant-tag">{{ speed_dial.position }}: {{ speed_dial.label }} -> {{ speed_dial.destination }}</span>
                 {% empty %}
                   <span class="table-meta">No speed dials</span>
                 {% endfor %}
               </div>
             </td>
             <td>
-              <span class="status-badge{% if not phone.is_active %} status-badge--muted{% endif %}">
+              <span class="status-badge ant-tag{% if not phone.is_active %} status-badge--muted{% endif %}">
                 {{ phone.is_active|yesno:"Active,Inactive" }}
               </span>
             </td>
@@ -75,10 +75,10 @@
     </table>
   </section>
 {% else %}
-  <section class="empty-state">
+  <section class="empty-state ant-empty">
     <h2>No phones configured</h2>
     {% if can_edit_phones %}
-      <a class="button" href="{% url 'phone-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Phone</a>
+      <a class="button ant-btn ant-btn-primary" href="{% url 'phone-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Phone</a>
     {% endif %}
   </section>
 {% endif %}

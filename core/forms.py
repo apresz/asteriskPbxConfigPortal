@@ -31,17 +31,36 @@ from .models import (
 )
 
 
+def _append_widget_classes(widget, *class_names):
+    existing_classes = widget.attrs.get("class", "").split()
+    for class_name in class_names:
+        for token in class_name.split():
+            if token not in existing_classes:
+                existing_classes.append(token)
+    widget.attrs["class"] = " ".join(existing_classes)
+
+
+def _configure_widget_classes(field):
+    widget = field.widget
+    if isinstance(widget, forms.CheckboxInput):
+        _append_widget_classes(widget, "checkbox-input", "ant-checkbox-input")
+    elif isinstance(widget, forms.Select):
+        _append_widget_classes(widget, "form-control", "ant-select")
+    elif isinstance(widget, forms.FileInput):
+        _append_widget_classes(widget, "form-control", "ant-upload")
+    else:
+        _append_widget_classes(widget, "form-control", "ant-input")
+
+
 def _configure_standard_widgets(fields):
     for field_name, field in fields.items():
-        if field.widget.__class__ in (forms.CheckboxInput,):
-            field.widget.attrs.setdefault("class", "checkbox-input")
-        else:
-            field.widget.attrs.setdefault("class", "form-control")
+        _configure_widget_classes(field)
         if field_name.endswith("_seconds") or field_name in {"timeout_seconds", "retry_seconds", "penalty", "priority"}:
             field.widget.attrs.setdefault("min", "1")
         if field_name in {"priority", "deployment_ssh_port", "sip_port", "rtp_port_start", "rtp_port_end", "iax_port"}:
             field.widget.attrs.setdefault("min", str(RTP_PORT_MIN))
             field.widget.attrs.setdefault("max", str(RTP_PORT_MAX))
+
 
 def _selected_location_from_form(form):
     if form.is_bound:
@@ -249,10 +268,7 @@ class LocationForm(forms.ModelForm):
                         self.fields[field_name].required = False
 
         for field_name, field in self.fields.items():
-            if field.widget.__class__ in (forms.CheckboxInput,):
-                field.widget.attrs.setdefault("class", "checkbox-input")
-            else:
-                field.widget.attrs.setdefault("class", "form-control")
+            _configure_widget_classes(field)
             if field_name.endswith("_port"):
                 field.widget.attrs.setdefault("min", str(RTP_PORT_MIN))
                 field.widget.attrs.setdefault("max", str(RTP_PORT_MAX))
@@ -652,10 +668,7 @@ class ExtensionForm(forms.ModelForm):
 
     def _configure_widgets(self):
         for field_name, field in self.fields.items():
-            if field.widget.__class__ in (forms.CheckboxInput,):
-                field.widget.attrs.setdefault("class", "checkbox-input")
-            else:
-                field.widget.attrs.setdefault("class", "form-control")
+            _configure_widget_classes(field)
             if field_name in self.RELATIONSHIP_FIELDS:
                 field.widget.attrs.setdefault("size", "5")
             if field_name == "number":
@@ -1157,10 +1170,7 @@ class PhoneForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         for field_name, field in self.fields.items():
-            if field.widget.__class__ in (forms.CheckboxInput,):
-                field.widget.attrs.setdefault("class", "checkbox-input")
-            else:
-                field.widget.attrs.setdefault("class", "form-control")
+            _configure_widget_classes(field)
         self.fields["mac_address"].widget.attrs.setdefault("placeholder", "SEP001122334455")
         self.fields["model"].choices = [
             choice
@@ -1202,7 +1212,7 @@ class PhoneLineAppearanceForm(forms.ModelForm):
                 "number",
             )
         for field_name, field in self.fields.items():
-            field.widget.attrs.setdefault("class", "form-control")
+            _configure_widget_classes(field)
             if field_name in {"line_index"}:
                 field.widget.attrs["min"] = "1"
 
@@ -1222,7 +1232,7 @@ class PhoneSpeedDialForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         for field_name, field in self.fields.items():
-            field.widget.attrs.setdefault("class", "form-control")
+            _configure_widget_classes(field)
             if field_name == "position":
                 field.widget.attrs["min"] = "1"
 

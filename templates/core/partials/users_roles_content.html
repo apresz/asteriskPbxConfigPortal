@@ -4,11 +4,11 @@
   <p>Named users, assigned roles, and permission coverage for protected portal areas.</p>
 </section>
 
-<section class="table-panel" aria-label="Users/Roles">
-  <div class="table-panel__header">
+<section class="table-panel ant-table-wrapper" aria-label="Users/Roles">
+  <div class="table-panel__header ant-table-title">
     <h2>Users</h2>
   </div>
-  <table class="data-table">
+  <table class="data-table ant-table">
     <thead>
       <tr>
         <th scope="col">User</th>
@@ -25,7 +25,7 @@
             {% if row.user.email %}<span class="table-meta">{{ row.user.email }}</span>{% endif %}
           </td>
           <td>
-            <span class="status-badge{% if not row.user.is_active %} status-badge--muted{% endif %}">{{ row.user.is_active|yesno:"Active,Inactive" }}</span>
+            <span class="status-badge ant-tag{% if not row.user.is_active %} status-badge--muted{% endif %}">{{ row.user.is_active|yesno:"Active,Inactive" }}</span>
             {% if row.is_superuser %}<span class="table-meta">Superuser</span>{% endif %}
           </td>
           <td>{{ row.role_label }}</td>
@@ -33,12 +33,12 @@
             <form class="table-actions" method="post" action="{% url 'user-role-update' row.user.id %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
               {% csrf_token %}
               <label class="table-meta" for="role-{{ row.user.id }}">Role</label>
-              <select class="form-control" id="role-{{ row.user.id }}" name="role">
+              <select class="form-control ant-select" id="role-{{ row.user.id }}" name="role">
                 {% for role_option in role_options %}
                   <option value="{{ role_option.value }}"{% if role_option.value == row.role.value %} selected{% endif %}>{{ role_option.label }}</option>
                 {% endfor %}
               </select>
-              <button class="button button--secondary" type="submit">Save Role</button>
+              <button class="button button--secondary ant-btn ant-btn-default" type="submit">Save Role</button>
             </form>
           </td>
         </tr>
@@ -51,11 +51,11 @@
   </table>
 </section>
 
-<section class="table-panel" aria-label="Role permissions">
-  <div class="table-panel__header">
+<section class="table-panel ant-table-wrapper" aria-label="Role permissions">
+  <div class="table-panel__header ant-table-title">
     <h2>Roles</h2>
   </div>
-  <table class="data-table">
+  <table class="data-table ant-table">
     <thead>
       <tr>
         <th scope="col">Role</th>
@@ -69,7 +69,7 @@
           <td>
             <div class="tag-list">
               {% for permission in row.permissions %}
-                <span class="tag">{{ permission.label }}</span>
+                <span class="tag ant-tag">{{ permission.label }}</span>
               {% endfor %}
             </div>
           </td>

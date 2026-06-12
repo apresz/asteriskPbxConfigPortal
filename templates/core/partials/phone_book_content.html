@@ -5,15 +5,15 @@
     <p>Dialable contacts from extension, DID, and phone assignment records.</p>
   </span>
   <div class="button-row">
-    <a class="button button--secondary" href="{% url 'extension-export' %}">Export Extensions</a>
-    <a class="button button--secondary" href="{% url 'extensions' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Extensions</a>
-    <a class="button button--secondary" href="{% url 'phones' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Phones</a>
+    <a class="button button--secondary ant-btn ant-btn-default" href="{% url 'extension-export' %}">Export Extensions</a>
+    <a class="button button--secondary ant-btn ant-btn-default" href="{% url 'extensions' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Extensions</a>
+    <a class="button button--secondary ant-btn ant-btn-default" href="{% url 'phones' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Phones</a>
   </div>
 </section>
 
 {% if phone_book_contacts %}
-  <section class="table-panel" aria-label="Phone Book">
-    <table class="data-table">
+  <section class="table-panel ant-table-wrapper" aria-label="Phone Book">
+    <table class="data-table ant-table">
       <thead>
         <tr>
           <th scope="col">Extension</th>
@@ -55,8 +55,8 @@
     </table>
   </section>
 {% else %}
-  <section class="empty-state" data-area="phone-book">
+  <section class="empty-state ant-empty" data-area="phone-book">
     <h2>No phone book contacts</h2>
-    <a class="button" href="{% url 'extension-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Extension</a>
+    <a class="button ant-btn ant-btn-primary" href="{% url 'extension-create' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New Extension</a>
   </section>
 {% endif %}

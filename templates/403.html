@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+
+{% block title %}Permission denied | Asterisk PBX Config Portal{% endblock %}
+
+{% block content %}
+  <section class="empty-state ant-empty" data-area="permission-denied">
+    <p class="eyebrow">Permission denied</p>
+    <h1>Access Restricted</h1>
+    <p class="restricted-copy">Your current portal role does not allow this action or area.</p>
+    <div class="form-actions">
+      <a class="button button--secondary ant-btn ant-btn-default" href="{% url 'home' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Overview</a>
+    </div>
+  </section>
+{% endblock %}

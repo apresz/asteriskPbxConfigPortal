@@ -6,20 +6,20 @@
     <p class="restricted-copy">Generated ZIP archives contain plaintext telecom secrets; deploy only through LAN/WARP administrator paths after emergency calling and recording consent review.</p>
   </span>
   <span class="button-row">
-    <a class="button button--secondary" href="{% url 'locations' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Locations</a>
+    <a class="button button--secondary ant-btn ant-btn-default" href="{% url 'locations' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Locations</a>
     {% if can_export_config %}
       <form method="post" action="{% url 'location-config-export' location.slug %}">
         {% csrf_token %}
-        <button class="button" type="submit">Export ZIP</button>
+        <button class="button ant-btn ant-btn-primary" type="submit">Export ZIP</button>
       </form>
     {% endif %}
     {% if can_edit_locations %}
-      <a class="button" href="{% url 'location-edit' location.slug %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Edit</a>
+      <a class="button ant-btn ant-btn-primary" href="{% url 'location-edit' location.slug %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Edit</a>
     {% endif %}
   </span>
 </section>
 
-<section class="notice-panel notice-panel--warning" aria-label="Config export security and compliance notes">
+<section class="notice-panel ant-alert notice-panel--warning" aria-label="Config export security and compliance notes">
   <h2>Export and Deployment Warnings</h2>
   <ul>
     <li>Generated Asterisk configs, <code>.env</code> files, and exported ZIPs can contain plaintext SIP, AMI, SMTP, deployment SSH, and PBX agent secrets.</li>
@@ -29,7 +29,7 @@
 </section>
 
 {% if export_errors %}
-  <section class="notice-panel notice-panel--error">
+  <section class="notice-panel ant-alert notice-panel--error">
     <h2>Export Blocked</h2>
     <ul>
       {% for error in export_errors %}
@@ -40,7 +40,7 @@
 {% endif %}
 
 {% if deployment_errors %}
-  <section class="notice-panel notice-panel--error">
+  <section class="notice-panel ant-alert notice-panel--error">
     <h2>Deployment Failed</h2>
     <ul>
       {% for error in deployment_errors %}
@@ -51,7 +51,7 @@
 {% endif %}
 
 {% if live_operation_result %}
-  <section class="notice-panel{% if live_operation_result.status != 'success' %} notice-panel--error{% endif %}">
+  <section class="notice-panel ant-alert{% if live_operation_result.status != 'success' %} notice-panel--error{% endif %}">
     <h2>Live Action {{ live_operation_result.status|title }}</h2>
     <p>{{ live_operation_result.command }} on {{ live_operation_result.location }}</p>
     {% if live_operation_result.error %}
@@ -64,26 +64,26 @@
 {% endif %}
 
 <section class="summary-grid" aria-label="Location deployment status">
-  <div class="summary-tile">
+  <div class="summary-tile ant-card ant-statistic">
     <span>Active</span>
     <strong>{{ location.is_active|yesno:"Active,Inactive" }}</strong>
   </div>
-  <div class="summary-tile">
+  <div class="summary-tile ant-card ant-statistic">
     <span>Last Deployed</span>
     <strong>{{ location.last_deployed_at|date:"Y-m-d H:i"|default:"Never" }}</strong>
   </div>
-  <div class="summary-tile">
+  <div class="summary-tile ant-card ant-statistic">
     <span>Deployment Status</span>
     <strong>{{ location.get_deployment_status_display }}</strong>
   </div>
-  <div class="summary-tile">
+  <div class="summary-tile ant-card ant-statistic">
     <span>PBX Active Version</span>
     <strong>{% if location.active_config_version_number %}v{{ location.active_config_version_number }}{% else %}Not reported{% endif %}</strong>
   </div>
 </section>
 
 <section class="record-grid">
-  <article class="record-section">
+  <article class="record-section ant-card">
     <h2>Network</h2>
     <dl>
       <div><dt>LAN Subnet</dt><dd>{{ location.lan_subnet }}</dd></div>
@@ -92,7 +92,7 @@
     </dl>
   </article>
 
-  <article class="record-section">
+  <article class="record-section ant-card">
     <h2>SIP / RTP / IAX</h2>
     <dl>
       <div><dt>SIP Bind IP</dt><dd>{{ location.sip_bind_ip }}:{{ location.sip_port }}</dd></div>
@@ -101,7 +101,7 @@
     </dl>
   </article>
 
-  <article class="record-section">
+  <article class="record-section ant-card">
     <h2>Emergency</h2>
     <dl>
       <div><dt>Default DID</dt><dd>{{ location.default_did }}</dd></div>
@@ -110,14 +110,14 @@
     </dl>
   </article>
 
-  <article class="record-section">
+  <article class="record-section ant-card">
     <h2>Recording</h2>
     <dl>
       <div><dt>Retention</dt><dd>{{ location.recording_retention_days }} days</dd></div>
     </dl>
   </article>
 
-  <article class="record-section">
+  <article class="record-section ant-card">
     <h2>SMTP</h2>
     <dl>
       {% if location.smtp_host and location.smtp_from_email %}
@@ -135,7 +135,7 @@
     </dl>
   </article>
 
-  <article class="record-section">
+  <article class="record-section ant-card">
     <h2>AMI</h2>
     <dl>
       <div><dt>Host</dt><dd>{{ location.ami_host }}:{{ location.ami_port }}</dd></div>
@@ -147,12 +147,12 @@
     {% if can_manage_location_secrets %}
       <form method="post" action="{% url 'location-ami-rotate' location.slug %}">
         {% csrf_token %}
-        <button class="button button--secondary" type="submit">Rotate AMI Credentials</button>
+        <button class="button button--secondary ant-btn ant-btn-default" type="submit">Rotate AMI Credentials</button>
       </form>
     {% endif %}
   </article>
 
-  <article class="record-section">
+  <article class="record-section ant-card">
     <h2>Deployment SSH</h2>
     {% if can_manage_location_secrets %}
       <dl>
@@ -170,7 +170,7 @@
     {% endif %}
   </article>
 
-  <article class="record-section">
+  <article class="record-section ant-card">
     <h2>Agent</h2>
     {% if can_manage_location_secrets %}
       <dl>
@@ -182,7 +182,7 @@
     {% endif %}
   </article>
 
-  <article class="record-section">
+  <article class="record-section ant-card">
     <h2>PBX Active Config</h2>
     <dl>
       <div><dt>Version</dt><dd>{% if location.active_config_version_number %}v{{ location.active_config_version_number }}{% else %}Not reported{% endif %}</dd></div>
@@ -194,22 +194,22 @@
 </section>
 
 {% if can_run_live_operations %}
-  <section class="table-panel live-controls" aria-label="Live PBX controls">
+  <section class="table-panel ant-table-wrapper live-controls" aria-label="Live PBX controls">
     <h2>Live Controls</h2>
     <div class="table-actions">
       {% for command in live_commands %}
         <form method="post" action="{% url 'location-live-operation' location.slug %}">
           {% csrf_token %}
           <input type="hidden" name="command" value="{{ command.name }}">
-          <button class="button button--secondary" type="submit">{{ command.label }}</button>
+          <button class="button button--secondary ant-btn ant-btn-default" type="submit">{{ command.label }}</button>
         </form>
       {% endfor %}
     </div>
   </section>
 {% endif %}
 
-<section class="table-panel export-history" aria-label="Export history">
-  <table class="data-table">
+<section class="table-panel ant-table-wrapper export-history" aria-label="Export history">
+  <table class="data-table ant-table">
     <thead>
       <tr>
         <th scope="col">Version</th>
@@ -255,7 +255,7 @@
             {% endif %}
           </td>
           <td>
-            <span class="status-badge{% if version.deployment_status == 'not_deployed' %} status-badge--muted{% endif %}">
+            <span class="status-badge ant-tag{% if version.deployment_status == 'not_deployed' %} status-badge--muted{% endif %}">
               {{ version.get_deployment_status_display }}
             </span>
             {% if version.deployed_at %}
@@ -267,19 +267,19 @@
           <td>
             <div class="table-actions">
               {% if can_export_config %}
-                <a class="button button--secondary" href="{% url 'location-config-export-download' location.slug version.version_number %}">Download</a>
+                <a class="button button--secondary ant-btn ant-btn-default" href="{% url 'location-config-export-download' location.slug version.version_number %}">Download</a>
               {% endif %}
               {% if can_deploy_config %}
                 <form method="post" action="{% url 'location-config-export-deploy' location.slug version.version_number %}">
                   {% csrf_token %}
-                  <label class="inline-check"><input type="checkbox" name="confirm_reload" value="1" required> Reload</label>
-                  <button class="button button--secondary" type="submit">Deploy</button>
+                  <label class="inline-check ant-checkbox-wrapper"><input type="checkbox" name="confirm_reload" value="1" required> Reload</label>
+                  <button class="button button--secondary ant-btn ant-btn-default" type="submit">Deploy</button>
                 </form>
                 {% if not forloop.first %}
                   <form method="post" action="{% url 'location-config-export-rollback' location.slug version.version_number %}">
                     {% csrf_token %}
-                    <label class="inline-check"><input type="checkbox" name="confirm_reload" value="1" required> Reload</label>
-                    <button class="button button--secondary" type="submit">Rollback</button>
+                    <label class="inline-check ant-checkbox-wrapper"><input type="checkbox" name="confirm_reload" value="1" required> Reload</label>
+                    <button class="button button--secondary ant-btn ant-btn-default" type="submit">Rollback</button>
                   </form>
                 {% endif %}
               {% endif %}
@@ -295,8 +295,8 @@
   </table>
 </section>
 
-<section class="table-panel deployment-history" aria-label="Deployment history">
-  <table class="data-table">
+<section class="table-panel ant-table-wrapper deployment-history" aria-label="Deployment history">
+  <table class="data-table ant-table">
     <thead>
       <tr>
         <th scope="col">Started</th>
@@ -325,7 +325,7 @@
             <span class="table-meta">{{ deployment.target_username|default:"unknown" }}</span>
           </td>
           <td>
-            <span class="status-badge{% if deployment.status == 'failed' %} status-badge--danger{% endif %}">
+            <span class="status-badge ant-tag{% if deployment.status == 'failed' %} status-badge--danger{% endif %}">
               {{ deployment.get_status_display }}
             </span>
             {% if deployment.error_message %}
