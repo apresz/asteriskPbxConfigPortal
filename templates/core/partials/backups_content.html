@@ -7,11 +7,11 @@
     </span>
     <form method="post" action="{% url 'admin-backup-create' %}">
       {% csrf_token %}
-      <button class="button" type="submit">Generate backup</button>
+      <button class="button ant-btn ant-btn-primary" type="submit">Generate backup</button>
     </form>
   </div>
 
-  <section class="notice-panel notice-panel--warning" aria-label="Backup security and compliance notes">
+  <section class="notice-panel ant-alert notice-panel--warning" aria-label="Backup security and compliance notes">
     <h2>Security and Compliance</h2>
     <ul>
       <li>PostgreSQL records and backup ZIPs can contain plaintext SIP, AMI, SMTP, deployment SSH, and PBX agent secrets.</li>
@@ -21,23 +21,23 @@
   </section>
 
   <div class="summary-grid">
-    <div class="summary-tile">
+    <div class="summary-tile ant-card ant-statistic">
       <span>Archive data</span>
       <strong>Database, media, exports, config, audit logs</strong>
     </div>
-    <div class="summary-tile">
+    <div class="summary-tile ant-card ant-statistic">
       <span>Storage</span>
       <strong>Suitable for off-host storage</strong>
     </div>
-    <div class="summary-tile">
+    <div class="summary-tile ant-card ant-statistic">
       <span>Audit actions</span>
       <strong>Backup create/download</strong>
     </div>
   </div>
 
   {% if backups %}
-    <div class="table-panel">
-      <table class="data-table">
+    <div class="table-panel ant-table-wrapper">
+      <table class="data-table ant-table">
         <thead>
           <tr>
             <th>Generated</th>
@@ -62,7 +62,7 @@
               <td>{{ backup.archive_size_bytes|filesizeformat }}</td>
               <td><code>{{ backup.checksum }}</code></td>
               <td class="table-actions">
-                <a class="button button--secondary" href="{% url 'admin-backup-download' backup.id %}">Download</a>
+                <a class="button button--secondary ant-btn ant-btn-default" href="{% url 'admin-backup-download' backup.id %}">Download</a>
               </td>
             </tr>
           {% endfor %}
@@ -70,7 +70,7 @@
       </table>
     </div>
   {% else %}
-    <div class="empty-state" data-area="backups">
+    <div class="empty-state ant-empty" data-area="backups">
       <h2>No backups generated</h2>
       <p class="restricted-copy">Generated archives will appear here for Admin download.</p>
     </div>

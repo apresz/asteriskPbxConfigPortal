@@ -5,8 +5,8 @@
 </section>
 
 {% if audit_entries %}
-  <section class="table-panel" aria-label="Audit Log">
-    <table class="data-table">
+  <section class="table-panel ant-table-wrapper" aria-label="Audit Log">
+    <table class="data-table ant-table">
       <thead>
         <tr>
           <th scope="col">Time</th>
@@ -24,7 +24,7 @@
             <td>{{ entry.get_action_display }}</td>
             <td>{% if entry.actor %}{{ entry.actor.get_username }}{% else %}system{% endif %}</td>
             <td><code>{{ entry.target }}</code></td>
-            <td><span class="status-badge{% if entry.outcome != 'success' %} status-badge--warning{% endif %}">{{ entry.get_outcome_display }}</span></td>
+            <td><span class="status-badge ant-tag{% if entry.outcome != 'success' %} status-badge--warning{% endif %}">{{ entry.get_outcome_display }}</span></td>
             <td>
               {% for key, value in entry.details.items %}
                 <span class="stacked-value"><strong>{{ key }}</strong>: {{ value }}</span>
@@ -38,7 +38,7 @@
     </table>
   </section>
 {% else %}
-  <section class="empty-state" data-area="audit-log">
+  <section class="empty-state ant-empty" data-area="audit-log">
     <h2>No audit entries</h2>
     <p class="restricted-copy">Sensitive portal actions will appear here.</p>
   </section>

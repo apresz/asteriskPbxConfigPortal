@@ -8,7 +8,7 @@
 
 <section class="area-grid" aria-label="Portal areas">
   {% for slug, area in areas.items %}
-    <a class="area-card" href="{% url slug %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
+    <a class="area-card ant-card" href="{% url slug %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
       <span>
         <h2>{{ area.label }}</h2>
         <p>{{ area.summary }}</p>

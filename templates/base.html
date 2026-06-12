@@ -9,20 +9,20 @@
     <script src="{% static 'js/htmx.min.js' %}" defer></script>
   </head>
   <body>
-    <div class="portal-shell">
-      <aside class="sidebar">
+    <div class="portal-shell ant-layout ant-layout-has-sider">
+      <aside class="sidebar ant-layout-sider">
         <div class="brand">
           <p class="brand__title">PBX Config Portal</p>
           <p class="brand__meta">LAN/WARP access</p>
         </div>
         {% if user.is_authenticated %}
-          <nav class="nav" aria-label="Portal">
-            <a class="nav__link" href="{% url 'home' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
+          <nav class="nav ant-menu ant-menu-dark ant-menu-root ant-menu-inline" aria-label="Portal">
+            <a class="nav__link ant-menu-item{% if portal_active_area == 'home' %} ant-menu-item-selected{% endif %}" href="{% url 'home' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true"{% if portal_active_area == 'home' %} aria-current="page"{% endif %}>
               <span class="nav__icon" aria-hidden="true"></span>
               Overview
             </a>
             {% for slug, area in portal_nav_areas.items %}
-              <a class="nav__link" href="{% url slug %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
+              <a class="nav__link ant-menu-item{% if portal_active_area == slug %} ant-menu-item-selected{% endif %}" href="{% url slug %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true"{% if portal_active_area == slug %} aria-current="page"{% endif %}>
                 <span class="nav__icon" aria-hidden="true"></span>
                 {{ area.label }}
               </a>
@@ -30,22 +30,22 @@
           </nav>
         {% endif %}
       </aside>
-      <div class="shell-main">
-        <header class="topbar">
+      <div class="shell-main ant-layout">
+        <header class="topbar ant-layout-header">
           <p class="topbar__title">Asterisk Configuration</p>
           <div class="topbar__session">
             {% if user.is_authenticated %}
-              <span class="status-pill">{{ user.get_username }} - {{ portal_user_role_label }}</span>
+              <span class="status-pill ant-tag ant-tag-blue">{{ user.get_username }} - {{ portal_user_role_label }}</span>
               <form method="post" action="{% url 'logout' %}">
                 {% csrf_token %}
-                <button class="link-button" type="submit">Sign out</button>
+                <button class="link-button ant-btn ant-btn-default" type="submit">Sign out</button>
               </form>
             {% else %}
-              <span class="status-pill">Private network</span>
+              <span class="status-pill ant-tag ant-tag-blue">Private network</span>
             {% endif %}
           </div>
         </header>
-        <main id="portal-main" class="content">
+        <main id="portal-main" class="content ant-layout-content">
           {% block content %}{% endblock %}
         </main>
       </div>

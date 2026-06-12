@@ -1,10 +1,10 @@
-<section class="detail-panel" data-area="locations">
+<section class="detail-panel ant-card" data-area="locations">
   <p class="eyebrow">Location</p>
   <h1>Delete {{ location.name }}</h1>
   <p>This removes the location and its dependent PBX configuration records.</p>
   <form class="confirm-actions" method="post">
     {% csrf_token %}
-    <button class="button button--danger" type="submit">Delete</button>
-    <a class="button button--secondary" href="{% url 'location-detail' location.slug %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Cancel</a>
+    <button class="button button--danger ant-btn ant-btn-dangerous" type="submit">Delete</button>
+    <a class="button button--secondary ant-btn ant-btn-default" href="{% url 'location-detail' location.slug %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Cancel</a>
   </form>
 </section>

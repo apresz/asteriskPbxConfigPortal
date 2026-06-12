@@ -4,19 +4,19 @@
     <h1>Import Extensions</h1>
   </span>
   <span class="button-row">
-    <a class="button button--secondary" href="{% url 'extension-template' %}">CSV Template</a>
-    <a class="button button--secondary" href="{% url 'extensions' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Extensions</a>
+    <a class="button button--secondary ant-btn ant-btn-default" href="{% url 'extension-template' %}">CSV Template</a>
+    <a class="button button--secondary ant-btn ant-btn-default" href="{% url 'extensions' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Extensions</a>
   </span>
 </section>
 
 {% if import_result %}
-  <section class="notice-panel notice-panel--success">
+  <section class="notice-panel ant-alert notice-panel--success">
     <p>{{ import_result }}</p>
   </section>
 {% endif %}
 
 {% if import_errors %}
-  <section class="notice-panel notice-panel--error">
+  <section class="notice-panel ant-alert notice-panel--error">
     <h2>Import Errors</h2>
     <ul>
       {% for error in import_errors %}
@@ -26,13 +26,13 @@
   </section>
 {% endif %}
 
-<form class="import-form" method="post" enctype="multipart/form-data">
+<form class="import-form ant-form" method="post" enctype="multipart/form-data">
   {% csrf_token %}
-  <label class="form-field" for="id_csv_file">
+  <label class="form-field ant-form-item" for="id_csv_file">
     <span>CSV file</span>
-    <input class="form-control" id="id_csv_file" name="csv_file" type="file" accept=".csv,text/csv">
+    <input class="form-control ant-input" id="id_csv_file" name="csv_file" type="file" accept=".csv,text/csv">
   </label>
   <div class="form-actions">
-    <button class="button" type="submit">Import</button>
+    <button class="button ant-btn ant-btn-primary" type="submit">Import</button>
   </div>
 </form>

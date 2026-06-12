@@ -4,31 +4,31 @@
     <h1>Recording Library</h1>
     <p>Per-location recording metadata, retention status, and audited playback links.</p>
   </span>
-  <a class="button button--secondary" href="{% url 'home' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Overview</a>
+  <a class="button button--secondary ant-btn ant-btn-default" href="{% url 'home' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Overview</a>
 </section>
 
 <div class="summary-grid">
-  <div class="summary-tile">
+  <div class="summary-tile ant-card ant-statistic">
     <span>Total files</span>
     <strong>{{ recording_count }}</strong>
   </div>
-  <div class="summary-tile">
+  <div class="summary-tile ant-card ant-statistic">
     <span>Access</span>
     <strong>Operator/Admin</strong>
   </div>
-  <div class="summary-tile">
+  <div class="summary-tile ant-card ant-statistic">
     <span>Audit action</span>
     <strong>Recording playback</strong>
   </div>
 </div>
 
 {% for item in recording_locations %}
-  <section class="table-panel" aria-label="{{ item.location.name }} recordings">
-    <div class="table-panel__header">
+  <section class="table-panel ant-table-wrapper" aria-label="{{ item.location.name }} recordings">
+    <div class="table-panel__header ant-table-title">
       <h2>{{ item.location.name }}</h2>
       <span class="table-meta">{{ item.available }} available, {{ item.expired }} expired, {{ item.unavailable }} unavailable</span>
     </div>
-    <table class="data-table">
+    <table class="data-table ant-table">
       <thead>
         <tr>
           <th scope="col">Recording</th>
@@ -45,12 +45,12 @@
               {{ recording.filename|default:recording.recording_id|default:"recording" }}
               <span class="table-meta">{{ recording.relative_path|default:"No relative path" }}</span>
             </td>
-            <td><span class="status-badge {{ recording.status_badge_class }}">{{ recording.status_label }}</span></td>
+            <td><span class="status-badge ant-tag {{ recording.status_badge_class }}">{{ recording.status_label }}</span></td>
             <td>{{ recording.modified_at|default:"-" }}</td>
             <td>{{ recording.retention_expires_at|default:"-" }}</td>
             <td class="table-actions">
               {% if recording.can_playback %}
-                <a class="button button--secondary" href="{% url 'location-recording-playback' item.location.slug recording.recording_id %}">Playback</a>
+                <a class="button button--secondary ant-btn ant-btn-default" href="{% url 'location-recording-playback' item.location.slug recording.recording_id %}">Playback</a>
               {% else %}
                 <span class="table-meta">Playback unavailable</span>
               {% endif %}
@@ -65,8 +65,8 @@
     </table>
   </section>
 {% empty %}
-  <section class="empty-state" data-area="recordings">
+  <section class="empty-state ant-empty" data-area="recordings">
     <h2>No locations configured</h2>
-    <a class="button" href="{% url 'locations' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Locations</a>
+    <a class="button ant-btn ant-btn-primary" href="{% url 'locations' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Locations</a>
   </section>
 {% endfor %}

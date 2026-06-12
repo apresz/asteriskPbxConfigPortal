@@ -7,27 +7,27 @@
   hx-swap="outerHTML"
 >
   <section class="summary-grid dashboard-summary" aria-label="Dashboard summary">
-    <div class="summary-tile">
+    <div class="summary-tile ant-card ant-statistic">
       <span>Locations</span>
       <strong>{{ dashboard_totals.locations }}</strong>
     </div>
-    <div class="summary-tile">
+    <div class="summary-tile ant-card ant-statistic">
       <span>Agents Reporting</span>
       <strong>{{ dashboard_totals.reporting_locations }}</strong>
     </div>
-    <div class="summary-tile">
+    <div class="summary-tile ant-card ant-statistic">
       <span>Config Drift</span>
       <strong>{{ dashboard_totals.drift_locations }}</strong>
     </div>
-    <div class="summary-tile">
+    <div class="summary-tile ant-card ant-statistic">
       <span>Active Calls</span>
       <strong>{{ dashboard_totals.active_calls }}</strong>
     </div>
-    <div class="summary-tile">
+    <div class="summary-tile ant-card ant-statistic">
       <span>Queued Calls</span>
       <strong>{{ dashboard_totals.queued_calls }}</strong>
     </div>
-    <div class="summary-tile">
+    <div class="summary-tile ant-card ant-statistic">
       <span>Refreshed</span>
       <strong>{{ dashboard_generated_at|date:"H:i:s" }}</strong>
     </div>
@@ -42,13 +42,13 @@
           <p>{{ item.location.pbx_lan_ip }} LAN / {{ item.location.pbx_warp_ip }} WARP</p>
         </span>
         <span class="dashboard-status-row">
-          <span class="status-badge {{ item.agent_state.badge_class }}">Agent Connection: {{ item.agent_state.label }}</span>
-          <span class="status-badge {{ item.config_drift.badge_class }}">Config Drift: {{ item.config_drift.label }}</span>
+          <span class="status-badge ant-tag {{ item.agent_state.badge_class }}">Agent Connection: {{ item.agent_state.label }}</span>
+          <span class="status-badge ant-tag {{ item.config_drift.badge_class }}">Config Drift: {{ item.config_drift.label }}</span>
         </span>
       </header>
 
       {% if item.config_drift.has_drift %}
-        <section class="notice-panel notice-panel--warning" aria-label="{{ item.location.name }} drift warnings">
+        <section class="notice-panel ant-alert notice-panel--warning" aria-label="{{ item.location.name }} drift warnings">
           <h2>Config Drift Warning</h2>
           <ul>
             {% for warning in item.config_drift.warnings %}
@@ -59,22 +59,22 @@
       {% endif %}
 
       <section class="summary-grid dashboard-version-grid" aria-label="{{ item.location.name }} config versions">
-        <div class="summary-tile">
+        <div class="summary-tile ant-card ant-statistic">
           <span>Active PBX Config</span>
           <strong>{% if item.config_drift.active_version %}v{{ item.config_drift.active_version }}{% else %}Not reported{% endif %}</strong>
         </div>
-        <div class="summary-tile">
+        <div class="summary-tile ant-card ant-statistic">
           <span>Latest Exported</span>
           <strong>{% if item.config_drift.exported_version %}v{{ item.config_drift.exported_version }}{% else %}No exports{% endif %}</strong>
         </div>
-        <div class="summary-tile">
+        <div class="summary-tile ant-card ant-statistic">
           <span>Latest Deployed</span>
           <strong>{% if item.config_drift.deployed_version %}v{{ item.config_drift.deployed_version }}{% else %}Not deployed{% endif %}</strong>
         </div>
       </section>
 
       <section class="record-grid dashboard-grid" aria-label="{{ item.location.name }} agent telemetry">
-        <article class="record-section">
+        <article class="record-section ant-card">
           <h2>Location Health</h2>
           <dl>
             <div><dt>AMI</dt><dd>{{ item.health.ami_connected|yesno:"Connected,Disconnected" }}</dd></div>
@@ -85,7 +85,7 @@
           </dl>
         </article>
 
-        <article class="record-section">
+        <article class="record-section ant-card">
           <h2>Agent Connection</h2>
           <dl>
             <div><dt>State</dt><dd>{{ item.agent_state.label }}</dd></div>
@@ -101,7 +101,7 @@
           {% endif %}
         </article>
 
-        <article class="record-section">
+        <article class="record-section ant-card">
           <h2>Extension Registrations</h2>
           <dl>
             <div><dt>Total</dt><dd>{{ item.registration_summary.total }}</dd></div>
@@ -117,7 +117,7 @@
           {% endif %}
         </article>
 
-        <article class="record-section">
+        <article class="record-section ant-card">
           <h2>Trunk Status</h2>
           <dl>
             <div><dt>Total</dt><dd>{{ item.trunk_summary.total }}</dd></div>
@@ -133,7 +133,7 @@
           {% endif %}
         </article>
 
-        <article class="record-section">
+        <article class="record-section ant-card">
           <h2>Active Calls</h2>
           <dl>
             <div><dt>Now</dt><dd>{{ item.call_summary.total }}</dd></div>
@@ -147,7 +147,7 @@
           {% endif %}
         </article>
 
-        <article class="record-section">
+        <article class="record-section ant-card">
           <h2>Queue Status</h2>
           <dl>
             <div><dt>Queues</dt><dd>{{ item.queue_summary.total }}</dd></div>
@@ -163,7 +163,7 @@
           {% endif %}
         </article>
 
-        <article class="record-section">
+        <article class="record-section ant-card">
           <h2>Recent Calls</h2>
           <dl>
             <div><dt>Rows</dt><dd>{{ item.call_summary.recent }}</dd></div>
@@ -177,7 +177,7 @@
           {% endif %}
         </article>
 
-        <article class="record-section">
+        <article class="record-section ant-card">
           <h2>Recording Availability</h2>
           <dl>
             <div><dt>Status</dt><dd>{{ item.recording_summary.available|yesno:"Available,No playable recordings" }}</dd></div>
@@ -190,7 +190,7 @@
               {% for recording in item.recording_metadata %}
                 <li>
                   <span>{{ recording.filename|default:"recording" }} - {{ recording.size_bytes|default:"0" }} bytes</span>
-                  <span class="status-badge {{ recording.status_badge_class }}">{{ recording.status_label }}</span>
+                  <span class="status-badge ant-tag {{ recording.status_badge_class }}">{{ recording.status_label }}</span>
                   {% if recording.retention_expires_at %}
                     <span class="table-meta">Retention until {{ recording.retention_expires_at }}</span>
                   {% endif %}
@@ -206,11 +206,11 @@
         </article>
       </section>
 
-      <section class="table-panel deployment-history dashboard-deployment-history" aria-label="{{ item.location.name }} deployment history">
-        <div class="table-panel__header">
+      <section class="table-panel ant-table-wrapper deployment-history dashboard-deployment-history" aria-label="{{ item.location.name }} deployment history">
+        <div class="table-panel__header ant-table-title">
           <h2>Deployment History</h2>
         </div>
-        <table class="data-table">
+        <table class="data-table ant-table">
           <thead>
             <tr>
               <th scope="col">Started</th>
@@ -233,7 +233,7 @@
                 </td>
                 <td>{{ deployment.operator.get_username|default:"system" }}</td>
                 <td>
-                  <span class="status-badge{% if deployment.status == 'failed' %} status-badge--danger{% endif %}">
+                  <span class="status-badge ant-tag{% if deployment.status == 'failed' %} status-badge--danger{% endif %}">
                     {{ deployment.get_status_display }}
                   </span>
                   {% if deployment.error_message %}
@@ -251,7 +251,7 @@
       </section>
     </section>
   {% empty %}
-    <section class="empty-state">
+    <section class="empty-state ant-empty">
       <h2>No locations configured</h2>
       <p>Create a location to begin receiving PBX agent telemetry.</p>
     </section>

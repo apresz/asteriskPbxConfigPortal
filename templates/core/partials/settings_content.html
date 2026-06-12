@@ -5,7 +5,7 @@
     <p>Protected portal destinations for access, automation, audit, and archive administration.</p>
   </div>
 
-  <section class="notice-panel" aria-label="Operations guardrails">
+  <section class="notice-panel ant-alert" aria-label="Operations guardrails">
     <p>
       Treat exported archives and backups as plaintext telecom secret material. Keep access limited to
       LAN/WARP administrators, validate emergency calling before deployment, and confirm call recording consent
@@ -16,7 +16,7 @@
 
   <div class="area-grid">
     {% for item in settings_links %}
-      <a class="area-card" href="{% url item.slug %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
+      <a class="area-card ant-card" href="{% url item.slug %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
         <span>
           <h2>{{ item.area.label }}</h2>
           <p>{{ item.area.summary }}</p>
