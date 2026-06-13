@@ -1,6 +1,14 @@
 services:
   asterisk:
-    image: ${PBX_ASTERISK_IMAGE:?PBX_ASTERISK_IMAGE must include an immutable digest}
+    build:
+      context: ./runtime/asterisk
+      args:
+        ASTERISK_VERSION: "${ASTERISK_VERSION:-20.19.0}"
+        ASTERISK_SOURCE_URL: "${ASTERISK_SOURCE_URL:-https://downloads.asterisk.org/pub/telephony/asterisk/old-releases/asterisk-20.19.0.tar.gz}"
+        ASTERISK_SOURCE_SHA256: "${ASTERISK_SOURCE_SHA256:-10fbc070f9aaec50b788962dbcddf694fcc61d49c1f1bb158bf04a2e7e46aba0}"
+        CISCO_PATCH_URL: "${CISCO_PATCH_URL:-https://raw.githubusercontent.com/usecallmanagernz/patches/master/asterisk/cisco-usecallmanager-20.19.0.patch}"
+        CISCO_PATCH_SHA256: "${CISCO_PATCH_SHA256:-adcb88c17a1cf8eb6242c7d9f1959f06afc64ae9af210268abaf767d388b83d2}"
+    image: ${PBX_ASTERISK_IMAGE:-pbx-asterisk:20.19.0-cisco}
     container_name: pbx-${PBX_LOCATION_SLUG:-version-hq}-asterisk
     restart: unless-stopped
     network_mode: host

@@ -27,7 +27,11 @@ Key settings:
 - `PBX_AGENT_PORTAL_URL`: WARP-reachable portal URL used in exported PBX agent WebSocket config.
 - `PBX_ACTIVE_CONFIG_MARKER`: deployed marker path the PBX agent reads for active version reporting.
 - `PBX_DEPLOYMENT_ALLOWED_ROOTS`: comma-separated absolute remote path prefixes allowed for SSH deployment paths.
-- `PBX_RUNTIME_IMAGE_TAG_POLICY`: `warn` allows tag-only custom PBX runtime images with export warnings; `block` requires immutable digests before export.
+- `PBX_RUNTIME_IMAGE_TAG_POLICY`: `warn` allows tag-only custom PBX runtime images with export warnings; `block` requires immutable digests before export. The default Asterisk runtime is built locally from pinned Asterisk 20.19.0 source plus the Cisco USECALLMANAGER patch.
+
+## Exported PBX Runtime
+
+Generated PBX export bundles include a `runtime/asterisk` Docker build context. During `docker compose build asterisk`, it downloads Asterisk `20.19.0`, verifies SHA256 `10fbc070f9aaec50b788962dbcddf694fcc61d49c1f1bb158bf04a2e7e46aba0`, downloads `cisco-usecallmanager-20.19.0.patch`, verifies SHA256 `adcb88c17a1cf8eb6242c7d9f1959f06afc64ae9af210268abaf767d388b83d2`, applies the patch, and installs Asterisk samples for the patch-specific Cisco configuration references.
 
 ## Routes
 

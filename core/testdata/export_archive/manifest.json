@@ -1,6 +1,6 @@
 {
   "active_config_marker": {
-    "checksum": "b97262677ecb00beeaf6c91c2143ca63eed01a567fe43267f19ed3fcd198108b",
+    "checksum": "636d22040d1719c63f35f99898dd2b4daf024d976100ac8d2077d7c9951c0c93",
     "checksum_type": "config-payload-sha256",
     "configured_path": "/etc/asterisk/pbx-active-config.json",
     "content_type": "application/json",
@@ -12,20 +12,22 @@
     "runtime_images": {
       "images": [
         {
-          "compose_reference": null,
+          "built_from_source": true,
+          "compose_reference": "pbx-asterisk:20.19.0-cisco",
           "custom": true,
           "digest": null,
           "digest_source": null,
           "env_var": "PBX_ASTERISK_IMAGE",
           "immutable": false,
-          "reference": "ghcr.io/apresz/asterisk:22-lts",
-          "registry": "ghcr.io",
-          "repository": "ghcr.io/apresz/asterisk",
-          "requires_env_override": true,
+          "reference": "pbx-asterisk:20.19.0-cisco",
+          "registry": null,
+          "repository": "pbx-asterisk",
+          "requires_env_override": false,
           "service": "asterisk",
-          "tag": "22-lts"
+          "tag": "20.19.0-cisco"
         },
         {
+          "built_from_source": false,
           "compose_reference": null,
           "custom": true,
           "digest": null,
@@ -40,6 +42,7 @@
           "tag": "1.0.0"
         },
         {
+          "built_from_source": false,
           "compose_reference": "docker.io/nginx:1.27-alpine",
           "custom": false,
           "digest": null,
@@ -54,6 +57,7 @@
           "tag": "1.27-alpine"
         },
         {
+          "built_from_source": false,
           "compose_reference": null,
           "custom": true,
           "digest": null,
@@ -81,7 +85,6 @@
     "required": true,
     "warning_codes": [
       "runtime_image_tag_only",
-      "runtime_image_tag_only",
       "runtime_image_tag_only"
     ]
   },
@@ -89,14 +92,26 @@
     {
       "content_type": "application/x-yaml",
       "path": "docker-compose.yml",
-      "sha256": "99b8f8841ddbea6850557d9e359a993f00aac7d5dd63e137781b28f2a1d030fa",
-      "size": 2894
+      "sha256": "3c3562db79dd1e02c51c373ddaef2ce5ed6cb7e65ba5c4cce4e28ad7bca75f11",
+      "size": 3530
     },
     {
       "content_type": "text/plain",
       "path": ".env.example",
-      "sha256": "7c91d15b66677e9ff310c59f22ecbd19ebc44dbeb0cf0a9819ce7632eaf7c7b5",
-      "size": 888
+      "sha256": "f6aa89a4128feea5f3f9e1947347a6d7ba793d8cbcf3bb00de44d29d7c2b39df",
+      "size": 1474
+    },
+    {
+      "content_type": "text/x-dockerfile",
+      "path": "runtime/asterisk/Dockerfile",
+      "sha256": "8fe236fadc84f785434c7f02fab9e21b67176e91ec71fe3a170577dd17b86392",
+      "size": 2442
+    },
+    {
+      "content_type": "text/x-shellscript",
+      "path": "runtime/asterisk/docker-entrypoint.sh",
+      "sha256": "674db2a08358fd338dda0aff0b5f2c11fbd81b1d0f56aa995f24bd62ea6e19b4",
+      "size": 723
     },
     {
       "content_type": "text/plain",
@@ -203,14 +218,14 @@
     {
       "content_type": "application/json",
       "path": "runtime-images.json",
-      "sha256": "ecb839c26d452048556f3d171a6413ba6e237879a2f04ac970a5abf33c43cc3f",
-      "size": 1694
+      "sha256": "2130f42ec41c51844f3a88465ffcf0456c2d917e48c1fd88882ddf7e3bd6f835",
+      "size": 2584
     },
     {
       "content_type": "application/json",
       "path": "asterisk/pbx-active-config.json",
-      "sha256": "097c3132f4b8e7222f2616142350dddb7f9248a80fbadcf2e6e431559e257a18",
-      "size": 2986
+      "sha256": "c06d8ddb7f0554b72c9606f56e415fad017973eb85ee82b8143f6df8cb63288b",
+      "size": 3149
     }
   ],
   "format": "pbx-config-export/v1",
@@ -224,20 +239,22 @@
     "content_type": "application/json",
     "images": [
       {
-        "compose_reference": null,
+        "built_from_source": true,
+        "compose_reference": "pbx-asterisk:20.19.0-cisco",
         "custom": true,
         "digest": null,
         "digest_source": null,
         "env_var": "PBX_ASTERISK_IMAGE",
         "immutable": false,
-        "reference": "ghcr.io/apresz/asterisk:22-lts",
-        "registry": "ghcr.io",
-        "repository": "ghcr.io/apresz/asterisk",
-        "requires_env_override": true,
+        "reference": "pbx-asterisk:20.19.0-cisco",
+        "registry": null,
+        "repository": "pbx-asterisk",
+        "requires_env_override": false,
         "service": "asterisk",
-        "tag": "22-lts"
+        "tag": "20.19.0-cisco"
       },
       {
+        "built_from_source": false,
         "compose_reference": null,
         "custom": true,
         "digest": null,
@@ -252,6 +269,7 @@
         "tag": "1.0.0"
       },
       {
+        "built_from_source": false,
         "compose_reference": "docker.io/nginx:1.27-alpine",
         "custom": false,
         "digest": null,
@@ -266,6 +284,7 @@
         "tag": "1.27-alpine"
       },
       {
+        "built_from_source": false,
         "compose_reference": null,
         "custom": true,
         "digest": null,
@@ -281,6 +300,19 @@
       }
     ],
     "path": "runtime-images.json",
+    "source_builds": {
+      "asterisk": {
+        "asterisk_version": "20.19.0",
+        "build_context": "runtime/asterisk",
+        "cisco_patch_sha256": "adcb88c17a1cf8eb6242c7d9f1959f06afc64ae9af210268abaf767d388b83d2",
+        "cisco_patch_url": "https://raw.githubusercontent.com/usecallmanagernz/patches/master/asterisk/cisco-usecallmanager-20.19.0.patch",
+        "dockerfile": "runtime/asterisk/Dockerfile",
+        "documentation_url": "https://usecallmanager.nz/patching-asterisk.html",
+        "image": "pbx-asterisk:20.19.0-cisco",
+        "source_sha256": "10fbc070f9aaec50b788962dbcddf694fcc61d49c1f1bb158bf04a2e7e46aba0",
+        "source_url": "https://downloads.asterisk.org/pub/telephony/asterisk/old-releases/asterisk-20.19.0.tar.gz"
+      }
+    },
     "tag_policy": "warn"
   },
   "version": {
@@ -289,16 +321,6 @@
     "number": 1
   },
   "warnings": [
-    {
-      "code": "runtime_image_tag_only",
-      "env_var": "PBX_ASTERISK_IMAGE",
-      "message": "Custom PBX runtime images must include an immutable digest or resolved digest record.",
-      "policy": "warn",
-      "reference": "ghcr.io/apresz/asterisk:22-lts",
-      "repository": "ghcr.io/apresz/asterisk",
-      "service": "asterisk",
-      "tag": "22-lts"
-    },
     {
       "code": "runtime_image_tag_only",
       "env_var": "PBX_TFTP_IMAGE",

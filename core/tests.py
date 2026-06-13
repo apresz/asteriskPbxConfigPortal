@@ -3403,6 +3403,8 @@ class ConfigVersionExportTests(TestCase):
                     "docker-compose.yml",
                     "manifest.json",
                     "runtime-images.json",
+                    "runtime/asterisk/Dockerfile",
+                    "runtime/asterisk/docker-entrypoint.sh",
                     "scripts/pbx-recording-retention",
                     "tftp/company-directory.xml",
                     "tftp/firmware/CISCO-FIRMWARE-CHECKLIST.txt",
@@ -3439,6 +3441,8 @@ class ConfigVersionExportTests(TestCase):
         self.assertTrue(any(line.endswith("  asterisk/rtp.conf") for line in checksums))
         self.assertTrue(any(line.endswith("  active-config/var/lib/pbx/active.json") for line in checksums))
         self.assertTrue(any(line.endswith("  runtime-images.json") for line in checksums))
+        self.assertTrue(any(line.endswith("  runtime/asterisk/Dockerfile") for line in checksums))
+        self.assertTrue(any(line.endswith("  runtime/asterisk/docker-entrypoint.sh") for line in checksums))
         self.assertTrue(any(line.endswith("  scripts/pbx-recording-retention") for line in checksums))
         self.assertEqual(version.checksum, hashlib.sha256(bytes(version.archive)).hexdigest())
         self.assertEqual(
@@ -3454,10 +3458,14 @@ class ConfigVersionExportTests(TestCase):
             docker_compose = archive.read("docker-compose.yml").decode("utf-8")
             env_example = archive.read(".env.example").decode("utf-8")
             runtime_images = archive.read("runtime-images.json").decode("utf-8")
+            asterisk_dockerfile = archive.read("runtime/asterisk/Dockerfile").decode("utf-8")
+            asterisk_entrypoint = archive.read("runtime/asterisk/docker-entrypoint.sh").decode("utf-8")
 
         self.assertEqual(docker_compose, self._runtime_golden("docker-compose.yml"))
         self.assertEqual(env_example, self._runtime_golden(".env.example"))
         self.assertEqual(runtime_images, self._runtime_golden("runtime-images.json"))
+        self.assertEqual(asterisk_dockerfile, self._runtime_golden("runtime/asterisk/Dockerfile"))
+        self.assertEqual(asterisk_entrypoint, self._runtime_golden("runtime/asterisk/docker-entrypoint.sh"))
 
     def test_runtime_bundle_compose_services_and_volume_paths(self):
         version = create_config_version(self.location, exported_by=self.user)
@@ -3466,10 +3474,10 @@ class ConfigVersionExportTests(TestCase):
             services = self._compose_service_blocks(archive.read("docker-compose.yml").decode("utf-8"))
 
         self.assertEqual(set(services), {"asterisk", "tftp", "provisioning-http", "pbx-agent"})
-        self.assertIn(
-            "    image: ${PBX_ASTERISK_IMAGE:?PBX_ASTERISK_IMAGE must include an immutable digest}",
-            services["asterisk"],
-        )
+        self.assertIn("    build:", services["asterisk"])
+        self.assertIn("      context: ./runtime/asterisk", services["asterisk"])
+        self.assertIn("        ASTERISK_VERSION: \"${ASTERISK_VERSION:-20.19.0}\"", services["asterisk"])
+        self.assertIn("    image: ${PBX_ASTERISK_IMAGE:-pbx-asterisk:20.19.0-cisco}", services["asterisk"])
         self.assertIn("    network_mode: host", services["asterisk"])
         self.assertIn("      - ./asterisk:/etc/asterisk:ro", services["asterisk"])
         self.assertIn(

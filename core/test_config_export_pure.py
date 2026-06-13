@@ -30,7 +30,7 @@ from .config_archive import (
     zip_archive,
 )
 from .runtime_images import (
-    ASTERISK_22_LTS_IMAGE,
+    ASTERISK_20_CISCO_IMAGE,
     RUNTIME_IMAGE_TAG_POLICY_BLOCK,
     RUNTIME_IMAGE_TAG_POLICY_WARN,
     RuntimeImage,
@@ -99,13 +99,13 @@ def fake_emergency_route(
 class RuntimeImageReferenceTests(unittest.TestCase):
     def test_parse_image_reference_splits_registry_tag_and_digest(self):
         digest = "sha256:" + "a" * 64
-        reference = f"ghcr.io/apresz/asterisk:22-lts@{digest}"
+        reference = f"{ASTERISK_20_CISCO_IMAGE}@{digest}"
 
         parsed = parse_image_reference(reference)
 
-        self.assertEqual(parsed.registry, "ghcr.io")
-        self.assertEqual(parsed.repository, "ghcr.io/apresz/asterisk")
-        self.assertEqual(parsed.tag, "22-lts")
+        self.assertIsNone(parsed.registry)
+        self.assertEqual(parsed.repository, "pbx-asterisk")
+        self.assertEqual(parsed.tag, "20.19.0-cisco")
         self.assertEqual(parsed.digest, digest)
         self.assertTrue(parsed.digest_pinned)
         self.assertFalse(parsed.tag_only)
@@ -122,7 +122,7 @@ class RuntimeImageReferenceTests(unittest.TestCase):
 
     def test_invalid_digest_is_rejected(self):
         with self.assertRaises(ValueError):
-            parse_image_reference("ghcr.io/apresz/asterisk:22-lts@sha256:not-a-digest")
+            parse_image_reference(f"{ASTERISK_20_CISCO_IMAGE}@sha256:not-a-digest")
 
 
 class RuntimeImageValidationTests(unittest.TestCase):
@@ -130,7 +130,7 @@ class RuntimeImageValidationTests(unittest.TestCase):
         image = RuntimeImage(
             service="asterisk",
             env_var="PBX_ASTERISK_IMAGE",
-            reference=ASTERISK_22_LTS_IMAGE,
+            reference=ASTERISK_20_CISCO_IMAGE,
             custom=True,
         )
 
@@ -160,7 +160,7 @@ class RuntimeImageValidationTests(unittest.TestCase):
         images = configured_runtime_images(
             {
                 "asterisk": {
-                    "reference": ASTERISK_22_LTS_IMAGE,
+                    "reference": ASTERISK_20_CISCO_IMAGE,
                     "resolved_digest": digest,
                     "digest_source": "release-lock",
                 }
@@ -168,7 +168,7 @@ class RuntimeImageValidationTests(unittest.TestCase):
         )
         asterisk = next(image for image in images if image.service == "asterisk")
 
-        self.assertEqual(asterisk.compose_default, f"{ASTERISK_22_LTS_IMAGE}@{digest}")
+        self.assertEqual(asterisk.compose_default, f"{ASTERISK_20_CISCO_IMAGE}@{digest}")
         self.assertEqual(
             runtime_image_validation_issues([asterisk], tag_policy=RUNTIME_IMAGE_TAG_POLICY_BLOCK),
             {"warnings": [], "errors": []},
@@ -177,16 +177,17 @@ class RuntimeImageValidationTests(unittest.TestCase):
             {
                 "service": "asterisk",
                 "env_var": "PBX_ASTERISK_IMAGE",
-                "reference": ASTERISK_22_LTS_IMAGE,
-                "compose_reference": f"{ASTERISK_22_LTS_IMAGE}@{digest}",
-                "repository": "ghcr.io/apresz/asterisk",
-                "registry": "ghcr.io",
-                "tag": "22-lts",
+                "reference": ASTERISK_20_CISCO_IMAGE,
+                "compose_reference": f"{ASTERISK_20_CISCO_IMAGE}@{digest}",
+                "repository": "pbx-asterisk",
+                "registry": None,
+                "tag": "20.19.0-cisco",
                 "digest": digest,
                 "digest_source": "release-lock",
                 "custom": True,
                 "immutable": True,
                 "requires_env_override": False,
+                "built_from_source": True,
             },
             runtime_image_metadata([asterisk]),
         )
@@ -198,10 +199,8 @@ class RuntimeBundleImageGoldenTests(unittest.TestCase):
         compose = (fixture_dir / "docker-compose.yml").read_text(encoding="utf-8")
         env_example = (fixture_dir / ".env.example").read_text(encoding="utf-8")
 
-        self.assertIn(
-            "image: ${PBX_ASTERISK_IMAGE:?PBX_ASTERISK_IMAGE must include an immutable digest}",
-            compose,
-        )
+        self.assertIn("build:\n      context: ./runtime/asterisk", compose)
+        self.assertIn("image: ${PBX_ASTERISK_IMAGE:-pbx-asterisk:20.19.0-cisco}", compose)
         self.assertIn(
             "image: ${PBX_TFTP_IMAGE:?PBX_TFTP_IMAGE must include an immutable digest}",
             compose,
@@ -211,9 +210,13 @@ class RuntimeBundleImageGoldenTests(unittest.TestCase):
             compose,
         )
         self.assertIn("image: ${PBX_HTTP_IMAGE:-docker.io/nginx:1.27-alpine}", compose)
-        self.assertNotIn("image: ${PBX_ASTERISK_IMAGE:-ghcr.io/apresz/asterisk:22-lts}", compose)
-        self.assertIn("# Custom PBX runtime images must include an immutable digest.", env_example)
-        self.assertIn("PBX_ASTERISK_IMAGE=\n", env_example)
+        self.assertNotIn("22-lts", compose)
+        self.assertIn("ASTERISK_VERSION=20.19.0", env_example)
+        self.assertIn(
+            "CISCO_PATCH_SHA256=adcb88c17a1cf8eb6242c7d9f1959f06afc64ae9af210268abaf767d388b83d2",
+            env_example,
+        )
+        self.assertIn("PBX_ASTERISK_IMAGE=pbx-asterisk:20.19.0-cisco\n", env_example)
         self.assertIn("PBX_TFTP_IMAGE=\n", env_example)
         self.assertIn("PBX_AGENT_IMAGE=\n", env_example)
 
@@ -230,10 +233,15 @@ class RuntimeBundleImageGoldenTests(unittest.TestCase):
         self.assertEqual(set(images), {"asterisk", "tftp", "provisioning-http", "pbx-agent"})
         self.assertTrue(images["asterisk"]["custom"])
         self.assertFalse(images["asterisk"]["immutable"])
-        self.assertTrue(images["asterisk"]["requires_env_override"])
+        self.assertTrue(images["asterisk"]["built_from_source"])
+        self.assertFalse(images["asterisk"]["requires_env_override"])
         self.assertIn("digest", images["asterisk"])
         self.assertIsNone(images["asterisk"]["digest"])
-        self.assertEqual(images["asterisk"]["reference"], ASTERISK_22_LTS_IMAGE)
+        self.assertEqual(images["asterisk"]["reference"], ASTERISK_20_CISCO_IMAGE)
+        self.assertEqual(
+            manifest["source_builds"]["asterisk"]["cisco_patch_sha256"],
+            "adcb88c17a1cf8eb6242c7d9f1959f06afc64ae9af210268abaf767d388b83d2",
+        )
         self.assertEqual(images["provisioning-http"]["compose_reference"], "docker.io/nginx:1.27-alpine")
 
 
@@ -556,19 +564,35 @@ class ActiveConfigMarkerArchiveTests(unittest.TestCase):
         self.assertIn("asterisk/pbx-active-config.json", manifest_paths)
         self.assertEqual(manifest["runtime_images"]["path"], "runtime-images.json")
         self.assertEqual(manifest["runtime_images"]["tag_policy"], "warn")
+        self.assertEqual(
+            manifest["runtime_images"]["source_builds"]["asterisk"]["asterisk_version"],
+            "20.19.0",
+        )
+        self.assertEqual(
+            manifest["runtime_images"]["source_builds"]["asterisk"]["cisco_patch_sha256"],
+            "adcb88c17a1cf8eb6242c7d9f1959f06afc64ae9af210268abaf767d388b83d2",
+        )
         self.assertIn("runtime-images.json", manifest_paths)
+        self.assertIn("runtime/asterisk/Dockerfile", manifest_paths)
+        self.assertIn("runtime/asterisk/docker-entrypoint.sh", manifest_paths)
         self.assertIn("runtime_image_tag_only", manifest["emergency_status"]["warning_codes"])
         self.assertEqual(manifest["deployment"]["runtime_images"]["tag_policy"], "warn")
         self.assertIn("  asterisk/pbx-active-config.json", (fixture_dir / "SHA256SUMS").read_text(encoding="utf-8"))
         self.assertIn("  runtime-images.json", (fixture_dir / "SHA256SUMS").read_text(encoding="utf-8"))
+        self.assertIn("  runtime/asterisk/Dockerfile", (fixture_dir / "SHA256SUMS").read_text(encoding="utf-8"))
         self.assertIn("asterisk/pbx-active-config.json|", (fixture_dir / "zip-layout.txt").read_text(encoding="utf-8"))
         self.assertIn("runtime-images.json|", (fixture_dir / "zip-layout.txt").read_text(encoding="utf-8"))
+        self.assertIn("runtime/asterisk/Dockerfile|", (fixture_dir / "zip-layout.txt").read_text(encoding="utf-8"))
         self.assertIn(
             "asterisk/pbx-active-config.json|",
             (fixture_dir / "staging-layout.txt").read_text(encoding="utf-8"),
         )
         self.assertIn(
             "runtime-images.json|",
+            (fixture_dir / "staging-layout.txt").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "runtime/asterisk/Dockerfile|",
             (fixture_dir / "staging-layout.txt").read_text(encoding="utf-8"),
         )
 
