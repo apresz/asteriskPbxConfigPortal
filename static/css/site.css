@@ -783,6 +783,40 @@ a {
   align-items: end;
 }
 
+.formset-delete-input {
+  display: none;
+}
+
+.inline-form-row__delete {
+  width: 100%;
+  white-space: nowrap;
+}
+
+.inline-confirm-popover {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #ffccc7;
+  border-radius: var(--radius);
+  background: #fff2f0;
+  color: #a8071a;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.inline-confirm-popover__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.inline-formset-actions {
+  margin-top: 12px;
+}
+
 .form-field {
   display: grid;
   gap: 7px;
@@ -1725,5 +1759,15 @@ code {
   .inline-form-row,
   .inline-formset__row {
     grid-template-columns: 1fr;
+  }
+
+  .inline-confirm-popover {
+    align-items: stretch;
+    justify-content: flex-start;
+    flex-direction: column;
+  }
+
+  .inline-confirm-popover__actions {
+    justify-content: flex-end;
   }
 }

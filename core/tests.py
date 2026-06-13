@@ -79,6 +79,7 @@ from .deployments import (
     deploy_config_version,
     extract_deployment_bundle,
 )
+from .default_feature_codes import default_feature_code_specs
 from .extension_csv import ExtensionCSVError, export_extensions_csv, extension_template_csv, import_extensions_csv
 from .extension_management import sync_extension_relationships
 from .forms import ExtensionForm, IVRForm, LocationForm, PhoneForm
@@ -135,6 +136,41 @@ class FrontendAssetTests(SimpleTestCase):
         self.assertIn("{% static 'js/htmx.min.js' %}", template)
         self.assertNotIn("unpkg.com/htmx", template)
         self.assertTrue(asset_path.exists())
+
+    def test_base_template_uses_local_portal_navigation_asset(self):
+        template = (Path(__file__).resolve().parent.parent / "templates" / "base.html").read_text(encoding="utf-8")
+        asset_path = Path(__file__).resolve().parent.parent / "static" / "js" / "portal.js"
+        script = asset_path.read_text(encoding="utf-8")
+
+        self.assertIn("{% static 'js/portal.js' %}", template)
+        self.assertIn("htmx:afterSwap", script)
+        self.assertIn("ant-menu-item-selected", script)
+        self.assertTrue(asset_path.exists())
+
+    def test_routing_formset_template_exposes_dynamic_add_controls(self):
+        template = (
+            Path(__file__).resolve().parent.parent
+            / "templates"
+            / "core"
+            / "partials"
+            / "routing"
+            / "form_content.html"
+        ).read_text(encoding="utf-8")
+        script = (Path(__file__).resolve().parent.parent / "static" / "js" / "portal.js").read_text(encoding="utf-8")
+
+        self.assertIn('data-formset-prefix="{{ formset.prefix }}"', template)
+        self.assertIn("data-formset-template", template)
+        self.assertIn("data-formset-add", template)
+        self.assertIn("data-formset-delete", template)
+        self.assertIn("formset-delete-input", template)
+        self.assertIn("field.as_hidden", template)
+        self.assertIn("formset.empty_form", template)
+        self.assertIn("initDynamicFormsets", script)
+        self.assertIn("showFormsetDeleteConfirmation", script)
+        self.assertIn("removeFormsetRow", script)
+        self.assertIn('deleteInput.value = "on"', script)
+        self.assertIn("TOTAL_FORMS", script)
+        self.assertIn("__prefix__", script)
 
 
 def location_form_data(**overrides):
@@ -452,6 +488,97 @@ class PortalRouteTests(TestCase):
         self.assertContains(response, "viewer - Viewer")
         self.assertNotContains(response, "Settings")
 
+    def test_users_roles_route_renders_user_create_form(self):
+        self.client.force_login(self.admin)
+
+        response = self.client.get(reverse("users-roles"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "New user")
+        self.assertContains(response, 'name="username"')
+        self.assertContains(response, 'name="password"')
+        self.assertContains(response, 'name="role"')
+        self.assertContains(response, reverse("user-delete", args=[self.viewer.id]))
+        self.assertNotContains(response, reverse("user-delete", args=[self.admin.id]))
+
+    def test_admin_can_create_user_with_password_and_role_from_users_roles_page(self):
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            reverse("users-roles"),
+            {
+                "username": "managed-ui",
+                "email": "managed-ui@example.test",
+                "password": "managed-secret",
+                "role": PortalRole.OPERATOR,
+                "is_active": "on",
+            },
+        )
+
+        self.assertRedirects(response, reverse("users-roles"))
+        user = User.objects.get(username="managed-ui")
+        self.assertEqual(user.email, "managed-ui@example.test")
+        self.assertTrue(user.check_password("managed-secret"))
+        self.assertTrue(user.is_active)
+        self.assertEqual(get_user_role(user), PortalRole.OPERATOR)
+        audit = AuditLog.objects.get(action=AuditAction.API_USER_UPDATE, target=f"users/{user.id}")
+        self.assertEqual(audit.actor, self.admin)
+        self.assertEqual(audit.details["changed_fields"], ["email", "is_active", "password", "role", "username"])
+
+    def test_duplicate_user_create_renders_inline_error(self):
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            reverse("users-roles"),
+            {
+                "username": self.viewer.username,
+                "password": "managed-secret",
+                "role": PortalRole.VIEWER,
+                "is_active": "on",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertContains(response, "A user with this username already exists.", status_code=400)
+        self.assertEqual(User.objects.filter(username=self.viewer.username).count(), 1)
+
+    def test_admin_can_delete_user_from_users_roles_page(self):
+        target = User.objects.create_user(username="delete-me", password="portal-pass")
+        assign_role(target, PortalRole.VIEWER)
+        self.client.force_login(self.admin)
+
+        response = self.client.post(reverse("user-delete", args=[target.id]))
+
+        self.assertRedirects(response, reverse("users-roles"))
+        self.assertFalse(User.objects.filter(pk=target.id).exists())
+        audit = AuditLog.objects.get(action=AuditAction.API_USER_UPDATE, target=f"users/{target.id}")
+        self.assertEqual(audit.actor, self.admin)
+        self.assertEqual(audit.details["username"], "delete-me")
+        self.assertEqual(audit.details["changed_fields"], ["deleted"])
+
+    def test_admin_cannot_delete_own_user_from_users_roles_page(self):
+        self.client.force_login(self.admin)
+
+        response = self.client.post(reverse("user-delete", args=[self.admin.id]))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertContains(response, "You cannot delete your own account.", status_code=400)
+        self.assertTrue(User.objects.filter(pk=self.admin.id).exists())
+        self.assertEqual(AuditLog.objects.filter(action=AuditAction.API_USER_UPDATE).count(), 0)
+
+    def test_nav_links_expose_area_markers_for_active_sync(self):
+        self.client.force_login(self.viewer)
+
+        response = self.client.get(reverse("home"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'href="' + reverse("home") + '" data-area="home"')
+        self.assertContains(
+            response,
+            'href="' + reverse("inbound-destinations") + '" data-area="inbound-destinations"',
+        )
+        self.assertContains(response, '<section class="page-heading" data-area="home">')
+
     def test_initial_portal_area_routes_render(self):
         self.client.force_login(self.viewer)
         route_names = [
@@ -665,6 +792,36 @@ class DashboardViewTests(TestCase):
 
 
 class LocationFormValidationTests(TestCase):
+    def test_timezone_field_is_select_defaulting_to_los_angeles(self):
+        form = LocationForm(include_sensitive_fields=True)
+        timezone_values = [value for value, _label in form.fields["timezone"].choices]
+
+        self.assertEqual(form.fields["timezone"].widget.input_type, "select")
+        self.assertEqual(form["timezone"].value(), "America/Los_Angeles")
+        self.assertEqual(Location._meta.get_field("timezone").default, "America/Los_Angeles")
+        self.assertIn("America/Los_Angeles", timezone_values)
+        self.assertIn("UTC", timezone_values)
+
+    def test_listen_address_fields_default_to_all_interfaces(self):
+        form = LocationForm(include_sensitive_fields=True)
+
+        for field_name in ("sip_bind_ip", "iax_bind_ip"):
+            with self.subTest(field_name=field_name):
+                self.assertEqual(form[field_name].value(), "0.0.0.0")
+                self.assertEqual(Location._meta.get_field(field_name).default, "0.0.0.0")
+
+    def test_ami_fields_default_to_bind_all_and_generated_credentials(self):
+        form = LocationForm(include_sensitive_fields=True)
+        second_form = LocationForm(include_sensitive_fields=True)
+
+        self.assertEqual(form["ami_host"].value(), "0.0.0.0")
+        self.assertEqual(Location._meta.get_field("ami_host").default, "0.0.0.0")
+        self.assertTrue(form["ami_username"].value().startswith("ami-location-"))
+        self.assertNotEqual(form["ami_username"].value(), second_form["ami_username"].value())
+        self.assertGreaterEqual(len(form["ami_secret"].value()), 40)
+        self.assertNotEqual(form["ami_secret"].value(), second_form["ami_secret"].value())
+        self.assertTrue(form.fields["ami_secret"].widget.render_value)
+
     def test_admin_form_requires_complete_location_fields(self):
         form = LocationForm(data={}, include_sensitive_fields=True)
 
@@ -866,12 +1023,49 @@ class LocationManagementViewTests(TestCase):
         self.assertContains(response, 'name="agent_secret"')
         self.assertContains(response, 'name="ami_secret"')
 
+    def test_admin_create_form_timezone_renders_los_angeles_select(self):
+        self.client.force_login(self.admin)
+
+        response = self.client.get(reverse("location-create"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '<select name="timezone"', html=False)
+        self.assertContains(
+            response,
+            '<option value="America/Los_Angeles" selected>America/Los Angeles</option>',
+            html=True,
+        )
+
+    def test_admin_create_form_defaults_sip_and_iax_to_all_interfaces(self):
+        self.client.force_login(self.admin)
+
+        response = self.client.get(reverse("location-create"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["form"]["sip_bind_ip"].value(), "0.0.0.0")
+        self.assertEqual(response.context["form"]["iax_bind_ip"].value(), "0.0.0.0")
+        self.assertContains(response, 'name="sip_bind_ip" value="0.0.0.0"', html=False)
+        self.assertContains(response, 'name="iax_bind_ip" value="0.0.0.0"', html=False)
+
+    def test_admin_create_form_defaults_ami_host_and_credentials(self):
+        self.client.force_login(self.admin)
+
+        response = self.client.get(reverse("location-create"))
+
+        form = response.context["form"]
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(form["ami_host"].value(), "0.0.0.0")
+        self.assertTrue(form["ami_username"].value().startswith("ami-location-"))
+        self.assertGreaterEqual(len(form["ami_secret"].value()), 40)
+        self.assertTrue(form.fields["ami_secret"].widget.render_value)
+
     def test_admin_can_create_complete_location_record(self):
         self.client.force_login(self.admin)
 
         response = self.client.post(reverse("location-create"), location_form_data())
 
         location = Location.objects.get(slug="branch-office")
+        default_codes = {spec.code for spec in default_feature_code_specs()}
         self.assertEqual(response.status_code, 302)
         self.assertEqual(location.lan_subnet, "10.30.0.0/24")
         self.assertEqual(location.default_did, "+15551203000")
@@ -880,6 +1074,7 @@ class LocationManagementViewTests(TestCase):
         self.assertEqual(location.deployment_asterisk_path, "/srv/pbx/asterisk")
         self.assertEqual(location.deployment_reload_command, "asterisk -rx 'core reload'")
         self.assertEqual(location.deployment_status, Location.DeploymentStatus.READY)
+        self.assertEqual(set(location.feature_codes.values_list("code", flat=True)), default_codes)
 
     def test_admin_can_create_location_without_manual_ami_credentials(self):
         self.client.force_login(self.admin)
@@ -4898,6 +5093,178 @@ class InboundRoutingManagementViewTests(TestCase):
                 response = self.client.get(reverse(route_name))
                 self.assertEqual(response.status_code, 200)
                 self.assertContains(response, expected_text)
+
+    def test_ivr_create_renders_dynamic_menu_option_add_controls(self):
+        self.client.force_login(self.editor)
+
+        response = self.client.get(reverse("ivr-create"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-formset-prefix="menu_options"')
+        self.assertContains(response, "<template data-formset-template>", html=False)
+        self.assertContains(response, 'name="menu_options-__prefix__-digit"', html=False)
+        self.assertContains(response, 'name="menu_options-__prefix__-DELETE"', html=False)
+        self.assertContains(response, 'type="hidden" name="menu_options-0-DELETE"', html=False)
+        self.assertNotContains(response, 'type="checkbox" name="menu_options-0-DELETE"', html=False)
+        self.assertContains(response, 'name="menu_options-TOTAL_FORMS"', html=False)
+        self.assertContains(response, 'data-formset-delete')
+        self.assertContains(response, "formset-delete-input")
+        self.assertContains(response, "Add option")
+
+    def test_editor_can_create_ivr_with_more_than_initial_menu_options(self):
+        destination = InboundDestination.objects.create(
+            location=self.location,
+            name="Reception Destination",
+            destination_type=InboundDestination.DestinationType.EXTENSION,
+            extension=self.reception,
+        )
+        self.client.force_login(self.editor)
+
+        ivr_post = {
+            "location": str(self.location.id),
+            "name": "Expanded IVR",
+            "prompt_name": "expanded-menu",
+            "business_hours_destination": str(destination.id),
+            "after_hours_destination": str(destination.id),
+            "timeout_seconds": "12",
+            "timeout_destination": str(destination.id),
+            "invalid_destination": str(destination.id),
+            "is_active": "on",
+        }
+        ivr_post.update(
+            ivr_menu_formset_data(
+                total_forms=5,
+                option_rows=[
+                    {"digit": str(digit), "label": f"Option {digit}", "destination": destination}
+                    for digit in range(1, 6)
+                ],
+            )
+        )
+
+        response = self.client.post(reverse("ivr-create"), ivr_post)
+
+        self.assertRedirects(response, reverse("ivrs"))
+        ivr = IVR.objects.get(name="Expanded IVR")
+        self.assertEqual(list(ivr.menu_options.values_list("digit", flat=True)), ["1", "2", "3", "4", "5"])
+
+    def test_editor_can_delete_existing_ivr_menu_option_from_formset(self):
+        destination = InboundDestination.objects.create(
+            location=self.location,
+            name="Reception Destination",
+            destination_type=InboundDestination.DestinationType.EXTENSION,
+            extension=self.reception,
+        )
+        ivr = IVR.objects.create(
+            location=self.location,
+            name="Existing IVR",
+            prompt_name="existing-menu",
+            business_hours_destination=destination,
+            after_hours_destination=destination,
+            timeout_seconds=12,
+            timeout_destination=destination,
+            invalid_destination=destination,
+        )
+        keep_option = IVRMenuOption.objects.create(
+            ivr=ivr,
+            digit="1",
+            label="Keep",
+            destination=destination,
+        )
+        delete_option = IVRMenuOption.objects.create(
+            ivr=ivr,
+            digit="2",
+            label="Remove",
+            destination=destination,
+        )
+        self.client.force_login(self.editor)
+
+        response = self.client.post(
+            reverse("ivr-edit", args=[ivr.id]),
+            {
+                "location": str(self.location.id),
+                "name": "Existing IVR",
+                "prompt_name": "existing-menu",
+                "business_hours_destination": str(destination.id),
+                "after_hours_destination": str(destination.id),
+                "timeout_seconds": "12",
+                "timeout_destination": str(destination.id),
+                "invalid_destination": str(destination.id),
+                "is_active": "on",
+                "menu_options-TOTAL_FORMS": "2",
+                "menu_options-INITIAL_FORMS": "2",
+                "menu_options-MIN_NUM_FORMS": "0",
+                "menu_options-MAX_NUM_FORMS": "1000",
+                "menu_options-0-id": str(keep_option.id),
+                "menu_options-0-digit": "1",
+                "menu_options-0-label": "Keep",
+                "menu_options-0-destination": str(destination.id),
+                "menu_options-1-id": str(delete_option.id),
+                "menu_options-1-digit": "2",
+                "menu_options-1-label": "Remove",
+                "menu_options-1-destination": str(destination.id),
+                "menu_options-1-DELETE": "on",
+            },
+        )
+
+        self.assertRedirects(response, reverse("ivrs"))
+        self.assertTrue(IVRMenuOption.objects.filter(pk=keep_option.pk).exists())
+        self.assertFalse(IVRMenuOption.objects.filter(pk=delete_option.pk).exists())
+
+    def test_editor_can_seed_default_feature_codes_and_edit_seeded_rows(self):
+        self.client.force_login(self.editor)
+
+        list_response = self.client.get(reverse("feature-codes"))
+
+        self.assertEqual(list_response.status_code, 200)
+        self.assertContains(list_response, "Defaults")
+        self.assertEqual(FeatureCode.objects.filter(location=self.location).count(), 0)
+
+        seed_response = self.client.post(reverse("feature-code-seed-defaults"))
+
+        self.assertRedirects(seed_response, reverse("feature-codes"))
+        default_codes = {spec.code for spec in default_feature_code_specs()}
+        self.assertEqual(set(self.location.feature_codes.values_list("code", flat=True)), default_codes)
+
+        seeded = FeatureCode.objects.get(location=self.location, code="*98")
+        seeded_list_response = self.client.get(reverse("feature-codes"))
+        self.assertContains(seeded_list_response, reverse("feature-code-edit", args=[seeded.id]))
+        self.assertNotContains(seeded_list_response, "No feature codes configured")
+
+        edit_response = self.client.post(
+            reverse("feature-code-edit", args=[seeded.id]),
+            {
+                "location": str(self.location.id),
+                "code": "*97",
+                "name": "Voicemail portal",
+                "feature_type": FeatureCode.FeatureType.VOICEMAIL_MAIN,
+                "destination": "",
+                "notes": "Updated default code",
+                "is_active": "on",
+            },
+        )
+
+        self.assertRedirects(edit_response, reverse("feature-codes"))
+        seeded.refresh_from_db()
+        self.assertEqual(seeded.code, "*97")
+        self.assertEqual(seeded.name, "Voicemail portal")
+
+    def test_seed_defaults_preserves_existing_default_codes(self):
+        existing = FeatureCode.objects.create(
+            location=self.location,
+            code="*98",
+            name="Custom voicemail",
+            feature_type=FeatureCode.FeatureType.VOICEMAIL_MAIN,
+            notes="Keep this label",
+        )
+        self.client.force_login(self.editor)
+
+        response = self.client.post(reverse("feature-code-seed-defaults"))
+
+        self.assertRedirects(response, reverse("feature-codes"))
+        existing.refresh_from_db()
+        self.assertEqual(existing.name, "Custom voicemail")
+        self.assertEqual(existing.notes, "Keep this label")
+        self.assertEqual(self.location.feature_codes.count(), len(default_feature_code_specs()))
 
 
 class PortalPermissionTests(TestCase):

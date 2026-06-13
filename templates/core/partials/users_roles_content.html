@@ -4,6 +4,41 @@
   <p>Named users, assigned roles, and permission coverage for protected portal areas.</p>
 </section>
 
+{% if user_management_error %}
+  <section class="notice-panel ant-alert notice-panel--error" aria-label="User management error">
+    <p>{{ user_management_error }}</p>
+  </section>
+{% endif %}
+
+<section class="detail-panel ant-card" data-area="users-roles" aria-label="Create user">
+  <p class="eyebrow">Create user</p>
+  <h2>New user</h2>
+  <form class="ant-form" method="post" action="{% url 'users-roles' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true" novalidate>
+    {% csrf_token %}
+    {{ user_create_form.non_field_errors }}
+    <div class="form-grid">
+      {% for field in user_create_form %}
+        {% if field.field.widget.input_type == "checkbox" %}
+          <label class="form-check ant-checkbox-wrapper" for="{{ field.id_for_label }}">
+            {{ field }}
+            <span>{{ field.label }}</span>
+          </label>
+          {{ field.errors }}
+        {% else %}
+          <label class="form-field ant-form-item" for="{{ field.id_for_label }}">
+            <span>{{ field.label }}{% if field.field.required %} <strong aria-hidden="true">*</strong>{% endif %}</span>
+            {{ field }}
+            {{ field.errors }}
+          </label>
+        {% endif %}
+      {% endfor %}
+    </div>
+    <div class="form-actions">
+      <button class="button ant-btn ant-btn-primary" type="submit">Create User</button>
+    </div>
+  </form>
+</section>
+
 <section class="table-panel ant-table-wrapper" aria-label="Users/Roles">
   <div class="table-panel__header ant-table-title">
     <h2>Users</h2>
@@ -15,6 +50,7 @@
         <th scope="col">Status</th>
         <th scope="col">Current role</th>
         <th scope="col">Role assignment</th>
+        <th scope="col">Actions</th>
       </tr>
     </thead>
     <tbody>
@@ -41,10 +77,20 @@
               <button class="button button--secondary ant-btn ant-btn-default" type="submit">Save Role</button>
             </form>
           </td>
+          <td class="table-actions">
+            {% if row.can_delete %}
+              <form method="post" action="{% url 'user-delete' row.user.id %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true" onsubmit="return confirm('Delete this user?');">
+                {% csrf_token %}
+                <button class="button button--danger ant-btn ant-btn-dangerous" type="submit">Delete</button>
+              </form>
+            {% else %}
+              <span class="table-meta">Current user</span>
+            {% endif %}
+          </td>
         </tr>
       {% empty %}
         <tr>
-          <td colspan="4">No portal users found.</td>
+          <td colspan="5">No portal users found.</td>
         </tr>
       {% endfor %}
     </tbody>

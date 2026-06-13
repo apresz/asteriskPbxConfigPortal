@@ -12,6 +12,12 @@
       {% if import_url %}
         <a class="button button--secondary ant-btn ant-btn-default" href="{% url import_url %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">Import</a>
       {% endif %}
+      {% if default_seed_url and default_seed_enabled %}
+        <form method="post" action="{% url default_seed_url %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">
+          {% csrf_token %}
+          <button class="button button--secondary ant-btn ant-btn-default" type="submit">Defaults</button>
+        </form>
+      {% endif %}
       <a class="button ant-btn ant-btn-primary" href="{% url create_url %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true">New</a>
     </span>
   {% endif %}

@@ -364,6 +364,11 @@ class APIKey(TimestampedModel):
         self.key_hash = self.hash_secret(raw_secret)
 
 
+DEFAULT_LOCATION_TIMEZONE = "America/Los_Angeles"
+DEFAULT_LISTEN_ADDRESS = "0.0.0.0"
+DEFAULT_AMI_HOST = DEFAULT_LISTEN_ADDRESS
+
+
 class Location(TimestampedModel):
     class DeploymentStatus(models.TextChoices):
         NOT_DEPLOYED = "not_deployed", "Not deployed"
@@ -374,7 +379,7 @@ class Location(TimestampedModel):
     name = models.CharField(max_length=120, unique=True)
     slug = models.SlugField(max_length=80, unique=True)
     description = models.TextField(blank=True)
-    timezone = models.CharField(max_length=64, default="UTC")
+    timezone = models.CharField(max_length=64, default=DEFAULT_LOCATION_TIMEZONE)
     lan_subnet = models.CharField(
         "LAN subnet",
         max_length=43,
@@ -432,6 +437,7 @@ class Location(TimestampedModel):
     sip_bind_ip = models.CharField(
         "SIP bind IP",
         max_length=39,
+        default=DEFAULT_LISTEN_ADDRESS,
         validators=[ip_address_validator],
     )
     sip_port = models.PositiveIntegerField(
@@ -452,6 +458,7 @@ class Location(TimestampedModel):
     iax_bind_ip = models.CharField(
         "IAX bind IP",
         max_length=39,
+        default=DEFAULT_LISTEN_ADDRESS,
         validators=[ip_address_validator],
     )
     iax_port = models.PositiveIntegerField(
@@ -494,7 +501,7 @@ class Location(TimestampedModel):
     smtp_use_ssl = models.BooleanField("SMTP use SSL", default=False)
     smtp_username = models.CharField("SMTP username", max_length=120, blank=True)
     smtp_password = models.CharField("SMTP password", max_length=255, blank=True)
-    ami_host = models.CharField("AMI host", max_length=255)
+    ami_host = models.CharField("AMI host", max_length=255, default=DEFAULT_AMI_HOST)
     ami_port = models.PositiveIntegerField(
         "AMI port",
         default=5038,

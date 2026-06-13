@@ -5,8 +5,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Asterisk PBX Config Portal{% endblock %}</title>
-    <link rel="stylesheet" href="{% static 'css/site.css' %}">
+    <link rel="stylesheet" href="{% static 'css/site.css' %}?v=20260613-formset-delete">
     <script src="{% static 'js/htmx.min.js' %}" defer></script>
+    <script src="{% static 'js/portal.js' %}?v=20260613-formset-delete" defer></script>
   </head>
   <body>
     <div class="portal-shell ant-layout ant-layout-has-sider">
@@ -17,12 +18,12 @@
         </div>
         {% if user.is_authenticated %}
           <nav class="nav ant-menu ant-menu-dark ant-menu-root ant-menu-inline" aria-label="Portal">
-            <a class="nav__link ant-menu-item{% if portal_active_area == 'home' %} ant-menu-item-selected{% endif %}" href="{% url 'home' %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true"{% if portal_active_area == 'home' %} aria-current="page"{% endif %}>
+            <a class="nav__link ant-menu-item{% if portal_active_area == 'home' %} ant-menu-item-selected{% endif %}" href="{% url 'home' %}" data-area="home" hx-boost="true" hx-target="#portal-main" hx-push-url="true"{% if portal_active_area == 'home' %} aria-current="page"{% endif %}>
               <span class="nav__icon" aria-hidden="true"></span>
               Overview
             </a>
             {% for slug, area in portal_nav_areas.items %}
-              <a class="nav__link ant-menu-item{% if portal_active_area == slug %} ant-menu-item-selected{% endif %}" href="{% url slug %}" hx-boost="true" hx-target="#portal-main" hx-push-url="true"{% if portal_active_area == slug %} aria-current="page"{% endif %}>
+              <a class="nav__link ant-menu-item{% if portal_active_area == slug %} ant-menu-item-selected{% endif %}" href="{% url slug %}" data-area="{{ slug }}" hx-boost="true" hx-target="#portal-main" hx-push-url="true"{% if portal_active_area == slug %} aria-current="page"{% endif %}>
                 <span class="nav__icon" aria-hidden="true"></span>
                 {{ area.label }}
               </a>

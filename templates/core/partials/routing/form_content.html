@@ -38,14 +38,18 @@
       <legend>{{ formset_title }}</legend>
       {{ formset.management_form }}
       {{ formset.non_form_errors }}
-      <div class="inline-formset">
+      <div class="inline-formset" data-formset-prefix="{{ formset.prefix }}">
         {% for option_form in formset.forms %}
           <div class="inline-form-row">
             {% for hidden in option_form.hidden_fields %}
               {{ hidden }}
             {% endfor %}
             {% for field in option_form.visible_fields %}
-              {% if field.field.widget.input_type == "checkbox" %}
+              {% if field.name == "DELETE" %}
+                <span class="formset-delete-input">{{ field.as_hidden }}</span>
+                <button class="button button--danger ant-btn ant-btn-dangerous inline-form-row__delete" type="button" data-formset-delete>Delete</button>
+                {{ field.errors }}
+              {% elif field.field.widget.input_type == "checkbox" %}
                 <label class="form-check ant-checkbox-wrapper" for="{{ field.id_for_label }}">
                   {{ field }}
                   <span>{{ field.label }}</span>
@@ -61,6 +65,35 @@
             {% endfor %}
           </div>
         {% endfor %}
+      </div>
+      <template data-formset-template>
+        <div class="inline-form-row">
+          {% for hidden in formset.empty_form.hidden_fields %}
+            {{ hidden }}
+          {% endfor %}
+          {% for field in formset.empty_form.visible_fields %}
+            {% if field.name == "DELETE" %}
+              <span class="formset-delete-input">{{ field.as_hidden }}</span>
+              <button class="button button--danger ant-btn ant-btn-dangerous inline-form-row__delete" type="button" data-formset-delete>Delete</button>
+              {{ field.errors }}
+            {% elif field.field.widget.input_type == "checkbox" %}
+              <label class="form-check ant-checkbox-wrapper" for="{{ field.id_for_label }}">
+                {{ field }}
+                <span>{{ field.label }}</span>
+              </label>
+              {{ field.errors }}
+            {% else %}
+              <label class="form-field ant-form-item" for="{{ field.id_for_label }}">
+                <span>{{ field.label }}{% if field.field.required %} <strong aria-hidden="true">*</strong>{% endif %}</span>
+                {{ field }}
+                {{ field.errors }}
+              </label>
+            {% endif %}
+          {% endfor %}
+        </div>
+      </template>
+      <div class="inline-formset-actions">
+        <button class="button button--secondary ant-btn ant-btn-default" type="button" data-formset-add>Add option</button>
       </div>
     </fieldset>
   {% endif %}

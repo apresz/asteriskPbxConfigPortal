@@ -1,7 +1,11 @@
+from zoneinfo import available_timezones
+
 from django import forms
+from django.contrib.auth import get_user_model
 from django.db.models import Q
 from django.forms import BaseInlineFormSet
 
+from .ami_credentials import generate_ami_secret, generate_ami_username
 from .extension_management import sync_extension_relationships
 from .audio_prompts import AudioPromptValidationError, validate_audio_prompt_upload
 from .rtp_config import RTP_PORT_MAX, RTP_PORT_MIN, RTPRangeError, validate_rtp_port_range
@@ -15,6 +19,7 @@ from .models import (
     IVR,
     IVRMenuOption,
     Location,
+    DEFAULT_LOCATION_TIMEZONE,
     OutboundRoute,
     OutboundRouteTrunk,
     PagingGroup,
@@ -22,6 +27,7 @@ from .models import (
     Phone,
     PhoneLineAppearance,
     PhoneSpeedDial,
+    PortalRole,
     Provider,
     QueueMember,
     RingGroup,
@@ -29,6 +35,19 @@ from .models import (
     Trunk,
     normalize_mac_address,
 )
+
+
+User = get_user_model()
+
+
+def _timezone_label(timezone_name):
+    return timezone_name.replace("_", " ")
+
+
+def _location_timezone_choices():
+    timezone_names = set(available_timezones())
+    timezone_names.update({DEFAULT_LOCATION_TIMEZONE, "UTC"})
+    return tuple((timezone_name, _timezone_label(timezone_name)) for timezone_name in sorted(timezone_names))
 
 
 def _append_widget_classes(widget, *class_names):
@@ -60,6 +79,41 @@ def _configure_standard_widgets(fields):
         if field_name in {"priority", "deployment_ssh_port", "sip_port", "rtp_port_start", "rtp_port_end", "iax_port"}:
             field.widget.attrs.setdefault("min", str(RTP_PORT_MIN))
             field.widget.attrs.setdefault("max", str(RTP_PORT_MAX))
+
+
+class PortalUserCreateForm(forms.Form):
+    username = forms.CharField(max_length=150)
+    email = forms.EmailField(required=False)
+    password = forms.CharField(strip=False, widget=forms.PasswordInput(render_value=False))
+    role = forms.ChoiceField(choices=PortalRole.choices, initial=PortalRole.VIEWER)
+    is_active = forms.BooleanField(required=False, initial=True, label="Active user")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        _configure_standard_widgets(self.fields)
+
+    def clean_username(self):
+        username = self.cleaned_data["username"].strip()
+        if User.objects.filter(username=username).exists():
+            raise forms.ValidationError("A user with this username already exists.")
+        return username
+
+    def clean_email(self):
+        return self.cleaned_data["email"].strip()
+
+    def clean_role(self):
+        return PortalRole(str(self.cleaned_data["role"]))
+
+    def save(self):
+        user = User(
+            username=self.cleaned_data["username"],
+            email=self.cleaned_data["email"],
+            is_active=self.cleaned_data["is_active"],
+        )
+        user.set_password(self.cleaned_data["password"])
+        user.full_clean()
+        user.save()
+        return user
 
 
 def _selected_location_from_form(form):
@@ -115,6 +169,10 @@ def _sync_extension_members(parent, selected_extensions, model, parent_field, de
 
 
 class LocationForm(forms.ModelForm):
+    timezone = forms.ChoiceField(
+        choices=_location_timezone_choices,
+        initial=DEFAULT_LOCATION_TIMEZONE,
+    )
     SENSITIVE_FIELDS = (
         "deployment_ssh_host",
         "deployment_ssh_port",
@@ -266,6 +324,11 @@ class LocationForm(forms.ModelForm):
                 for field_name in self.PRESERVED_SECRET_FIELDS:
                     if field_name in self.fields:
                         self.fields[field_name].required = False
+            elif "ami_username" in self.fields and "ami_secret" in self.fields:
+                if not self.is_bound:
+                    self.initial.setdefault("ami_username", generate_ami_username("location"))
+                    self.initial.setdefault("ami_secret", generate_ami_secret())
+                self.fields["ami_secret"].widget.render_value = True
 
         for field_name, field in self.fields.items():
             _configure_widget_classes(field)

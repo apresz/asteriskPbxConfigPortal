@@ -128,7 +128,7 @@ def render_manager_conf(location: Any, *, header_lines: list[str] | None = None)
             "[general]",
             "enabled=yes",
             f"port={getattr(location, 'ami_port', 5038)}",
-            f"bindaddr={getattr(location, 'ami_host', '127.0.0.1')}",
+            f"bindaddr={getattr(location, 'ami_host', '0.0.0.0')}",
             "webenabled=no",
             "",
             f"[{username}]",

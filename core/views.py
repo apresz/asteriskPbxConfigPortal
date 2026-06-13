@@ -29,6 +29,11 @@ from .ami_telemetry import recording_id_for_path
 from .backups import create_admin_backup
 from .config_export import ConfigExportValidationError, create_config_version, validate_location_routing
 from .deployments import DeploymentError, deploy_config_version
+from .default_feature_codes import (
+    ensure_default_feature_codes,
+    ensure_default_feature_codes_for_locations,
+    locations_missing_default_feature_codes,
+)
 from .extension_csv import (
     ExtensionCSVError,
     export_extensions_csv,
@@ -49,6 +54,7 @@ from .forms import (
     RingGroupForm,
     OutboundRouteForm,
     OutboundRouteTrunkFormSet,
+    PortalUserCreateForm,
     ProviderForm,
     PhoneForm,
     PhoneLineAppearanceFormSet,
@@ -505,18 +511,75 @@ def audit_log(request):
 
 
 @permission_required(PortalPermission.ADMINISTER)
-@require_GET
+@require_http_methods(["GET", "POST"])
 def users_roles(request):
+    user_create_form = PortalUserCreateForm(request.POST or None)
+    status = 200
+    if request.method == "POST":
+        if user_create_form.is_valid():
+            role = user_create_form.cleaned_data["role"]
+            try:
+                with transaction.atomic():
+                    user = user_create_form.save()
+                    assign_role(user, role)
+                _record_api_user_update_audit(
+                    request.user,
+                    user,
+                    ["email", "is_active", "password", "role", "username"],
+                    request,
+                )
+                return redirect("users-roles")
+            except (IntegrityError, ValidationError, ValueError) as exc:
+                user_create_form.add_error(None, exc)
+        status = 400
+
+    return _users_roles_response(request, user_create_form=user_create_form, status=status)
+
+
+@permission_required(PortalPermission.ADMINISTER)
+@require_POST
+def user_delete(request, user_id: int):
+    user = get_object_or_404(User.objects.select_related("portal_profile"), pk=user_id)
+    if user.pk == request.user.pk:
+        return _users_roles_response(
+            request,
+            user_management_error="You cannot delete your own account.",
+            status=400,
+        )
+
+    with transaction.atomic():
+        _record_api_user_update_audit(request.user, user, ["deleted"], request)
+        user.delete()
+
+    return redirect("users-roles")
+
+
+def _users_roles_response(
+    request,
+    *,
+    user_create_form: PortalUserCreateForm | None = None,
+    user_management_error: str = "",
+    status: int = 200,
+):
+    if user_create_form is None:
+        user_create_form = PortalUserCreateForm()
     context = _portal_area_context(
         request,
         "users-roles",
         {
-            "user_role_rows": _user_role_rows(),
+            "user_create_form": user_create_form,
+            "user_management_error": user_management_error,
+            "user_role_rows": _user_role_rows(request.user),
             "portal_roles": _portal_role_rows(),
             "role_options": list(PortalRole),
         },
     )
-    return render(request, _template(request, "core/users_roles.html", "core/partials/users_roles_content.html"), context)
+    return render(
+        request,
+        _template(request, "core/users_roles.html", "core/partials/users_roles_content.html"),
+        context,
+        status=status,
+    )
 
 
 @permission_required(PortalPermission.ADMINISTER)
@@ -912,6 +975,7 @@ def location_create(request):
         form = LocationForm(request.POST, include_sensitive_fields=include_sensitive_fields)
         if form.is_valid():
             location = _save_config_form_with_audit(request, form, operation="create")
+            ensure_default_feature_codes(location)
             return redirect("location-detail", slug=location.slug)
     else:
         form = LocationForm(include_sensitive_fields=include_sensitive_fields)
@@ -2099,6 +2163,7 @@ def paging_group_delete(request, paging_group_id: int):
 @permission_required(PortalPermission.VIEW)
 def feature_code_list(request):
     feature_codes = FeatureCode.objects.select_related("location", "destination")
+    missing_default_locations = locations_missing_default_feature_codes()
     return _routing_list_response(
         request,
         kind="feature-codes",
@@ -2108,7 +2173,16 @@ def feature_code_list(request):
         create_url="feature-code-create",
         edit_url="feature-code-edit",
         empty_label="No feature codes configured",
+        default_seed_url="feature-code-seed-defaults",
+        default_seed_enabled=bool(missing_default_locations),
     )
+
+
+@permission_required(PortalPermission.EDIT_CONFIG)
+@require_POST
+def feature_code_seed_defaults(request):
+    ensure_default_feature_codes_for_locations(locations_missing_default_feature_codes())
+    return redirect("feature-codes")
 
 
 @permission_required(PortalPermission.EDIT_CONFIG)
@@ -2174,6 +2248,8 @@ def _routing_list_response(
     empty_label,
     import_url=None,
     template_url=None,
+    default_seed_url=None,
+    default_seed_enabled=False,
 ):
     context = _routing_context(
         request,
@@ -2187,6 +2263,8 @@ def _routing_list_response(
             "empty_label": empty_label,
             "import_url": import_url,
             "template_url": template_url,
+            "default_seed_url": default_seed_url,
+            "default_seed_enabled": default_seed_enabled,
         },
     )
     return render(request, _template(request, "core/routing/list.html", "core/partials/routing/list_content.html"), context)
@@ -2323,7 +2401,7 @@ def _recordings_location(location: Location, user) -> dict:
     }
 
 
-def _user_role_rows() -> list[dict]:
+def _user_role_rows(current_user=None) -> list[dict]:
     rows = []
     for user in User.objects.select_related("portal_profile").order_by("username", "id"):
         role = get_user_role(user)
@@ -2333,6 +2411,7 @@ def _user_role_rows() -> list[dict]:
                 "role": role,
                 "role_label": role.label if role else "No portal role",
                 "is_superuser": user.is_superuser,
+                "can_delete": user.pk != getattr(current_user, "pk", None),
             }
         )
     return rows
