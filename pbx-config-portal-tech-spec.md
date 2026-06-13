@@ -24,7 +24,7 @@ The portal can deploy a selected config version to a remote Debian Docker server
 - Database: PostgreSQL.
 - Hosting: Docker Compose on an internal management server reachable only through LAN or Cloudflare WARP.
 - Authentication: named users with role-based access and audit logging.
-- PBX runtime: Asterisk 22 LTS in a pinned custom Docker image.
+- PBX runtime: Asterisk 20.19.0 built from source in the exported runtime bundle with the Cisco USECALLMANAGER patch applied during image build.
 - PBX host OS target: Ubuntu/Debian Linux.
 - Asterisk SIP stack: PJSIP only.
 - SIP transport: TCP enabled and generated for Cisco phone registration.
@@ -138,7 +138,8 @@ tftp/
 
 The per-location Docker Compose stack should include:
 
-- Asterisk 22 LTS custom image.
+- Asterisk 20.19.0 custom image built from `runtime/asterisk/Dockerfile`.
+- The Asterisk build verifies the upstream source archive and `cisco-usecallmanager-20.19.0.patch` SHA256 hashes before applying the patch.
 - TFTP service for Cisco provisioning.
 - HTTP static service for phone book/provisioning assets.
 - PBX agent sidecar.
@@ -511,6 +512,7 @@ Audio tests:
 ## 22. References
 
 - Cisco `SEPMAC.cnf.xml` guidance: https://usecallmanager.nz/sepmac-cnf-xml.html
+- Cisco USECALLMANAGER Asterisk patching: https://usecallmanager.nz/patching-asterisk.html
 - Asterisk versions: https://docs.asterisk.org/About-the-Project/Asterisk-Versions/
 - Asterisk PJSIP transport docs: https://docs.asterisk.org/Configuration/Channel-Drivers/SIP/Configuring-res_pjsip/PJSIP-Transport-Selection/
 - Asterisk AMI actions: https://docs.asterisk.org/Asterisk_21_Documentation/API_Documentation/AMI_Actions/

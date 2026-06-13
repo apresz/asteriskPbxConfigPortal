@@ -5,7 +5,8 @@ import re
 from typing import Any, Iterable, Mapping
 
 
-ASTERISK_22_LTS_IMAGE = "ghcr.io/apresz/asterisk:22-lts"
+ASTERISK_20_CISCO_VERSION = "20.19.0"
+ASTERISK_20_CISCO_IMAGE = f"pbx-asterisk:{ASTERISK_20_CISCO_VERSION}-cisco"
 TFTP_SERVICE_IMAGE = "ghcr.io/apresz/tftp:1.0.0"
 HTTP_STATIC_SERVICE_IMAGE = "docker.io/nginx:1.27-alpine"
 PBX_AGENT_IMAGE = "ghcr.io/apresz/pbx-agent:0.1.0"
@@ -47,6 +48,7 @@ class RuntimeImage:
     custom: bool
     resolved_digest: str | None = None
     digest_source: str | None = None
+    built_from_source: bool = False
 
     @property
     def parsed_reference(self) -> ImageReference:
@@ -73,7 +75,7 @@ class RuntimeImage:
 
     @property
     def compose_default(self) -> str | None:
-        if self.custom and not self.immutable:
+        if self.custom and not self.immutable and not self.built_from_source:
             return None
         return self.compose_reference
 
@@ -82,8 +84,9 @@ DEFAULT_RUNTIME_IMAGES = (
     RuntimeImage(
         service="asterisk",
         env_var="PBX_ASTERISK_IMAGE",
-        reference=ASTERISK_22_LTS_IMAGE,
+        reference=ASTERISK_20_CISCO_IMAGE,
         custom=True,
+        built_from_source=True,
     ),
     RuntimeImage(
         service="tftp",
@@ -159,8 +162,12 @@ def configured_runtime_images(overrides: Mapping[str, Any] | None = None) -> tup
             raise ValueError(f"Runtime image override for {default_image.service!r} must be a mapping or string.")
 
         reference = str(override.get("reference") or default_image.reference).strip()
+        reference_overridden = reference != default_image.reference
         resolved_digest = normalize_digest(override.get("resolved_digest") or override.get("digest"))
         digest_source = str(override.get("digest_source") or "").strip() or None
+        built_from_source = bool(
+            override.get("built_from_source", default_image.built_from_source and not reference_overridden)
+        )
         configured.append(
             RuntimeImage(
                 service=default_image.service,
@@ -169,6 +176,7 @@ def configured_runtime_images(overrides: Mapping[str, Any] | None = None) -> tup
                 custom=default_image.custom,
                 resolved_digest=resolved_digest,
                 digest_source=digest_source,
+                built_from_source=built_from_source,
             )
         )
     return tuple(configured)
@@ -198,6 +206,7 @@ def runtime_image_metadata(images: Iterable[RuntimeImage]) -> list[dict[str, Any
                 "custom": image.custom,
                 "immutable": image.immutable,
                 "requires_env_override": image.compose_default is None,
+                "built_from_source": image.built_from_source,
             }
         )
     return metadata
@@ -229,7 +238,7 @@ def runtime_image_validation_issues(
             )
             continue
 
-        if image.custom and not digest:
+        if image.custom and not digest and not image.built_from_source:
             target.append(
                 {
                     "code": "runtime_image_tag_only",

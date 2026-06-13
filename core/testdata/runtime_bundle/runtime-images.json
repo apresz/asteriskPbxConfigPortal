@@ -2,20 +2,22 @@
   "format": "pbx-runtime-images/v1",
   "images": [
     {
-      "compose_reference": null,
+      "built_from_source": true,
+      "compose_reference": "pbx-asterisk:20.19.0-cisco",
       "custom": true,
       "digest": null,
       "digest_source": null,
       "env_var": "PBX_ASTERISK_IMAGE",
       "immutable": false,
-      "reference": "ghcr.io/apresz/asterisk:22-lts",
-      "registry": "ghcr.io",
-      "repository": "ghcr.io/apresz/asterisk",
-      "requires_env_override": true,
+      "reference": "pbx-asterisk:20.19.0-cisco",
+      "registry": null,
+      "repository": "pbx-asterisk",
+      "requires_env_override": false,
       "service": "asterisk",
-      "tag": "22-lts"
+      "tag": "20.19.0-cisco"
     },
     {
+      "built_from_source": false,
       "compose_reference": null,
       "custom": true,
       "digest": null,
@@ -30,6 +32,7 @@
       "tag": "1.0.0"
     },
     {
+      "built_from_source": false,
       "compose_reference": "docker.io/nginx:1.27-alpine",
       "custom": false,
       "digest": null,
@@ -44,6 +47,7 @@
       "tag": "1.27-alpine"
     },
     {
+      "built_from_source": false,
       "compose_reference": null,
       "custom": true,
       "digest": null,
@@ -58,5 +62,18 @@
       "tag": "0.1.0"
     }
   ],
+  "source_builds": {
+    "asterisk": {
+      "asterisk_version": "20.19.0",
+      "build_context": "runtime/asterisk",
+      "cisco_patch_sha256": "adcb88c17a1cf8eb6242c7d9f1959f06afc64ae9af210268abaf767d388b83d2",
+      "cisco_patch_url": "https://raw.githubusercontent.com/usecallmanagernz/patches/master/asterisk/cisco-usecallmanager-20.19.0.patch",
+      "dockerfile": "runtime/asterisk/Dockerfile",
+      "documentation_url": "https://usecallmanager.nz/patching-asterisk.html",
+      "image": "pbx-asterisk:20.19.0-cisco",
+      "source_sha256": "10fbc070f9aaec50b788962dbcddf694fcc61d49c1f1bb158bf04a2e7e46aba0",
+      "source_url": "https://downloads.asterisk.org/pub/telephony/asterisk/old-releases/asterisk-20.19.0.tar.gz"
+    }
+  },
   "tag_policy": "warn"
 }

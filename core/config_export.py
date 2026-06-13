@@ -61,7 +61,8 @@ from .ring_group_dialplan import (
     validate_ring_group_dialplan_payload,
 )
 from .runtime_images import (
-    ASTERISK_22_LTS_IMAGE,
+    ASTERISK_20_CISCO_IMAGE,
+    ASTERISK_20_CISCO_VERSION,
     HTTP_STATIC_SERVICE_IMAGE,
     PBX_AGENT_IMAGE,
     RUNTIME_IMAGE_TAG_POLICY_BLOCK,
@@ -109,6 +110,19 @@ CISCO_FIRMWARE_PLACEHOLDER_FILENAME = "firmware/README-no-firmware-bundled.txt"
 CISCO_TRANSPORT_LAYER_PROTOCOL = "TCP"
 RUNTIME_IMAGE_MANIFEST_FILENAME = "runtime-images.json"
 RUNTIME_IMAGE_MANIFEST_CONTENT_TYPE = "application/json"
+ASTERISK_RUNTIME_DOCKERFILE_PATH = "runtime/asterisk/Dockerfile"
+ASTERISK_RUNTIME_ENTRYPOINT_PATH = "runtime/asterisk/docker-entrypoint.sh"
+ASTERISK_SOURCE_URL = (
+    f"https://downloads.asterisk.org/pub/telephony/asterisk/old-releases/"
+    f"asterisk-{ASTERISK_20_CISCO_VERSION}.tar.gz"
+)
+ASTERISK_SOURCE_SHA256 = "10fbc070f9aaec50b788962dbcddf694fcc61d49c1f1bb158bf04a2e7e46aba0"
+CISCO_USECALLMANAGER_PATCH_URL = (
+    f"https://raw.githubusercontent.com/usecallmanagernz/patches/master/asterisk/"
+    f"cisco-usecallmanager-{ASTERISK_20_CISCO_VERSION}.patch"
+)
+CISCO_USECALLMANAGER_PATCH_SHA256 = "adcb88c17a1cf8eb6242c7d9f1959f06afc64ae9af210268abaf767d388b83d2"
+CISCO_USECALLMANAGER_PATCH_DOCUMENTATION_URL = "https://usecallmanager.nz/patching-asterisk.html"
 RECORDING_RETENTION_SCRIPT_PATH = "scripts/pbx-recording-retention"
 RECORDING_RETENTION_SCRIPT_TARGET = "/usr/local/sbin/pbx-recording-retention"
 
@@ -393,6 +407,9 @@ def build_config_export_archive(
         "format": "pbx-runtime-images/v1",
         "tag_policy": _runtime_image_tag_policy(),
         "images": runtime_images_metadata,
+        "source_builds": {
+            "asterisk": _asterisk_source_build_metadata(),
+        },
     }
     marker_path = _active_config_marker_path()
     marker_bundle_path = active_config_marker_bundle_path(marker_path)
@@ -446,6 +463,9 @@ def build_config_export_archive(
             "content_type": RUNTIME_IMAGE_MANIFEST_CONTENT_TYPE,
             "tag_policy": _runtime_image_tag_policy(),
             "images": runtime_images_metadata,
+            "source_builds": {
+                "asterisk": _asterisk_source_build_metadata(),
+            },
         },
         "files": payload_manifest,
     }
@@ -501,6 +521,7 @@ def _export_payload_files(
         ),
         (".env.example", _env_example(location, runtime_images=runtime_images).encode("utf-8"), "text/plain"),
     ]
+    files.extend(_asterisk_runtime_build_files())
     files.extend(
         (
             f"asterisk/{filename}",
@@ -572,6 +593,141 @@ def _file_field_path(file_field) -> str:
         return ""
 
 
+def _asterisk_source_build_metadata() -> dict[str, Any]:
+    return {
+        "image": ASTERISK_20_CISCO_IMAGE,
+        "asterisk_version": ASTERISK_20_CISCO_VERSION,
+        "build_context": "runtime/asterisk",
+        "dockerfile": ASTERISK_RUNTIME_DOCKERFILE_PATH,
+        "source_url": ASTERISK_SOURCE_URL,
+        "source_sha256": ASTERISK_SOURCE_SHA256,
+        "cisco_patch_url": CISCO_USECALLMANAGER_PATCH_URL,
+        "cisco_patch_sha256": CISCO_USECALLMANAGER_PATCH_SHA256,
+        "documentation_url": CISCO_USECALLMANAGER_PATCH_DOCUMENTATION_URL,
+    }
+
+
+def _asterisk_runtime_build_files() -> list[ArchiveFile]:
+    return [
+        (
+            ASTERISK_RUNTIME_DOCKERFILE_PATH,
+            _asterisk_runtime_dockerfile().encode("utf-8"),
+            "text/x-dockerfile",
+        ),
+        (
+            ASTERISK_RUNTIME_ENTRYPOINT_PATH,
+            _asterisk_runtime_entrypoint().encode("utf-8"),
+            "text/x-shellscript",
+        ),
+    ]
+
+
+def _asterisk_runtime_dockerfile() -> str:
+    return f"""FROM debian:12-slim
+
+ARG ASTERISK_VERSION={ASTERISK_20_CISCO_VERSION}
+ARG ASTERISK_SOURCE_URL={ASTERISK_SOURCE_URL}
+ARG ASTERISK_SOURCE_SHA256={ASTERISK_SOURCE_SHA256}
+ARG CISCO_PATCH_URL={CISCO_USECALLMANAGER_PATCH_URL}
+ARG CISCO_PATCH_SHA256={CISCO_USECALLMANAGER_PATCH_SHA256}
+
+LABEL org.opencontainers.image.title="PBX Asterisk 20 Cisco USECALLMANAGER"
+LABEL org.opencontainers.image.version="{ASTERISK_20_CISCO_VERSION}-cisco"
+LABEL org.opencontainers.image.source="{CISCO_USECALLMANAGER_PATCH_DOCUMENTATION_URL}"
+
+ENV DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/sh", "-euxc"]
+
+RUN apt-get update \\
+ && apt-get install -y --no-install-recommends \\
+    autoconf \\
+    automake \\
+    bison \\
+    build-essential \\
+    ca-certificates \\
+    curl \\
+    file \\
+    flex \\
+    gettext \\
+    libasound2-dev \\
+    libcurl4-openssl-dev \\
+    libedit-dev \\
+    libjansson-dev \\
+    libncurses-dev \\
+    libogg-dev \\
+    libopus-dev \\
+    libsrtp2-dev \\
+    libsqlite3-dev \\
+    libspeexdsp-dev \\
+    libssl-dev \\
+    libtool \\
+    libvorbis-dev \\
+    libxml2-dev \\
+    patch \\
+    perl \\
+    pkg-config \\
+    python3 \\
+    unixodbc-dev \\
+    uuid-dev \\
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /usr/src
+
+RUN curl -fsSLo asterisk.tar.gz "$ASTERISK_SOURCE_URL" \\
+ && echo "$ASTERISK_SOURCE_SHA256  asterisk.tar.gz" | sha256sum -c - \\
+ && tar -xzf asterisk.tar.gz \\
+ && curl -fsSLo cisco-usecallmanager.patch "$CISCO_PATCH_URL" \\
+ && echo "$CISCO_PATCH_SHA256  cisco-usecallmanager.patch" | sha256sum -c - \\
+ && cd "asterisk-$ASTERISK_VERSION" \\
+ && patch -p1 < ../cisco-usecallmanager.patch \\
+ && ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --with-pjproject-bundled \\
+ && make menuselect.makeopts \\
+ && ./menuselect/menuselect --enable chan_sip menuselect.makeopts \\
+ && make -j"$(nproc)" \\
+ && make install \\
+ && make samples \\
+ && cd /usr/src \\
+ && rm -rf "asterisk-$ASTERISK_VERSION" asterisk.tar.gz cisco-usecallmanager.patch
+
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+RUN chmod 755 /usr/local/bin/docker-entrypoint.sh \\
+ && mkdir -p /etc/asterisk /var/lib/asterisk /var/log/asterisk /var/spool/asterisk /var/run/asterisk
+
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["asterisk", "-f", "-U", "asterisk", "-G", "asterisk", "-vvv"]
+"""
+
+
+def _asterisk_runtime_entrypoint() -> str:
+    return """#!/bin/sh
+set -eu
+
+asterisk_uid="${ASTERISK_UID:-1000}"
+asterisk_gid="${ASTERISK_GID:-1000}"
+
+if getent group asterisk >/dev/null 2>&1; then
+  asterisk_group="asterisk"
+elif getent group "$asterisk_gid" >/dev/null 2>&1; then
+  asterisk_group="$(getent group "$asterisk_gid" | cut -d: -f1)"
+else
+  groupadd -g "$asterisk_gid" asterisk
+  asterisk_group="asterisk"
+fi
+
+if ! id -u asterisk >/dev/null 2>&1; then
+  useradd --system --uid "$asterisk_uid" --gid "$asterisk_group" --home-dir /var/lib/asterisk --shell /usr/sbin/nologin asterisk
+fi
+
+for path in /etc/asterisk /var/lib/asterisk /var/log/asterisk /var/spool/asterisk /var/run/asterisk; do
+  mkdir -p "$path"
+  chown asterisk:"$asterisk_group" "$path"
+done
+
+exec "$@"
+"""
+
+
 def _docker_compose_yml(location: Location, *, runtime_images: tuple[RuntimeImage, ...] | None = None) -> str:
     runtime_images_by_service = _runtime_images_by_service(runtime_images or _runtime_images())
     marker_path = _active_config_marker_path()
@@ -581,6 +737,14 @@ def _docker_compose_yml(location: Location, *, runtime_images: tuple[RuntimeImag
         [
             "services:",
             "  asterisk:",
+            "    build:",
+            "      context: ./runtime/asterisk",
+            "      args:",
+            f"        ASTERISK_VERSION: \"${{ASTERISK_VERSION:-{ASTERISK_20_CISCO_VERSION}}}\"",
+            f"        ASTERISK_SOURCE_URL: \"${{ASTERISK_SOURCE_URL:-{ASTERISK_SOURCE_URL}}}\"",
+            f"        ASTERISK_SOURCE_SHA256: \"${{ASTERISK_SOURCE_SHA256:-{ASTERISK_SOURCE_SHA256}}}\"",
+            f"        CISCO_PATCH_URL: \"${{CISCO_PATCH_URL:-{CISCO_USECALLMANAGER_PATCH_URL}}}\"",
+            f"        CISCO_PATCH_SHA256: \"${{CISCO_PATCH_SHA256:-{CISCO_USECALLMANAGER_PATCH_SHA256}}}\"",
             f"    image: {_compose_image_value(runtime_images_by_service['asterisk'])}",
             f"    container_name: pbx-${{PBX_LOCATION_SLUG:-{location.slug}}}-asterisk",
             "    restart: unless-stopped",
@@ -665,7 +829,14 @@ def _env_example(location: Location, *, runtime_images: tuple[RuntimeImage, ...]
             f"PBX_WARP_IP={location.pbx_warp_ip}",
             f"TZ={location.timezone}",
             "",
-            "# Custom PBX runtime images must include an immutable digest.",
+            "# Asterisk is built locally from pinned Asterisk 20 source and the Cisco USECALLMANAGER patch.",
+            f"ASTERISK_VERSION={ASTERISK_20_CISCO_VERSION}",
+            f"ASTERISK_SOURCE_URL={ASTERISK_SOURCE_URL}",
+            f"ASTERISK_SOURCE_SHA256={ASTERISK_SOURCE_SHA256}",
+            f"CISCO_PATCH_URL={CISCO_USECALLMANAGER_PATCH_URL}",
+            f"CISCO_PATCH_SHA256={CISCO_USECALLMANAGER_PATCH_SHA256}",
+            "",
+            "# Prebuilt custom runtime image overrides should include immutable digests where practical.",
             f"PBX_ASTERISK_IMAGE={_env_image_value(runtime_images_by_service['asterisk'])}",
             f"PBX_TFTP_IMAGE={_env_image_value(runtime_images_by_service['tftp'])}",
             f"PBX_HTTP_IMAGE={_env_image_value(runtime_images_by_service['provisioning-http'])}",

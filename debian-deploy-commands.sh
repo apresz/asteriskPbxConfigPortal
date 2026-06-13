@@ -485,6 +485,10 @@ echo
 # Run this section on each Debian PBX deployment target, not on the portal host,
 # when the portal will SSH deployment bundles to a PBX server.
 #
+# Install Docker Engine, the Buildx plugin, and the Docker Compose plugin before
+# the first exported PBX runtime install. The exported `runtime/asterisk`
+# Dockerfile builds patched Asterisk 20.19.0 locally on the PBX host.
+#
 #   apt-get update
 #   apt-get install -y ca-certificates curl gnupg openssh-server rsync tar
 #   systemctl enable --now ssh
